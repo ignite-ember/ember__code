@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ember-code"
+version = "0.1.0"
+description = "Terminal-based AI coding assistant built on Agno"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "agno[openai]>=1.0.0",
+    "rich>=13.0.0",
+    "textual>=0.40.0",
+    "pyyaml>=6.0",
+    "click>=8.0",
+    "pydantic>=2.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+knowledge = [
+    "chromadb>=0.4.0",
+]
+web = [
+    "duckduckgo-search>=4.0",
+]
+
+[project.scripts]
+ignite-ember = "ember_code.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ember_code"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+disable_error_code = ["union-attr", "annotation-unchecked", "arg-type", "return-value", "attr-defined", "import-untyped", "call-arg", "override"]

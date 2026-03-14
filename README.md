@@ -17,11 +17,15 @@ Claude Code uses a single agent loop — powerful but monolithic. Ember Code tak
 | Architecture | Single agent loop | Multi-agent teams (Agno) |
 | Task routing | Manual sub-agent spawning | Automatic via Coordinate/Route modes |
 | Code intelligence | Grep + file reads | VectorBridge semantic search (included free) |
+| Knowledge base | None | ChromaDB vector store with custom embeddings |
 | Planning | Plan mode (read-only) | Agno reasoning + Tasks mode |
 | IDE integration | MCP server (stdio) | MCP server + client (Agno MCPTools) |
 | Extensibility | Plugins, hooks, MCP | Agents + hooks + toolkits + MCP |
 | Agent evals | Not built-in | Built-in regression testing framework |
 | Memory | File-based MEMORY.md | Agno Memory + DB-backed storage |
+| Learning | None | Agno LearningMachine (user profiles, entity memory) |
+| Guardrails | None | PII detection, prompt injection, moderation |
+| HITL | Implicit | Explicit confirmation/input requirements |
 | Default model | Anthropic Claude | MiniMax M2.5 (model-agnostic, swappable) |
 
 ## Quick Start
@@ -48,9 +52,16 @@ From source:
 git clone https://github.com/ignite-ember/ember-code.git
 cd ember-code
 pip install -e ".[dev]"
+make check               # lint + format + typecheck + test
 ignite-ember login
 ignite-ember
 ```
+
+## TUI Mode
+
+`ignite-ember` launches the Textual-based terminal UI by default — no flag needed. Use `--no-tui` to fall back to plain Rich CLI output.
+
+Features: streaming responses, agent tree visualization, token tracking, session picker, keyboard shortcuts, HITL confirmation dialogs.
 
 ## IDE Integration
 
@@ -70,8 +81,44 @@ Ember Code integrates with IDEs via the [Model Context Protocol (MCP)](https://m
 
 Works with **VS Code**, **JetBrains** (IntelliJ, PyCharm, etc.), **Cursor**, and **Windsurf**. See [MCP docs](docs/MCP.md) for details.
 
+## Key Features
+
+### Knowledge Base
+
+Built-in vector knowledge base powered by ChromaDB and the Ember embeddings API:
+
+```yaml
+knowledge:
+  enabled: true
+  collection_name: "my_project"
+  embedder: "ember"            # uses Ember server's /v1/embeddings
+```
+
+Add content via slash commands: `/knowledge add <url|path|text>`, search with `/knowledge search <query>`. Agents can search the knowledge base automatically during execution.
+
+### Learning & Reasoning
+
+- **Learning** — Agno LearningMachine builds user profiles, entity memory, and session context across conversations
+- **Reasoning tools** — `think` and `analyze` tools for step-by-step reasoning during complex tasks
+
+### Guardrails
+
+Built-in safety guardrails via Agno's pre-hook system:
+
+```yaml
+guardrails:
+  pii_detection: true          # detect and flag PII in prompts
+  prompt_injection: true       # detect injection attempts
+  moderation: true             # OpenAI moderation API
+```
+
+### Human-in-the-Loop (HITL)
+
+Agents can pause execution to request confirmation or user input before proceeding with sensitive operations. The TUI shows interactive approval dialogs.
+
 ## Documentation
 
+- **[Quickstart](docs/QUICKSTART.md)** — Get up and running in under 5 minutes
 - [Architecture](docs/ARCHITECTURE.md) — System design and agent topology
 - [Agents](docs/AGENTS.md) — Specialized agents and their roles
 - [Skills](docs/SKILLS.md) — Reusable prompted workflows (`/deploy`, `/review-pr`, etc.)

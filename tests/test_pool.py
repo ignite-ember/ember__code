@@ -1,0 +1,166 @@
+"""Tests for pool.py — agent parsing and pool management."""
+
+import pytest
+
+from ember_code.pool import AgentParser, AgentPool
+
+
+class TestAgentParser:
+    def test_parse_valid_md(self, sample_agent_md):
+        defn = AgentParser.parse(sample_agent_md)
+        assert defn.name == "test-agent"
+        assert defn.description == "A test agent"
+        assert defn.tools == ["Read", "Grep"]
+        assert defn.model == "MiniMax-M2.5"
+        assert defn.tags == ["test", "example"]
+        assert defn.reasoning is True
+        assert defn.reasoning_min_steps == 2
+        assert defn.reasoning_max_steps == 8
+        assert "test agent" in defn.system_prompt
+
+    def test_parse_missing_frontmatter(self, tmp_path):
+        md = tmp_path / "bad.md"
+        md.write_text("No frontmatter here\n")
+        with pytest.raises(ValueError, match="No YAML frontmatter"):
+            AgentParser.parse(md)
+
+    def test_parse_missing_name(self, tmp_path):
+        md = tmp_path / "noname.md"
+        md.write_text("---\ndescription: test\n---\nbody\n")
+        with pytest.raises(ValueError, match="missing 'name'"):
+            AgentParser.parse(md)
+
+    def test_parse_missing_description(self, tmp_path):
+        md = tmp_path / "nodesc.md"
+        md.write_text("---\nname: test\n---\nbody\n")
+        with pytest.raises(ValueError, match="missing 'description'"):
+            AgentParser.parse(md)
+
+    def test_parse_tools_as_string(self, tmp_path):
+        md = tmp_path / "tools-str.md"
+        md.write_text("---\nname: t\ndescription: d\ntools: Read, Write, Edit\n---\n")
+        defn = AgentParser.parse(md)
+        assert defn.tools == ["Read", "Write", "Edit"]
+
+    def test_parse_tools_as_list(self, tmp_path):
+        md = tmp_path / "tools-list.md"
+        md.write_text("---\nname: t\ndescription: d\ntools:\n  - Bash\n  - Grep\n---\n")
+        defn = AgentParser.parse(md)
+        assert defn.tools == ["Bash", "Grep"]
+
+    def test_parse_defaults(self, tmp_path):
+        md = tmp_path / "minimal.md"
+        md.write_text("---\nname: minimal\ndescription: minimal agent\n---\n")
+        defn = AgentParser.parse(md)
+        assert defn.tools == []
+        assert defn.model is None
+        assert defn.reasoning is False
+        assert defn.can_orchestrate is True
+        assert defn.temperature is None
+
+    def test_parse_optional_fields(self, tmp_path):
+        md = tmp_path / "full.md"
+        md.write_text(
+            "---\n"
+            "name: full\n"
+            "description: full agent\n"
+            "color: blue\n"
+            "can_orchestrate: false\n"
+            "max_turns: 5\n"
+            "temperature: 0.7\n"
+            "mcp_servers:\n"
+            "  - github\n"
+            "---\n"
+            "Prompt body here.\n"
+        )
+        defn = AgentParser.parse(md)
+        assert defn.color == "blue"
+        assert defn.can_orchestrate is False
+        assert defn.max_turns == 5
+        assert defn.temperature == 0.7
+        assert defn.mcp_servers == ["github"]
+
+
+class TestAgentPool:
+    def test_empty_pool(self):
+        pool = AgentPool()
+        assert pool.agent_names == []
+        assert pool.list_agents() == []
+
+    def test_load_directory(self, tmp_path, settings):
+        # Create agent files
+        (tmp_path / "alpha.md").write_text(
+            "---\nname: alpha\ndescription: Agent Alpha\n---\nAlpha prompt\n"
+        )
+        (tmp_path / "beta.md").write_text(
+            "---\nname: beta\ndescription: Agent Beta\n---\nBeta prompt\n"
+        )
+
+        pool = AgentPool()
+        pool.load_directory(tmp_path, priority=0, settings=settings)
+        assert sorted(pool.agent_names) == ["alpha", "beta"]
+
+    def test_priority_override(self, tmp_path, settings):
+        low_dir = tmp_path / "low"
+        low_dir.mkdir()
+        (low_dir / "agent.md").write_text(
+            "---\nname: shared\ndescription: Low priority\n---\nLow\n"
+        )
+
+        high_dir = tmp_path / "high"
+        high_dir.mkdir()
+        (high_dir / "agent.md").write_text(
+            "---\nname: shared\ndescription: High priority\n---\nHigh\n"
+        )
+
+        pool = AgentPool()
+        pool.load_directory(low_dir, priority=0, settings=settings)
+        pool.load_directory(high_dir, priority=3, settings=settings)
+
+        defn = pool.get_definition("shared")
+        assert defn.description == "High priority"
+
+    def test_lower_priority_does_not_override(self, tmp_path, settings):
+        high_dir = tmp_path / "high"
+        high_dir.mkdir()
+        (high_dir / "agent.md").write_text("---\nname: shared\ndescription: High first\n---\n")
+
+        low_dir = tmp_path / "low"
+        low_dir.mkdir()
+        (low_dir / "agent.md").write_text("---\nname: shared\ndescription: Low second\n---\n")
+
+        pool = AgentPool()
+        pool.load_directory(high_dir, priority=3, settings=settings)
+        pool.load_directory(low_dir, priority=0, settings=settings)
+
+        defn = pool.get_definition("shared")
+        assert defn.description == "High first"
+
+    def test_get_unknown_raises(self, settings):
+        pool = AgentPool()
+        with pytest.raises(KeyError, match="Agent not found"):
+            pool.get("nonexistent")
+
+    def test_load_skips_bad_files(self, tmp_path, settings):
+        (tmp_path / "good.md").write_text("---\nname: good\ndescription: Works\n---\n")
+        (tmp_path / "bad.md").write_text("no frontmatter here")
+
+        pool = AgentPool()
+        pool.load_directory(tmp_path, priority=0, settings=settings)
+        assert pool.agent_names == ["good"]
+
+    def test_load_nonexistent_directory(self, tmp_path, settings):
+        pool = AgentPool()
+        pool.load_directory(tmp_path / "nope", priority=0, settings=settings)
+        assert pool.agent_names == []
+
+    def test_describe(self, tmp_path, settings):
+        (tmp_path / "agent.md").write_text(
+            "---\nname: alpha\ndescription: Does things\ntools: Read, Grep\ntags: search\n---\n"
+        )
+        pool = AgentPool()
+        pool.load_directory(tmp_path, priority=0, settings=settings)
+        desc = pool.describe()
+        assert "alpha" in desc
+        assert "Does things" in desc
+        assert "Read" in desc

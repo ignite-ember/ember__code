@@ -42,8 +42,14 @@ Ember Code is a terminal-based AI coding assistant built on [Agno](https://docs.
 │              └──────────────────┘                    │
 │                                                      │
 ├─────────────────────────────────────────────────────┤
+│              Guardrails Layer                        │
+│   PII Detection │ Prompt Injection │ Moderation     │
+├─────────────────────────────────────────────────────┤
 │              Tool Layer (Agno Toolkits)              │
 │   Shell │ File │ Edit │ Search │ Git │ Web │ Python │
+├─────────────────────────────────────────────────────┤
+│              Knowledge Layer                         │
+│   ChromaDB vector store │ EmberEmbedder (384-dim)   │
 ├─────────────────────────────────────────────────────┤
 │              MCP Layer                               │
 │   Server (expose tools to IDEs via stdio)           │
@@ -225,6 +231,99 @@ By default, sessions are stored locally in `~/.ember/sessions.db` using Agno's `
 
 **Cross-device sync:** Claude Code stores sessions locally only — they don't sync across devices. Ember Code defaults to the same (SQLite, local), but Agno's storage layer supports 15+ backends. Configure `storage.backend: "postgres"` (or MongoDB, Redis, DynamoDB, etc.) to sync sessions and memory across devices. See [Configuration](CONFIGURATION.md) for details.
 
+## Knowledge System
+
+Ember Code includes a built-in vector knowledge base powered by ChromaDB and a custom embedder.
+
+### EmberEmbedder
+
+A custom Agno `Embedder` that calls the Ember server's `/v1/embeddings` endpoint, proxying to a text2vec-transformers model (384 dimensions). This keeps embedding generation server-side — no local GPU required.
+
+### KnowledgeManager
+
+Creates an Agno `Knowledge` instance backed by ChromaDB. Manages document ingestion, search, and status. All data models are Pydantic: `KnowledgeAddResult`, `KnowledgeSearchResponse`, `KnowledgeFilter`, `KnowledgeStatus`.
+
+```yaml
+knowledge:
+  enabled: true
+  collection_name: "my_project"
+  embedder: "ember"
+```
+
+Add content via `/knowledge add <url|path|text>`, search with `/knowledge search <query>`. Agents can search the knowledge base automatically during execution.
+
+## Learning & Reasoning
+
+### Learning
+
+Agno's `LearningMachine` builds user profiles, entity memory, and session context across conversations. Configured via:
+
+```yaml
+learning:
+  enabled: true
+  user_profiles: true
+  entity_memory: true
+```
+
+### Reasoning
+
+Agents can use `think` and `analyze` tools for step-by-step reasoning during complex tasks. Enable per-agent in `.md` frontmatter with `reasoning: true`, or globally:
+
+```yaml
+reasoning:
+  enabled: true
+  tools: ["think", "analyze"]
+```
+
+## Guardrails
+
+Built-in safety guardrails run as Agno pre-hooks before each agent turn:
+
+| Guardrail | What It Does |
+|---|---|
+| **PII Detection** | Flags personally identifiable information in prompts |
+| **Prompt Injection** | Detects injection attempts in user input and tool output |
+| **Moderation** | Content moderation via OpenAI's moderation API |
+
+```yaml
+guardrails:
+  pii_detection: true
+  prompt_injection: true
+  moderation: true
+```
+
+Guardrails are applied via `AgnoFeatures.apply_to_agent()` — they attach as pre-hooks that run before the model is called. If a guardrail triggers, the agent is informed and can adjust.
+
+## Human-in-the-Loop (HITL)
+
+Agents can pause execution to request confirmation or user input before proceeding with sensitive operations. HITL is implemented via Agno's callback system and surfaces as interactive dialogs in the TUI.
+
+Two HITL modes:
+- **Confirmation** — agent asks "Should I proceed with X?" (yes/no)
+- **User input** — agent asks an open-ended question and waits for a response
+
+## Run Cancellation
+
+Users can cancel a running agent or team mid-execution. In the TUI, press `Escape` to cancel. The `ExecutionManager` handles cleanup of spinners, partial output, and agent state.
+
+## TUI Architecture
+
+The TUI is built with [Textual](https://textual.textualize.io/) and follows a clean separation of concerns:
+
+| Class | File | Responsibility |
+|---|---|---|
+| `EmberApp` | `app.py` | Textual shell: compose, mount, keybindings, event routing |
+| `ConversationView` | `conversation_view.py` | Widget append/clear operations |
+| `ExecutionManager` | `execution_manager.py` | Planning, streaming, cancellation |
+| `StatusTracker` | `status_tracker.py` | Token/context tracking, status bar |
+| `HITLHandler` | `hitl_handler.py` | Confirmation dialogs, user input |
+| `SessionManager` | `session_manager.py` | Session picker, switching, clearing |
+| `CommandHandler` | `command_handler.py` | Slash command dispatch |
+| `InputHandler` | `input_handler.py` | History, autocomplete |
+| `StreamHandler` | `stream_handler.py` | Agno streaming events → widgets |
+
+`EmberApp` is a thin shell that delegates to focused manager classes. Textual requires `action_*` methods and `@on` decorators on the App, but the logic lives in the managers. Each manager takes an `EmberApp` reference (via `TYPE_CHECKING` to avoid circular imports) and uses `query_one()` to interact with widgets.
+
 ## Error Handling
 
 - **Tool failures** — agents retry with alternative approaches (Agno's built-in retry)
@@ -244,5 +343,6 @@ Ember Code follows a defense-in-depth approach:
 4. **Confirmation prompts** — destructive/irreversible actions require explicit approval
 5. **Audit log** — all tool executions logged to `~/.ember/audit.log`
 6. **Agent isolation** — agents only get the tools declared in their definition
+7. **Guardrails** — PII detection, prompt injection detection, and content moderation as pre-hooks
 
 See [Configuration](CONFIGURATION.md) for permission settings.

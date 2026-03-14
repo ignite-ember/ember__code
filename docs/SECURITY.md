@@ -255,6 +255,27 @@ Hooks extend the security model — they can add custom validation:
 
 See [Hooks](HOOKS.md) for examples: blocking destructive commands, protecting sensitive paths, enforcing test execution.
 
+### 9. Guardrails (AI Safety)
+
+Built-in safety guardrails run as Agno pre-hooks before each agent turn, catching problems before they reach the model:
+
+| Guardrail | What It Does | When It Triggers |
+|---|---|---|
+| **PII Detection** | Scans prompts for personally identifiable information (emails, phone numbers, SSNs, etc.) | Before model call — flags PII so the agent can redact or warn |
+| **Prompt Injection** | Detects injection attempts in user input and tool output (e.g., "ignore previous instructions") | Before model call — blocks the injected content |
+| **Moderation** | Content moderation via OpenAI's moderation API | Before model call — flags harmful content |
+
+```yaml
+guardrails:
+  pii_detection: true          # detect and flag PII in prompts
+  prompt_injection: true       # detect injection attempts
+  moderation: true             # OpenAI moderation API
+```
+
+Guardrails are applied via `AgnoFeatures.apply_to_agent()` — they attach as pre-hooks that execute before the model is called. If a guardrail triggers, the agent is informed and can adjust its approach. Guardrails work alongside (not instead of) the permission system and protected paths.
+
+**Enterprise use:** Guardrails are especially valuable for teams where agents process user-provided content (URLs, files, pasted text) that could contain injection attempts or sensitive data.
+
 ---
 
 ## Enterprise Hardening
@@ -355,6 +376,7 @@ All code analysis and embeddings stay on your infrastructure.
 | Managed settings | Enterprise policy files | Same — managed-settings.json |
 | MCP security | Approval prompts, no passthrough | Same + tool filtering per agent |
 | Hooks | PreToolUse/PostToolUse/Stop | Same events, same format |
+| Guardrails | Not built-in | PII detection, prompt injection, moderation pre-hooks |
 | Network control | Not built-in | allowed_domains, deny-by-default |
 | VectorBridge | N/A | Self-hostable for data residency |
 

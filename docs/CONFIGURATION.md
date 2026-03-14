@@ -284,6 +284,64 @@ skills:
   #   .claude/skills/             (Claude Code project)
   #   ~/.claude/skills/           (Claude Code user global)
 
+# Embeddings — BYOM registry (same pattern as models.registry)
+# Resolution: user registry → built-in → provider:model_id
+embeddings:
+  default: "ember"                 # Default embedder name
+  registry:
+    # Example: use Voyage AI
+    # voyage:
+    #   provider: openai_compatible
+    #   model_id: voyage-3
+    #   url: https://api.voyageai.com/v1
+    #   api_key_env: VOYAGE_API_KEY
+    #   dimensions: 1024
+
+    # Example: use OpenAI native embedder
+    # openai-embed:
+    #   provider: openai
+    #   model_id: text-embedding-3-small
+    #   api_key_env: OPENAI_API_KEY
+    #   dimensions: 1536
+
+    # Example: local Ollama embeddings
+    # local-embed:
+    #   provider: openai_compatible
+    #   model_id: nomic-embed-text
+    #   url: http://localhost:11434/v1
+    #   dimensions: 768
+
+# Knowledge base (requires: pip install ember-code[knowledge])
+knowledge:
+  enabled: false                   # Enable ChromaDB knowledge base
+  collection_name: "ember_knowledge"  # ChromaDB collection name
+  chroma_db_path: "~/.ember/chromadb" # Path to ChromaDB storage
+  max_results: 10                  # Max search results returned
+  embedder: "ember"                # Embedder registry name (or provider:model_id)
+  share: true                      # Sync knowledge to a git-friendly YAML file
+  share_file: ".ember/knowledge.yaml"  # Knowledge file path (relative to project)
+  auto_sync: true                  # Auto-sync on session start/end
+
+# Learning (Agno LearningMachine)
+learning:
+  enabled: false                   # Enable learning across sessions
+  user_profile: true               # Build user preference profiles
+  user_memory: true                # Persist user-specific memories
+  session_context: true            # Carry session context forward
+  entity_memory: false             # Track entities across conversations
+
+# Reasoning tools
+reasoning:
+  enabled: false                   # Add think/analyze tools to agents
+  add_instructions: true           # Include reasoning instructions in prompt
+  add_few_shot: false              # Include few-shot examples
+
+# Guardrails
+guardrails:
+  pii_detection: false             # Detect PII in prompts (pre-hook)
+  prompt_injection: false          # Detect injection attempts (pre-hook)
+  moderation: false                # OpenAI moderation API (pre-hook)
+
 # Display
 display:
   markdown: true                   # Render markdown in terminal
@@ -309,6 +367,7 @@ display:
 | `EMBER_NO_MEMORY` | Disable persistent memory | `false` |
 | `VECTORBRIDGE_API_KEY` | VectorBridge cloud API key | - |
 | `EMBER_SKIP_ONBOARDING` | Skip first-run onboarding | `false` |
+| `CHROMADB_PATH` | Override ChromaDB storage path | `~/.ember/chromadb` |
 
 ## CLI Flags
 
@@ -328,6 +387,9 @@ ignite-ember --verbose               # show routing + reasoning
 ignite-ember --quiet                 # minimal output
 ignite-ember --no-color              # disable colors
 
+# TUI mode (default — use --no-tui to fall back to plain Rich CLI)
+ignite-ember --no-tui                # disable TUI, use plain Rich CLI output
+
 # Session
 ignite-ember --resume                # resume last session
 ignite-ember --resume <session-id>   # resume specific session
@@ -335,7 +397,7 @@ ignite-ember --no-memory             # disable persistent memory
 
 # Direct execution
 ignite-ember -m "add tests for auth module"   # non-interactive single task
-ignite-ember -p "explain this function" src/auth.py  # pipe file as context
+cat src/auth.py | ignite-ember -p              # pipe stdin as context
 ```
 
 ## Project Instructions (ember.md)

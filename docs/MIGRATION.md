@@ -156,6 +156,7 @@ models:
 | `--worktree` | Not yet available | Planned feature |
 | `--effort low\|high` | Not applicable | Ember Code uses Agno reasoning instead |
 | `--tools <list>` | Per-agent in `.md` file | Tool access is per-agent, not global |
+| N/A | `--no-tui` | Fall back to plain Rich CLI (TUI is the default) |
 | `--add-dir <path>` | Not yet available | Planned feature |
 
 ### Slash Commands
@@ -176,6 +177,15 @@ models:
 | — | `/onboard` | First-run onboarding (Ember Code only) |
 | — | `/propose-agents` | Generate project-specific agents |
 | — | `/evals run` | Run agent evaluations |
+| — | `/knowledge` | Knowledge base status |
+| — | `/knowledge add` | Add content to knowledge base |
+| — | `/knowledge search` | Search the knowledge base |
+| — | `/sync-knowledge` | Sync knowledge between git file and vector DB |
+| — | `/memory` | List stored memories |
+| — | `/memory optimize` | Consolidate memories |
+| — | `/sessions` | Browse and resume past sessions |
+| — | `/rename <name>` | Rename current session |
+| — | `/skills` | List loaded skills |
 | — | `/vectorbridge status` | VectorBridge indexing status |
 
 ### Permissions
@@ -242,6 +252,12 @@ Features you get that Claude Code doesn't have:
 | **First-run onboarding** | Proposes project-specific agents based on your codebase |
 | **Cross-device sync** | Session + memory sync via remote storage backends |
 | **Model agnostic** | Any model from any provider (not just Anthropic) |
+| **Knowledge base** | ChromaDB vector store with custom embeddings for document/code search |
+| **Learning** | Agno LearningMachine builds user profiles, entity memory across sessions |
+| **Guardrails** | PII detection, prompt injection detection, content moderation as pre-hooks |
+| **HITL** | Agents pause for confirmation or user input before sensitive operations |
+| **Run cancellation** | Cancel running agents mid-execution (Escape in TUI) |
+| **TUI mode** | Full Textual-based terminal UI with streaming, session management, token tracking (default; `--no-tui` for plain Rich CLI) |
 | **Team modes** | Route, Coordinate, Broadcast, Tasks — right tool for each job |
 
 ---

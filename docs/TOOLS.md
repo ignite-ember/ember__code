@@ -291,6 +291,55 @@ Git operations are handled via `ShellTools` with git/gh commands. The Git Agent 
 
 ---
 
+## Knowledge Base
+
+### Knowledge (KnowledgeManager)
+
+Built-in vector knowledge base powered by ChromaDB and the Ember embeddings API. Unlike VectorBridge (which provides pre-processed semantic code intelligence), the Knowledge system is a general-purpose document store that users can populate with any content.
+
+```yaml
+knowledge:
+  enabled: true
+  collection_name: "my_project"
+  embedder: "ember"            # uses Ember server's /v1/embeddings (384-dim)
+```
+
+**Slash commands:**
+- `/knowledge` — show knowledge base status (document count, collection info)
+- `/knowledge add <url|path|text>` — add content to the knowledge base
+- `/knowledge search <query>` — search the knowledge base
+
+**How it works:**
+1. `EmberEmbedder` calls the Ember server's `/v1/embeddings` endpoint (proxying to text2vec-transformers, 384 dimensions)
+2. Documents are chunked and stored in ChromaDB with vector embeddings
+3. Agents can search the knowledge base automatically during execution via Agno's `Knowledge` integration
+
+**Data models (Pydantic):** `KnowledgeAddResult`, `KnowledgeSearchResponse`, `KnowledgeFilter`, `KnowledgeStatus`
+
+**Requires:** `pip install ember-code[knowledge]` (installs `chromadb`)
+
+---
+
+## Orchestration
+
+### Orchestrate (OrchestrateTools)
+
+Enables agents to spawn sub-teams at runtime. Any agent with `can_orchestrate: true` (the default) gets access to this tool.
+
+```python
+from ember_code.tools.orchestrate import OrchestrateTools
+
+orchestrate = OrchestrateTools(pool=agent_pool, config=settings)
+```
+
+**Functions:**
+- `spawn_team(task, agent_names?, mode?)` — spawn a sub-team to handle a task. The Orchestrator picks agents and mode if not specified.
+- `spawn_agent(task, agent_name)` — spawn a single agent for a focused sub-task.
+
+**Depth limits:** Configurable via `orchestration.max_nesting_depth` (default: 5) and `orchestration.max_total_agents` (default: 20). See [Security](SECURITY.md) for details.
+
+---
+
 ## Custom Tools
 
 You can add custom tools using Agno's `@tool` decorator:
