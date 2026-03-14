@@ -235,7 +235,16 @@ storage:
   # backend: "postgres"
   # db_url: "postgresql://user:pass@host:5432/ember_code"
   audit_log: "~/.ember/audit.log"      # Tool execution log
-  max_history_runs: 10                       # Conversation turns to keep
+  max_history_runs: 10                 # Conversation turns to keep in context
+
+# Session behavior
+session:
+  compress_tool_results: true          # Compress tool outputs to save tokens
+  enable_session_summaries: true       # Generate session summaries for /sessions list
+  add_history_to_context: true         # Include past turns in agent context
+  read_chat_history: true              # Allow agents to read full chat history
+  enable_agentic_memory: true          # Give agents an update_user_memory tool
+  add_memories_to_context: true        # Include user memories in agent context
 
 # Project context
 context:

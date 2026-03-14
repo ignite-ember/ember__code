@@ -170,6 +170,31 @@ User: "deploy to staging"
 
 This means skills can fire without the user explicitly typing `/deploy` — the Orchestrator recognizes intent.
 
+**Auto-trigger requires `auto_trigger: true`** (the default) in config:
+
+```yaml
+# .ember/config.yaml
+skills:
+  auto_trigger: true    # default — Orchestrator can auto-trigger skills
+```
+
+Set `auto_trigger: false` globally, or `disable-model-invocation: true` per-skill, to require explicit `/command` invocation.
+
+**Example: how auto-trigger works end-to-end**
+
+Given this skill:
+```yaml
+description: This skill should be used when the user asks to "deploy", "push to staging", "release to production", or "ship it".
+```
+
+These user messages would all trigger it automatically:
+- "deploy to staging"
+- "ship it to production"
+- "push the latest build to staging"
+- "can you release v2.1?"
+
+The Orchestrator loads all skill descriptions (~100 words each) into its context window. When a user message matches, it loads the full SKILL.md body and assembles a team to execute it.
+
 ### Invocation Control
 
 | Setting | User `/command` | Orchestrator auto-trigger |

@@ -214,9 +214,11 @@ ignite-ember mcp remove playwright
 
 | Transport | Use Case | Example |
 |---|---|---|
-| **stdio** | Local processes | `npx @playwright/mcp@latest` |
-| **streamable-http** | Remote APIs (recommended) | `https://api.example.com/mcp` |
-| **sse** | Remote APIs (legacy) | `https://old-api.example.com/sse` |
+| **stdio** | Local processes (fully supported) | `npx @playwright/mcp@latest` |
+| **streamable-http** | Remote APIs (planned) | `https://api.example.com/mcp` |
+| **sse** | Remote APIs (planned) | `https://old-api.example.com/sse` |
+
+> **Note:** Currently only the **stdio** transport is fully implemented. HTTP and SSE transports are defined in the transport layer but not yet wired up end-to-end. Use stdio for all MCP integrations today.
 
 ### Configuration File (.mcp.json)
 

@@ -31,31 +31,30 @@ Claude Code uses a single agent loop — powerful but monolithic. Ember Code tak
 ## Quick Start
 
 ```bash
-brew install ignite-ember
-# or: pip install ignite-ember
-ignite-ember /login       # sign up / log in for hosted models
-ignite-ember
+brew install ignite-ember        # or: pip install ignite-ember
+ignite-ember /login              # sign up for hosted models (MiniMax M2.5)
+ignite-ember                     # start coding
 ```
 
-Or bring your own model:
+Or bring your own model (OpenAI, Anthropic, Groq, Ollama, etc.):
 
 ```bash
-brew install ignite-ember
-# or: pip install ignite-ember
-export MINIMAX_API_KEY=your_key   # or OPENAI_API_KEY, etc.
-ignite-ember
+export OPENAI_API_KEY=sk-...
 ```
 
-From source:
-
-```bash
-git clone https://github.com/ignite-ember/ember-code.git
-cd ember-code
-pip install -e ".[dev]"
-make check               # lint + format + typecheck + test
-ignite-ember /login
-ignite-ember
+```yaml
+# .ember/config.yaml
+models:
+  default: gpt-4o
+  registry:
+    gpt-4o:
+      provider: openai_like
+      model_id: gpt-4o
+      url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
 ```
+
+See [Quickstart](QUICKSTART.md) for the full setup guide.
 
 ## TUI Mode
 

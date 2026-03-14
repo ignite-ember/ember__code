@@ -26,17 +26,39 @@ pip install -e ".[dev]"
 
 ## Authenticate
 
-Ember Code ships with hosted models (MiniMax M2.5) — sign up for a free API key:
+**Option A: Ember Code account (zero-config)**
+
+Sign up for a free API key — all built-in models (MiniMax M2.5) work out of the box:
 
 ```bash
 ignite-ember /login
 ```
 
-Or bring your own model key:
+**Option B: Bring your own model**
+
+Use OpenAI, Anthropic, or any OpenAI-compatible API. Two steps:
+
+1. Set your API key:
 
 ```bash
-export MINIMAX_API_KEY=your_key    # or OPENAI_API_KEY, etc.
+export OPENAI_API_KEY=sk-...
 ```
+
+2. Add the model to `.ember/config.yaml`:
+
+```yaml
+models:
+  default: gpt-4o              # use this model by default
+
+  registry:
+    gpt-4o:
+      provider: openai_like
+      model_id: gpt-4o
+      url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+```
+
+That's it — agents will now use GPT-4o. See [Configuration](docs/CONFIGURATION.md) for more providers (Anthropic, Groq, Ollama, OpenRouter, etc.).
 
 ## First Run
 
@@ -45,7 +67,7 @@ ignite-ember
 ```
 
 On first launch, Ember Code:
-1. Creates default agents in `.ember/agents/` (explorer, architect, planner, editor, simplifier, reviewer, security, qa, debugger, git, conversational)
+1. Creates 11 default agents in `.ember/agents/` — see the [agent list](#agents) below
 2. Asks a few questions about your role and workflow
 3. Proposes project-specific agents based on your codebase
 4. You're ready to work
@@ -96,6 +118,20 @@ ignite-ember
 ```
 
 The TUI launches by default — full terminal UI with streaming responses, session management, token tracking, agent tree visualization, and keyboard shortcuts. Use `--no-tui` to fall back to the plain Rich CLI output.
+
+### Keyboard Shortcuts
+
+| Action | macOS | Linux/Windows |
+|---|---|---|
+| Send message | `Enter` | `Enter` |
+| New line | `⇧Enter` | `Shift+Enter` |
+| Quit | `⌃D` | `Ctrl+D` |
+| Clear screen | `⌃L` | `Ctrl+L` |
+| Expand/collapse all | `⌃O` | `Ctrl+O` |
+| Toggle verbose mode | `⌃V` | `Ctrl+V` |
+| Toggle queue panel | `⌃Q` | `Ctrl+Q` |
+| Input history | `↑/↓` | `Up/Down` |
+| Cancel current operation | `Esc` | `Escape` |
 
 ---
 
@@ -165,14 +201,16 @@ Ember Code loads config from multiple layers (highest priority first):
 
 ### Minimal Config
 
+If you're using an Ember Code account, no config is needed — defaults work out of the box.
+
+For BYOM, the minimum is a model registry entry (see [Authenticate](#authenticate) above). You can also tune permissions:
+
 ```yaml
 # .ember/config.yaml
-models:
-  default: MiniMax-M2.5
-
 permissions:
-  file_write: ask           # ask before writing files
-  shell_execute: ask        # ask before running commands
+  file_write: ask           # ask before writing files (default)
+  shell_execute: ask        # ask before running commands (default)
+  web_search: allow         # enable web search
 ```
 
 ### Project Instructions
@@ -223,11 +261,13 @@ In interactive mode, use `/` commands:
 | `/clear` | Clear conversation and reset session |
 | `/config` | Show current settings |
 | `/agents` | List loaded agents with their tools |
-| `/sessions` | Browse and resume past sessions |
-| `/memory` | List stored memories |
-| `/knowledge` | Show knowledge base status |
+| `/sessions` | Browse and resume past sessions (TUI only) |
+| `/rename` | Rename current session (TUI only) |
+| `/memory` | List stored memories (TUI only) |
+| `/knowledge` | Show knowledge base status (TUI only) |
 | `/knowledge add <url\|path>` | Add content to knowledge base |
 | `/knowledge search <query>` | Search the knowledge base |
+| `/sync-knowledge` | Manually sync knowledge between git and vector DB |
 | `/commit` | Generate a commit (skill) |
 | `/review-pr` | Review a pull request (skill) |
 
@@ -261,6 +301,22 @@ knowledge:
 ```
 
 When `share: true`, knowledge is automatically synced to a YAML file that your team can commit to git. On startup, only new entries are embedded — no redundant work. Use `/sync-knowledge` to manually trigger a sync.
+
+The shared knowledge file (`.ember/knowledge.yaml`) uses this format:
+
+```yaml
+version: 1
+synced_at: "2026-03-14T10:30:00+00:00"
+entries:
+  - id: "a1b2c3d4e5f67890"    # SHA256 content hash (16 chars)
+    content: "API rate limits are 100 req/min per user"
+    source: "docs/api-limits.md"
+    added_at: "2026-03-14T09:00:00+00:00"
+  - id: "f0e1d2c3b4a59876"
+    content: "Deploy to staging before production, always"
+    source: "manual"
+    added_at: "2026-03-14T09:15:00+00:00"
+```
 
 Requires: `pip install ember-code[knowledge]`
 
@@ -330,6 +386,42 @@ You are a specialist for this project.
 ```
 
 The Orchestrator will start including it in teams immediately.
+
+---
+
+## CLI Reference
+
+All flags at a glance:
+
+| Flag | Description |
+|---|---|
+| `--model <name>` | Override the default model |
+| `--verbose` | Show routing decisions and reasoning |
+| `--quiet` | Minimal output |
+| `-m, --message <text>` | Single message mode (non-interactive) |
+| `-p, --pipe` | Pipe mode: read stdin, write stdout |
+| `--resume [id]` | Resume last session (or specific session by ID) |
+| `--no-memory` | Disable persistent memory for this session |
+| `--sandbox` | Sandbox all shell commands |
+| `--read-only` | No file modifications allowed |
+| `--accept-edits` | Auto-approve file edits, ask for shell |
+| `--auto-approve` | Auto-approve everything (use with caution) |
+| `--strict` | Strict mode: ask for everything, sandbox enabled |
+| `--no-tui` | Use plain Rich CLI instead of Textual TUI |
+| `--no-web` | Disable web search/fetch tools |
+| `--no-color` | Disable color output |
+
+---
+
+## Tips
+
+On startup, Ember Code shows contextual tips based on your configuration. For example:
+
+- *Create an `ember.md` in your project root to give agents project-specific context.*
+- *Drop a `.md` file in `.ember/agents/` to create a project-specific agent — no code needed.*
+- *Use `--verbose` to see which agents and team mode the Orchestrator picks.*
+
+Tips adapt to your setup — if you haven't enabled the knowledge base or guardrails, you'll see suggestions for those. If you have Claude Code agents in `.claude/agents/`, you'll see a tip about `cross_tool_support`.
 
 ---
 
