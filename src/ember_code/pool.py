@@ -104,8 +104,13 @@ class AgentParser:
         base_dir: str | None = None,
     ) -> Agent:
         """Build an Agno Agent from an AgentDefinition."""
-        model_name = definition.model or settings.models.default
-        model = ModelRegistry(settings).get_model(model_name)
+        # If the agent hardcodes the built-in default model, honour the
+        # user's configured default instead (so BYOM overrides propagate).
+        BUILTIN_DEFAULT = "MiniMax-M2.5"
+        agent_model = definition.model
+        if not agent_model or agent_model == BUILTIN_DEFAULT:
+            agent_model = settings.models.default
+        model = ModelRegistry(settings).get_model(agent_model)
 
         tools = []
         if definition.tools:

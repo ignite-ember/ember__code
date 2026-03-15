@@ -121,7 +121,7 @@ models:
   custom:
     - name: "claude-sonnet"
       url: "https://api.anthropic.com/v1"
-      api_key_env: "ANTHROPIC_API_KEY"
+      api_key: "sk-ant-..."           # or api_key_env: "ANTHROPIC_API_KEY"
       model_id: "claude-sonnet-4-6"
 ```
 

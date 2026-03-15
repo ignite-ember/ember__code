@@ -29,7 +29,7 @@ class Orchestrator:
             name="orchestrator",
             model=model,
             instructions=[prompt],
-            response_model=TeamPlan,
+            output_schema=TeamPlan,
             markdown=True,
         )
 

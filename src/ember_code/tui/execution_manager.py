@@ -117,7 +117,10 @@ class ExecutionManager:
             # Planning spinner
             spinner = SpinnerWidget(label="Planning")
             await self._conversation.container.mount(spinner)
-            self._conversation.container.scroll_end()
+            # Smart scroll — only if user is at the bottom
+            c = self._conversation.container
+            if c.max_scroll_y - c.scroll_y < 3:
+                c.scroll_end(animate=True)
 
             # Orchestrate
             plan = await self._session.orchestrator.plan(
@@ -154,19 +157,41 @@ class ExecutionManager:
 
             spinner.set_label("Executing")
 
+            # Start real-time status bar tracking
+            self._status.start_run()
+
             # Stream execution
             response_text = ""
-            handler = StreamHandler(self._conversation.container, spinner)
+            handler = StreamHandler(
+                self._conversation.container, spinner, self._status,
+            )
 
             try:
                 response_text = await handler.process_stream(executor, message)
-            except (TypeError, AttributeError, NotImplementedError):
-                # Fallback: non-streaming
-                if hasattr(executor, "arun"):
-                    response = await executor.arun(message)
-                else:
-                    response = executor.run(message)
-                response_text = self._session._extract_response_text(response)
+            except Exception as stream_err:
+                import traceback
+                with open("/tmp/ember_stream_err.log", "a") as f:
+                    f.write(f"Stream error: {stream_err}\n")
+                    traceback.print_exc(file=f)
+                # Fallback: consume the async generator without streaming UI
+                try:
+                    final = None
+                    async for event in executor.arun(message, stream=True):
+                        final = event
+                    if final and hasattr(final, "content") and final.content:
+                        response_text = str(final.content)
+                    elif final and hasattr(final, "messages"):
+                        for msg in reversed(final.messages):
+                            if hasattr(msg, "content") and msg.content:
+                                response_text = str(msg.content)
+                                break
+                    if not response_text:
+                        response_text = f"Error during streaming: {stream_err}"
+                except Exception as fallback_err:
+                    response_text = f"Error getting response: {fallback_err}"
+
+            # Show response if streaming didn't render it
+            if response_text and not handler.has_streamed_content:
                 self._conversation.append_assistant(response_text)
 
             # Remove spinner
@@ -190,26 +215,28 @@ class ExecutionManager:
                 await self._session.persistence.auto_name(executor)
                 self._session.session_named = True
 
-            # Run stats
-            elapsed = time.monotonic() - start_time
+            # Finalize status bar — try to get tokens from handler or executor
             m = handler.metrics
-            self._conversation.append_run_stats(
-                elapsed_seconds=elapsed,
-                input_tokens=m.input_tokens,
-                output_tokens=m.output_tokens,
-                model=self._session.settings.models.default,
-            )
-            self._status.push_token_badge(
-                self._conversation,
-                m.input_tokens,
-                m.output_tokens,
-            )
+            if not m.input_tokens and not m.output_tokens:
+                # Gemini streaming may not emit ModelRequestCompletedEvent;
+                # try to extract from executor's run_response
+                rr = getattr(executor, "run_response", None)
+                if rr:
+                    rm = getattr(rr, "metrics", None)
+                    if rm:
+                        m.accumulate(
+                            getattr(rm, "input_tokens", 0),
+                            getattr(rm, "output_tokens", 0),
+                        )
+            self._status.set_run_tokens(m.input_tokens, m.output_tokens)
+            self._status.add_tokens(m.input_tokens, m.output_tokens)
+            self._status.end_run()
             self._status.update_context_usage()
-            self._status.update_status_bar()
 
         except Exception as e:
             self._conversation.append_error(f"Error: {e}")
             self._cleanup_spinners()
+            self._status.end_run()
         finally:
             self.processing = False
             self.current_task = None

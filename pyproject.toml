@@ -10,7 +10,9 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
-    "agno>=1.0.0",
+    "agno[openai,ddg,sqlite,mcp]>=1.0.0",
+    "aiosqlite>=0.20.0",
+    "greenlet>=3.0.0",
     "rich>=13.0.0",
     "textual>=0.40.0",
     "pyyaml>=6.0",
@@ -31,6 +33,9 @@ mcp = [
 ]
 knowledge = [
     "chromadb>=0.4.0",
+]
+gemini = [
+    "google-genai>=1.0.0",
 ]
 web = [
     "duckduckgo-search>=4.0",

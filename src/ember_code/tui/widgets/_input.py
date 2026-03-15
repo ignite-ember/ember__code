@@ -1,4 +1,43 @@
-"""Input history for Up/Down arrow navigation."""
+"""Input history and prompt widget for Ember Code TUI."""
+
+from textual.message import Message
+from textual.widgets import TextArea
+
+
+class PromptInput(TextArea):
+    """Multiline input: Enter submits, Shift+Enter or \\+Enter inserts a newline.
+
+    Shift+Enter works on terminals that support the kitty keyboard protocol
+    (kitty, WezTerm, Ghostty, iTerm2). On other terminals, type \\ then Enter.
+    Multiline text can also be pasted directly.
+    """
+
+    class Submitted(Message):
+        """Posted when the user presses Enter to submit."""
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+            super().__init__()
+
+    def _on_key(self, event) -> None:
+        if event.key == "enter":
+            row, col = self.cursor_location
+            line = self.document.get_line(row)
+            if col > 0 and line[col - 1] == "\\":
+                # Backslash + Enter = newline
+                event.prevent_default()
+                event.stop()
+                self.action_delete_left()
+                self.insert("\n")
+                return
+            # Plain Enter = submit
+            event.prevent_default()
+            event.stop()
+            text = self.text.strip()
+            if text:
+                self.post_message(self.Submitted(text))
+            return
+        super()._on_key(event)
 
 
 class InputHistory:

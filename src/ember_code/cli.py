@@ -13,7 +13,7 @@ from ember_code import __version__
 @click.option("--verbose", is_flag=True, help="Show routing and reasoning")
 @click.option("--quiet", is_flag=True, help="Minimal output")
 @click.option("-m", "--message", default=None, help="Single message (non-interactive)")
-@click.option("--resume", default=None, is_flag=False, flag_value="last", help="Resume session")
+@click.option("--resume", default=None, required=False, help="Resume session (omit ID for last)")
 @click.option("--no-memory", is_flag=True, help="Disable persistent memory")
 @click.option("--sandbox", is_flag=True, help="Sandbox shell commands")
 @click.option("--read-only", is_flag=True, help="No file modifications")

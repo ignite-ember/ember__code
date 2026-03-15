@@ -1,5 +1,6 @@
 """App chrome widgets: banners, bars, spinner, queue panel."""
 
+from rich.text import Text
 from textual.message import Message
 from textual.reactive import reactive
 from textual.timer import Timer
@@ -8,58 +9,68 @@ from textual.widgets import Static
 
 from ember_code import __version__
 from ember_code.tui.widgets._constants import SPINNER_FRAMES
-from ember_code.tui.widgets._tokens import TokenBadge
+
+_QUIT_KEY = "Ctrl+D"
 
 
 class WelcomeBanner(Static):
-    """Welcome banner shown at startup."""
+    """Welcome banner shown at startup — minimal Claude Code style."""
+
+    DEFAULT_CSS = """
+    WelcomeBanner {
+        padding: 1 0 0 0;
+        margin: 0 0 1 0;
+    }
+    """
 
     def __init__(self):
         banner = (
-            f"[bold blue]Ember Code[/bold blue] v{__version__}\n"
-            "[dim]AI coding assistant powered by Agno[/dim]\n"
-            "[dim]Type a message or /help for commands. Ctrl+D to quit.[/dim]"
+            f"  [bold]Ember Code[/bold] [dim]v{__version__}[/dim]\n"
+            f"  [dim]/help for commands · {_QUIT_KEY} to quit[/dim]"
         )
         super().__init__(banner)
 
 
 class SpinnerWidget(Static):
-    """Animated spinner with token counter and status text."""
+    """Claude Code-style activity indicator.
+
+    Keeps it simple — just a label with animated dots.
+    All token/time stats live in the footer StatusBar.
+    """
 
     DEFAULT_CSS = """
     SpinnerWidget {
         height: 1;
         margin: 0 0 0 2;
-        color: $accent;
     }
     """
 
     def __init__(self, label: str = "Thinking"):
         self._label = label
         self._frame = 0
-        self._tokens = 0
         self._timer: Timer | None = None
-        super().__init__(self._render())
+        super().__init__(self._format())
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(1 / 12, self._tick)
 
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(SPINNER_FRAMES)
-        self.update(self._render())
+        self.update(self._format())
 
-    def _render(self) -> str:
+    def _format(self) -> str:
         frame = SPINNER_FRAMES[self._frame]
-        tokens_str = f"  [dim]{TokenBadge._fmt(self._tokens)} tokens[/dim]" if self._tokens else ""
-        return f"[bold]{frame}[/bold] {self._label}...{tokens_str}"
+        if self._label == "Thinking":
+            return f"[dim]{frame} Thinking...[/dim]"
+        return f"[bold $accent]{frame} {self._label}...[/bold $accent]"
 
     def set_label(self, label: str) -> None:
         self._label = label
-        self.update(self._render())
+        self.update(self._format())
 
     def set_tokens(self, tokens: int) -> None:
-        self._tokens = tokens
-        self.update(self._render())
+        """No-op — tokens are shown in the footer StatusBar."""
+        pass
 
     def stop(self) -> None:
         if self._timer:
@@ -67,47 +78,70 @@ class SpinnerWidget(Static):
             self._timer = None
 
 
-class StatusBar(Static):
-    """Status bar showing session info and cumulative token usage."""
+class StatusBar(Widget):
+    """Status bar showing model, tokens (real-time), elapsed time, and context usage.
 
-    model_name = reactive("MiniMax-M2.5")
-    session_id = reactive("")
-    agent_count = reactive(0)
-    message_count = reactive(0)
-    total_input_tokens = reactive(0)
-    total_output_tokens = reactive(0)
-    context_used_pct = reactive(0)
+    Uses a reactive ``_tick`` counter so Textual re-renders automatically.
+    This avoids the Static.update() clearing issue entirely.
+    """
 
-    def update_status(
-        self,
-        model: str = "",
-        session_id: str = "",
-        agent_count: int = 0,
-        message_count: int = 0,
-    ):
-        if model:
-            self.model_name = model
-        if session_id:
-            self.session_id = session_id
-        if agent_count:
-            self.agent_count = agent_count
-        self.message_count = message_count
-        self._render_status()
+    _tick = reactive(0)
 
-    def add_tokens(
-        self,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-    ):
-        """Accumulate token usage from a response."""
-        self.total_input_tokens += input_tokens
-        self.total_output_tokens += output_tokens
-        self._render_status()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._model_name: str = ""
+        self._run_input: int = 0
+        self._run_output: int = 0
+        self._run_elapsed: float = 0.0
+        self._context_pct: int = 0
+        self._running: bool = False
+        self._run_timer: Timer | None = None
+        self._last_elapsed: float = 0.0
+        self._last_input: int = 0
+        self._last_output: int = 0
+
+    def update_model(self, model: str) -> None:
+        self._model_name = model
+        self._tick += 1
+
+    def add_tokens(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
+        """No-op — kept for API compatibility."""
+        pass
+
+    def set_run_tokens(self, input_tokens: int, output_tokens: int) -> None:
+        self._run_input = input_tokens
+        self._run_output = output_tokens
+        self._tick += 1
 
     def set_context_usage(self, used_pct: int) -> None:
-        """Update context window usage percentage."""
-        self.context_used_pct = used_pct
-        self._render_status()
+        self._context_pct = used_pct
+        self._tick += 1
+
+    def start_run(self) -> None:
+        self._running = True
+        self._run_elapsed = 0.0
+        self._run_input = 0
+        self._run_output = 0
+        if self._run_timer:
+            self._run_timer.stop()
+        self._run_timer = self.set_interval(0.1, self._tick_elapsed)
+        self._tick += 1
+
+    def end_run(self) -> None:
+        self._running = False
+        if self._run_timer:
+            self._run_timer.stop()
+            self._run_timer = None
+        self._last_elapsed = self._run_elapsed
+        self._last_input = self._run_input
+        self._last_output = self._run_output
+        self._tick += 1
+
+    def _tick_elapsed(self) -> None:
+        if not self._running:
+            return
+        self._run_elapsed += 0.1
+        self._tick += 1
 
     @staticmethod
     def _fmt(n: int) -> str:
@@ -117,26 +151,49 @@ class StatusBar(Static):
             return f"{n / 1000:.1f}k"
         return f"{n // 1000}k"
 
-    def _render_status(self) -> None:
-        tokens_str = (
-            f"  |  Tokens: {self._fmt(self.total_input_tokens)}\u2191 "
-            f"{self._fmt(self.total_output_tokens)}\u2193"
-        )
-        context_str = ""
-        if self.context_used_pct > 0:
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes}m {secs}s"
+
+    def render(self) -> Text:
+        """Build the status line. Textual calls this whenever _tick changes."""
+        _ = self._tick  # access reactive to register dependency
+
+        parts = []
+
+        if self._model_name:
+            parts.append(f"[bold]{self._model_name}[/bold]")
+
+        if self._running:
+            elapsed = self._run_elapsed
+            r_in, r_out = self._run_input, self._run_output
+        else:
+            elapsed = self._last_elapsed
+            r_in, r_out = self._last_input, self._last_output
+
+        if elapsed > 0:
+            parts.append(self._fmt_time(elapsed))
+        if r_in or r_out:
+            parts.append(f"{self._fmt(r_in)}\u2191 {self._fmt(r_out)}\u2193 tokens")
+
+        if self._context_pct > 0:
             color = ""
-            if self.context_used_pct >= 80:
+            if self._context_pct >= 80:
                 color = "[red]"
-            elif self.context_used_pct >= 60:
+            elif self._context_pct >= 60:
                 color = "[yellow]"
-            context_str = f"  |  Context: {color}{self.context_used_pct}%{'[/]' if color else ''}"
-        self.update(
-            f" [bold]{self.model_name}[/bold]"
-            f"  |  Session: {self.session_id}"
-            f"  |  Agents: {self.agent_count}"
-            f"  |  Messages: {self.message_count}"
-            f"{tokens_str}{context_str}"
-        )
+            parts.append(f"Context: {color}{self._context_pct}%{'[/]' if color else ''}")
+
+        if not parts:
+            markup = f"[dim]{self._model_name or 'Ready'}[/dim]"
+        else:
+            markup = "[dim]" + "  |  ".join(parts) + "[/dim]"
+
+        return Text.from_markup(markup)
 
 
 class QueuePanel(Widget):
@@ -147,7 +204,6 @@ class QueuePanel(Widget):
         dock: bottom;
         height: auto;
         max-height: 10;
-        background: $surface;
         border-top: solid $accent;
         padding: 0 1;
     }
@@ -277,7 +333,6 @@ class TipBar(Static):
     TipBar {
         dock: bottom;
         height: 1;
-        background: $primary-background-darken-1;
         color: $text-muted;
         padding: 0 1;
     }
@@ -301,7 +356,6 @@ class UpdateBar(Static):
     UpdateBar {
         dock: bottom;
         height: 1;
-        background: $warning 20%;
         color: $warning;
         padding: 0 1;
     }

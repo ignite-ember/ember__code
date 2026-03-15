@@ -91,6 +91,18 @@ class ModelRegistry:
         "openai_like": OpenAILike,
     }
 
+    @classmethod
+    def _load_provider(cls, name: str) -> type | None:
+        """Lazy-load provider classes that require optional dependencies."""
+        if name == "gemini":
+            try:
+                from agno.models.google import Gemini
+                cls.PROVIDERS["gemini"] = Gemini
+                return Gemini
+            except ImportError:
+                return None
+        return None
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.context_windows = ContextWindowResolver()
@@ -112,15 +124,28 @@ class ModelRegistry:
             )
 
         provider_name = entry.get("provider", "openai_like")
-        provider_cls = self.PROVIDERS.get(provider_name)
+        provider_cls = self.PROVIDERS.get(provider_name) or self._load_provider(provider_name)
         if provider_cls is None:
             raise ValueError(
-                f"Unknown provider: '{provider_name}'. Available: {list(self.PROVIDERS.keys())}"
+                f"Unknown provider: '{provider_name}'. Available: {list(self.PROVIDERS.keys())}. "
+                f"For Gemini, install: pip install google-genai"
             )
 
         api_key = self._resolve_api_key(entry)
 
-        kwargs: dict[str, Any] = {"id": entry["model_id"]}
+        # Gemini uses its own SDK — different constructor kwargs
+        if provider_name == "gemini":
+            kwargs: dict[str, Any] = {"id": entry["model_id"]}
+            if api_key:
+                kwargs["api_key"] = api_key
+            if "temperature" in entry:
+                kwargs["temperature"] = entry["temperature"]
+            if "max_tokens" in entry:
+                kwargs["max_tokens"] = entry["max_tokens"]
+            return provider_cls(**kwargs)
+
+        # OpenAI-like providers
+        kwargs = {"id": entry["model_id"]}
 
         if "url" in entry:
             kwargs["api_key"] = api_key or "not-set"
@@ -166,7 +191,9 @@ class ModelRegistry:
 
     @staticmethod
     def _resolve_api_key(entry: dict[str, Any]) -> str | None:
-        """Resolve API key from env var or command."""
+        """Resolve API key: direct value, env var, or command."""
+        if "api_key" in entry:
+            return entry["api_key"]
         if "api_key_env" in entry:
             return os.environ.get(entry["api_key_env"])
         if "api_key_cmd" in entry:

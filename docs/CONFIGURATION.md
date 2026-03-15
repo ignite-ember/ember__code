@@ -77,25 +77,26 @@ Add entries to `models.registry` in your config. These override built-in entries
 # .ember/config.yaml
 models:
   registry:
-    # Override the built-in MiniMax-M2.5 to use your own key directly
-    MiniMax-M2.5:
+    # Direct API key in config (simplest)
+    gemini-2.5-flash:
       provider: openai_like
-      model_id: MiniMax-Text-01
-      url: https://api.minimaxi.chat/v1
-      api_key_env: MINIMAX_API_KEY
+      model_id: gemini-2.5-flash
+      url: https://generativelanguage.googleapis.com/v1beta/openai/
+      api_key: AIzaSy...your_key_here
 
-    # Add new models
+    # Or use an environment variable
     gpt-4o:
       provider: openai_like
       model_id: gpt-4o
       url: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
 
+    # Or use a shell command (e.g., 1Password, vault)
     claude-sonnet:
       provider: openai_like
       model_id: claude-sonnet-4-6
       url: https://api.anthropic.com/v1
-      api_key_env: ANTHROPIC_API_KEY
+      api_key_cmd: "op read op://Dev/anthropic/api-key"
 ```
 
 Now agents can reference `model: gpt-4o` or `model: claude-sonnet` in their `.md` files.
@@ -109,10 +110,13 @@ Works with MiniMax, OpenAI, Anthropic, Groq, Together AI, OpenRouter, Ollama, or
 | `provider` | string | yes | Agno model class to use. `openai_like` for any OpenAI-compatible API |
 | `model_id` | string | yes | Model identifier sent to the API (e.g., `MiniMax-Text-01`, `gpt-4o`) |
 | `url` | string | yes | API base URL |
+| `api_key` | string | no | API key value directly in the config (simplest option) |
 | `api_key_env` | string | no | Environment variable name containing the API key |
-| `api_key_cmd` | string | no | Shell command that outputs the API key (alternative to `api_key_env`) |
+| `api_key_cmd` | string | no | Shell command that outputs the API key (e.g., `op read ...` for 1Password) |
 | `temperature` | float | no | Default temperature for this model |
 | `max_tokens` | int | no | Default max output tokens |
+
+> **API key resolution order:** `api_key` (direct) → `api_key_env` (env var) → `api_key_cmd` (shell command). Only the first one found is used.
 
 ### Comparison with Claude Code
 
@@ -157,34 +161,34 @@ models:
   # the Ember hosted endpoint and are always available.
   # Add entries here to override built-ins or register new models.
   registry:
-    # Example: bypass Ember hosted endpoint, use MiniMax directly
-    # MiniMax-M2.5:
+    # Example: Gemini (direct API key)
+    # gemini-2.5-flash:
     #   provider: openai_like
-    #   model_id: MiniMax-Text-01
-    #   url: https://api.minimaxi.chat/v1
-    #   api_key_env: MINIMAX_API_KEY
+    #   model_id: gemini-2.5-flash
+    #   url: https://generativelanguage.googleapis.com/v1beta/openai/
+    #   api_key: AIzaSy...
 
-    # Example: add OpenAI
+    # Example: OpenAI (env var)
     # gpt-4o:
     #   provider: openai_like
     #   model_id: gpt-4o
     #   url: https://api.openai.com/v1
     #   api_key_env: OPENAI_API_KEY
 
-    # Example: add Anthropic
+    # Example: Anthropic (shell command)
     # claude-sonnet:
     #   provider: openai_like
     #   model_id: claude-sonnet-4-6
     #   url: https://api.anthropic.com/v1
-    #   api_key_env: ANTHROPIC_API_KEY
+    #   api_key_cmd: "op read op://Dev/anthropic/api-key"
 
-    # Example: local Ollama model
+    # Example: local Ollama model (no key needed)
     # local-llama:
     #   provider: openai_like
     #   model_id: llama3.3:70b
     #   url: http://localhost:11434/v1
 
-    # Example: OpenRouter (access to many models)
+    # Example: OpenRouter
     # openrouter-minimax:
     #   provider: openai_like
     #   model_id: minimax/minimax-m2.5

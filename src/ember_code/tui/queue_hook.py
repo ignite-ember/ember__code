@@ -13,7 +13,6 @@ Flow:
 5. Agent incorporates the new context into its next reasoning step
 """
 
-import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -46,28 +45,33 @@ class QueueInjectorHook:
         self._on_queue_changed = on_queue_changed
         self._has_injected: bool = False
 
-    async def __call__(
+    def __call__(
         self,
-        name: str,
-        func: Any,
-        args: dict[str, Any],
-        next_func: Callable,
+        name: str = "",
+        func: Any = None,
+        args: dict[str, Any] | None = None,
         agent: Any = None,
         **kwargs: Any,
     ) -> Any:
-        """Hook entry point — called by Agno around each tool execution."""
-        # ── Step 1: clear previously injected messages ────────────
+        """Hook entry point — called by Agno around each tool execution.
+
+        Agno inspects the hook signature and passes matching parameters:
+        - ``name``: tool name
+        - ``func``: the next function in the chain (must be called)
+        - ``args``: tool arguments dict
+        - ``agent``: the running Agent instance
+        """
+        # Clear previously injected messages
         if agent and self._has_injected:
             agent.additional_input = None
             self._has_injected = False
 
-        # ── Step 2: execute the actual tool ───────────────────────
-        if inspect.iscoroutinefunction(next_func):
-            result = await next_func(**args)
-        else:
-            result = next_func(**args)
+        # Execute the actual tool via the chain
+        if args is None:
+            args = {}
+        result = func(**args) if func else None
 
-        # ── Step 3: inject queued messages ────────────────────────
+        # Inject queued messages so the agent sees them on the next model call
         if self._queue and agent:
             self._inject_messages(agent)
 

@@ -11,13 +11,14 @@ class TokenBadge(Static):
         height: 1;
         margin: 0 0 1 2;
         color: $text-muted;
+
     }
     """
 
     def __init__(self, input_tokens: int, output_tokens: int):
         self._input = input_tokens
         self._output = output_tokens
-        super().__init__(self._render())
+        super().__init__(self._format())
 
     @staticmethod
     def _fmt(n: int) -> str:
@@ -28,7 +29,7 @@ class TokenBadge(Static):
             return f"{n / 1000:.1f}k"
         return f"{n // 1000}k"
 
-    def _render(self) -> str:
+    def _format(self) -> str:
         return f"[dim]in:[/dim] {self._fmt(self._input)}  [dim]out:[/dim] {self._fmt(self._output)}"
 
 
@@ -40,6 +41,7 @@ class RunStatsWidget(Static):
         height: 1;
         margin: 0 0 1 2;
         color: $text-muted;
+
     }
     """
 
@@ -54,7 +56,7 @@ class RunStatsWidget(Static):
         self._input = input_tokens
         self._output = output_tokens
         self._model = model
-        super().__init__(self._render())
+        super().__init__(self._format())
 
     @staticmethod
     def _fmt_time(seconds: float) -> str:
@@ -65,7 +67,7 @@ class RunStatsWidget(Static):
         secs = int(seconds % 60)
         return f"{minutes}m {secs}s"
 
-    def _render(self) -> str:
+    def _format(self) -> str:
         parts = [f"[dim]Time:[/dim] {self._fmt_time(self._elapsed)}"]
         if self._input or self._output:
             parts.append(

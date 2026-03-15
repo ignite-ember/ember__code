@@ -31,7 +31,7 @@ def shortcut_label(key: str) -> str:
 SHORTCUT_HELP = (
     "## Keyboard Shortcuts\n"
     f"- `{shortcut_label('Enter')}` — send message\n"
-    f"- `{shortcut_label('Shift+Enter')}` — new line\n"
+    f"- `\\` + `{shortcut_label('Enter')}` — new line\n"
     f"- `{shortcut_label('Ctrl+D')}` — quit\n"
     f"- `{shortcut_label('Ctrl+L')}` — clear screen\n"
     f"- `{shortcut_label('Ctrl+O')}` — expand/collapse all messages\n"

@@ -81,7 +81,7 @@ class PermissionDialog(Widget):
         width: 60;
         height: auto;
         max-height: 20;
-        background: $surface;
+        background: $surface-darken-1;
         border: heavy $warning;
         padding: 1 2;
     }
@@ -196,7 +196,7 @@ class SessionPickerWidget(Widget):
         width: 80;
         height: auto;
         max-height: 24;
-        background: $surface;
+        background: $surface-darken-1;
         border: heavy $accent;
         padding: 1 2;
     }

@@ -14,7 +14,7 @@ from ember_code.tui.widgets._dialogs import (
     SessionInfo,
     SessionPickerWidget,
 )
-from ember_code.tui.widgets._input import InputHistory
+from ember_code.tui.widgets._input import InputHistory, PromptInput
 from ember_code.tui.widgets._messages import (
     AgentTreeWidget,
     MCPCallWidget,
@@ -28,6 +28,7 @@ from ember_code.tui.widgets._tokens import RunStatsWidget, TokenBadge
 __all__ = [
     "AgentTreeWidget",
     "InputHistory",
+    "PromptInput",
     "MCPCallWidget",
     "MessageWidget",
     "PermissionDialog",

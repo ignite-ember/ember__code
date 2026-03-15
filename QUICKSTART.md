@@ -55,7 +55,7 @@ models:
       provider: openai_like
       model_id: gpt-4o
       url: https://api.openai.com/v1
-      api_key_env: OPENAI_API_KEY
+      api_key: sk-...              # or api_key_env: OPENAI_API_KEY
 ```
 
 That's it — agents will now use GPT-4o. See [Configuration](docs/CONFIGURATION.md) for more providers (Anthropic, Groq, Ollama, OpenRouter, etc.).

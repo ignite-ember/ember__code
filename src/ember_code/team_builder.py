@@ -105,6 +105,10 @@ class AgnoFeatures:
         agent.compress_tool_results = self.compress_tool_results
         agent.enable_session_summaries = self.enable_session_summaries
 
+        # Streaming — must set stream_events so tool/token events are yielded
+        agent.stream = self.stream
+        agent.stream_events = self.stream_events
+
         if self.tool_hooks:
             agent.tool_hooks = self.tool_hooks
 
@@ -153,6 +157,10 @@ class AgnoFeatures:
         # Compression & summaries
         team.compress_tool_results = self.compress_tool_results
         team.enable_session_summaries = self.enable_session_summaries
+
+        # Streaming
+        team.stream = self.stream
+        team.stream_events = self.stream_events
 
         if self.tool_hooks:
             team.tool_hooks = self.tool_hooks

@@ -2,9 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from textual.widgets import TextArea
-
-from ember_code.tui.widgets import SessionInfo, SessionPickerWidget
+from ember_code.tui.widgets import PromptInput, SessionInfo, SessionPickerWidget
 
 if TYPE_CHECKING:
     from ember_code.session import Session
@@ -64,4 +62,4 @@ class SessionManager:
         label = f"{name} ({session_id})" if name else session_id
         self._conversation.append_info(f"Switched to session: {label}")
         self._status.update_status_bar()
-        self._app.query_one("#user-input", TextArea).focus()
+        self._app.query_one("#user-input", PromptInput).focus()

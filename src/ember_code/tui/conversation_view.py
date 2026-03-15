@@ -8,7 +8,6 @@ from ember_code.tui.widgets import (
     MessageWidget,
     RunStatsWidget,
     TokenBadge,
-    WelcomeBanner,
 )
 
 
@@ -25,9 +24,18 @@ class ConversationView:
     def container(self) -> ScrollableContainer:
         return self._container
 
+    def _is_at_bottom(self) -> bool:
+        """Check if the user is scrolled to (or near) the bottom."""
+        return self._container.max_scroll_y - self._container.scroll_y < 3
+
+    def _auto_scroll(self) -> None:
+        """Scroll to bottom only if user is already near the bottom."""
+        if self._is_at_bottom():
+            self._container.scroll_end(animate=True)
+
     def append(self, widget) -> None:
         self._container.mount(widget)
-        self._container.scroll_end()
+        self._auto_scroll()
 
     def append_user(self, text: str) -> None:
         self.append(MessageWidget(text, role="user"))
@@ -68,4 +76,3 @@ class ConversationView:
 
     def clear(self) -> None:
         self._container.remove_children()
-        self._container.mount(WelcomeBanner())

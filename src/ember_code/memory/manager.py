@@ -38,26 +38,15 @@ class StorageManager:
         return None
 
     def create_memory(self) -> Any | None:
-        """Create a user memory backend."""
+        """Create a user memory backend (Agno ``MemoryManager``)."""
         try:
-            from agno.memory.v2.memory import Memory
+            from agno.memory import MemoryManager
 
-            if self.settings.storage.backend == "sqlite":
-                try:
-                    from agno.memory.v2.db.sqlite import SqliteMemoryDb
-
-                    db_path = Path(self.settings.storage.memory_db).expanduser()
-                    db_path.parent.mkdir(parents=True, exist_ok=True)
-                    return Memory(
-                        db=SqliteMemoryDb(
-                            table_name="ember_memory",
-                            db_file=str(db_path),
-                        ),
-                    )
-                except ImportError:
-                    pass
+            db = self.create_db()
+            if db is not None:
+                return MemoryManager(db=db)
         except ImportError:
-            pass
+            logger.debug("agno.memory.MemoryManager not available")
         return None
 
     def _create_sqlite_db(self) -> Any | None:

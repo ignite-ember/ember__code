@@ -1,6 +1,7 @@
 """Conversation content widgets: messages, tool calls, MCP calls, agent tree."""
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown, Static, Tree
@@ -23,30 +24,40 @@ class MessageWidget(Widget):
         padding: 0;
     }
 
+    MessageWidget .message-row {
+        height: auto;
+        width: 100%;
+    }
+
     MessageWidget .role-label {
+        width: 2;
+        height: auto;
         text-style: bold;
-        margin-bottom: 0;
     }
 
     MessageWidget .role-user {
-        color: $accent;
+        color: ansi_bright_blue;
     }
 
     MessageWidget .role-assistant {
-        color: $success;
+        color: ansi_yellow;
+    }
+
+    MessageWidget .message-body {
+        width: 1fr;
+        height: auto;
     }
 
     MessageWidget .message-content {
-        padding: 0 0 0 2;
+        padding: 0;
     }
 
     MessageWidget .message-content-full {
-        padding: 0 0 0 2;
+        padding: 0;
         display: none;
     }
 
     MessageWidget .show-more {
-        padding: 0 0 0 2;
         color: $accent;
         text-style: italic;
     }
@@ -73,30 +84,32 @@ class MessageWidget(Widget):
         self._is_long = len(content.splitlines()) > self.TRUNCATE_LINES
 
     def compose(self) -> ComposeResult:
-        role_display = "You" if self._role == "user" else "Ember"
+        role_display = "> " if self._role == "user" else "● "
         role_class = f"role-{self._role}"
-        yield Static(f"[bold]{role_display}[/bold]", classes=f"role-label {role_class}")
 
-        if not self._is_long:
-            if self._role == "assistant":
-                yield Markdown(self._content, classes="message-content")
-            else:
-                yield Static(self._content, classes="message-content")
-        else:
-            truncated = "\n".join(self._content.splitlines()[: self.TRUNCATE_LINES])
+        with Horizontal(classes="message-row"):
+            yield Static(f"[bold]{role_display}[/bold]", classes=f"role-label {role_class}")
+            with Vertical(classes="message-body"):
+                if not self._is_long:
+                    if self._role == "assistant":
+                        yield Markdown(self._content, classes="message-content")
+                    else:
+                        yield Static(self._content, classes="message-content")
+                else:
+                    truncated = "\n".join(self._content.splitlines()[: self.TRUNCATE_LINES])
 
-            if self._role == "assistant":
-                yield Markdown(truncated, classes="message-content")
-                yield Markdown(self._content, classes="message-content-full")
-            else:
-                yield Static(truncated, classes="message-content")
-                yield Static(self._content, classes="message-content-full")
+                    if self._role == "assistant":
+                        yield Markdown(truncated, classes="message-content")
+                        yield Markdown(self._content, classes="message-content-full")
+                    else:
+                        yield Static(truncated, classes="message-content")
+                        yield Static(self._content, classes="message-content-full")
 
-            lines_hidden = len(self._content.splitlines()) - self.TRUNCATE_LINES
-            yield Static(
-                f"[dim italic]... {lines_hidden} more lines — click to expand[/dim italic]",
-                classes="show-more",
-            )
+                    lines_hidden = len(self._content.splitlines()) - self.TRUNCATE_LINES
+                    yield Static(
+                        f"[dim italic]... {lines_hidden} more lines — click to expand[/dim italic]",
+                        classes="show-more",
+                    )
 
     def on_click(self) -> None:
         if self._is_long:
@@ -121,14 +134,22 @@ class StreamingMessageWidget(Widget):
         padding: 0;
     }
 
+    StreamingMessageWidget .message-row {
+        height: auto;
+        width: 100%;
+    }
+
     StreamingMessageWidget .role-label {
+        width: 2;
+        height: auto;
         text-style: bold;
-        color: $success;
-        margin-bottom: 0;
+        color: ansi_yellow;
     }
 
     StreamingMessageWidget .stream-content {
-        padding: 0 0 0 2;
+        width: 1fr;
+        height: auto;
+        padding: 0;
     }
     """
 
@@ -137,8 +158,9 @@ class StreamingMessageWidget(Widget):
         self._chunks: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("[bold]Ember[/bold]", classes="role-label")
-        yield Markdown("", classes="stream-content")
+        with Horizontal(classes="message-row"):
+            yield Static("[bold]● [/bold]", classes="role-label")
+            yield Markdown("", classes="stream-content")
 
     @property
     def text(self) -> str:
@@ -165,6 +187,7 @@ class ToolCallWidget(Widget):
     ToolCallWidget {
         height: auto;
         margin: 0 2;
+
     }
 
     ToolCallWidget .tool-header {
@@ -204,13 +227,17 @@ class ToolCallWidget(Widget):
 
 
 class ToolCallLiveWidget(Static):
-    """Compact inline display for a tool call in progress or completed."""
+    """Claude Code-style tool call display.
+
+    Running:  ``● Read(file.py)``
+    Done:     ``● Read(file.py)``
+              ``└ Read 46 lines (ctrl+o to expand)``
+    """
 
     DEFAULT_CSS = """
     ToolCallLiveWidget {
         height: auto;
-        margin: 0 2;
-        color: $warning;
+        margin: 0 0 0 2;
     }
     """
 
@@ -218,18 +245,26 @@ class ToolCallLiveWidget(Static):
         self._tool_name = tool_name
         self._args_summary = args_summary
         self._status = status
-        display = self._render()
+        self._result_summary = ""
+        display = self._format()
         super().__init__(display)
 
-    def _render(self) -> str:
-        icon = "⏳" if self._status == "running" else "✓"
-        style = "dim" if self._status == "done" else "bold"
-        args = f" {self._args_summary}" if self._args_summary else ""
-        return f"[{style}]{icon} {self._tool_name}{args}[/{style}]"
+    def _format(self) -> str:
+        args = f"({self._args_summary})" if self._args_summary else ""
+        if self._status == "running":
+            line1 = f"[bold $accent]● {self._tool_name}{args}[/bold $accent]"
+            return line1
+        # Done
+        line1 = f"[green]●[/green] [bold]{self._tool_name}{args}[/bold]"
+        if self._result_summary:
+            line2 = f"\n  [dim]└ {self._result_summary} (ctrl+o to expand)[/dim]"
+            return line1 + line2
+        return line1
 
-    def mark_done(self) -> None:
+    def mark_done(self, result_summary: str = "") -> None:
         self._status = "done"
-        self.update(self._render())
+        self._result_summary = result_summary
+        self.update(self._format())
 
 
 class MCPCallWidget(Widget):
@@ -239,6 +274,7 @@ class MCPCallWidget(Widget):
     MCPCallWidget {
         height: auto;
         margin: 0 2;
+
     }
 
     MCPCallWidget .mcp-header {
@@ -294,6 +330,7 @@ class AgentTreeWidget(Widget):
         max-height: 12;
         margin: 0 2 1 2;
         padding: 0;
+
     }
 
     AgentTreeWidget .tree-header {

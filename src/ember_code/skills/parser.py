@@ -41,6 +41,13 @@ class SkillDefinition(BaseModel):
         return text
 
 
+def _as_str(value: object) -> str:
+    """Coerce a value to string (YAML parses ``[hint]`` as a list)."""
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value)
+    return str(value) if value else ""
+
+
 class SkillParser:
     """Parses skill definitions from SKILL.md files."""
 
@@ -73,7 +80,7 @@ class SkillParser:
             name=fm.get("name", path.parent.name),
             description=fm.get("description", ""),
             version=fm.get("version", "0.1.0"),
-            argument_hint=fm.get("argument-hint", fm.get("argument_hint", "")),
+            argument_hint=_as_str(fm.get("argument-hint", fm.get("argument_hint", ""))),
             allowed_tools=tools,
             model=fm.get("model"),
             context=fm.get("context", "inline"),

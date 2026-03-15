@@ -51,7 +51,9 @@ models:
       provider: openai_like
       model_id: gpt-4o
       url: https://api.openai.com/v1
-      api_key_env: OPENAI_API_KEY
+      api_key: sk-...              # direct key in config
+      # api_key_env: OPENAI_API_KEY  # or from env var
+      # api_key_cmd: "op read ..."   # or from shell command
 ```
 
 See [Quickstart](QUICKSTART.md) for the full setup guide.
