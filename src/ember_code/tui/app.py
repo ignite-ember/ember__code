@@ -25,7 +25,7 @@ from ember_code.tui.command_handler import CommandHandler, CommandResult
 from ember_code.tui.conversation_view import ConversationView
 from ember_code.tui.execution_manager import ExecutionManager
 from ember_code.tui.hitl_handler import HITLHandler
-from ember_code.tui.input_handler import InputHandler
+from ember_code.tui.input_handler import InputHandler, shortcut_label
 from ember_code.tui.session_manager import SessionManager
 from ember_code.tui.status_tracker import StatusTracker
 from ember_code.tui.widgets import (
@@ -81,8 +81,6 @@ class EmberApp(App):
     #welcome-box {
         height: auto;
         width: 1fr;
-        padding: 1 2;
-        border: round ansi_yellow;
         text-align: center;
         margin: 0 4;
     }
@@ -96,6 +94,7 @@ class EmberApp(App):
 
     #footer {
         dock: bottom;
+        min-height: 4;
         height: auto;
         width: 100%;
     }
@@ -115,7 +114,7 @@ class EmberApp(App):
 
     #user-input {
         width: 1fr;
-        height: auto;
+        height: auto !important;
         min-height: 1;
         max-height: 8;
         border: none !important;
@@ -136,9 +135,11 @@ class EmberApp(App):
 
     #status-bar {
         height: 1;
+        min-height: 1;
         width: 100%;
-        color: $text-muted;
+        content-align: center middle;
         text-align: center;
+        color: $text-muted;
     }
 
     #tip-bar {
@@ -229,13 +230,12 @@ class EmberApp(App):
             except Exception:
                 return ""
 
-    def _build_welcome_banner(self) -> str:
-        """Build a centered welcome banner like Claude Code."""
+    def _build_welcome_banner(self, width: int | None = None) -> str:
+        """Build a centered welcome banner with text-based border."""
         name = self._get_full_name()
         model = self.settings.models.default
         cwd = os.getcwd().replace(os.path.expanduser("~"), "~")
 
-        # Ember logo (small flame-inspired)
         logo_lines = [
             "▐▛███▜▌",
             "▝▜█████▛▘",
@@ -244,15 +244,57 @@ class EmberApp(App):
 
         greeting = f"[bold]Welcome back {name}![/bold]" if name else "[bold]Welcome![/bold]"
 
-        lines = ["", greeting, ""]
-        for l in logo_lines:
-            lines.append(f"[bold ansi_bright_red]{l}[/bold ansi_bright_red]")
-        lines += [
-            "",
-            f"[bold]{model}[/bold]  [dim]·[/dim]  [dim]{cwd}[/dim]",
-            "",
+        # Use provided width, or query the welcome-box widget, or fall back
+        if width is None:
+            try:
+                width = os.get_terminal_size().columns
+            except OSError:
+                width = 80
+        # #conversation padding=1 2 (4h) + #welcome-box margin=0 4 (8h) + scrollbar(1)
+        box_width = max(30, width - 13)
+        inner = box_width - 2  # space inside the border
+
+        # Build box with Unicode round corners
+        top = f"[ansi_yellow]╭{'─' * inner}╮[/ansi_yellow]"
+        bot = f"[ansi_yellow]╰{'─' * inner}╯[/ansi_yellow]"
+        empty = f"[ansi_yellow]│[/ansi_yellow]{' ' * inner}[ansi_yellow]│[/ansi_yellow]"
+
+        def visible_len(markup_text: str) -> int:
+            """Get the visible (non-markup) length of a Rich markup string."""
+            from rich.text import Text as RichText
+            return len(RichText.from_markup(markup_text).plain)
+
+        def center_line(text: str) -> str:
+            """Center text inside the box borders, truncating if too wide."""
+            vlen = visible_len(text)
+            if vlen > inner - 2:
+                # Truncate the plain text portion to fit
+                from rich.text import Text as RichText
+                rt = RichText.from_markup(text)
+                rt.truncate(inner - 4)
+                text = rt.markup + "…"
+                vlen = visible_len(text)
+            pad = max(0, inner - vlen)
+            left = pad // 2
+            right = pad - left
+            return f"[ansi_yellow]│[/ansi_yellow]{' ' * left}{text}{' ' * right}[ansi_yellow]│[/ansi_yellow]"
+
+        content_lines = [
+            empty,
+            center_line(greeting),
+            empty,
         ]
-        return "\n".join(lines)
+        for l in logo_lines:
+            colored = f"[bold ansi_bright_red]{l}[/bold ansi_bright_red]"
+            content_lines.append(center_line(colored))
+        info = f"[bold]{model}[/bold]  [dim]·[/dim]  [dim]{cwd}[/dim]"
+        content_lines += [
+            empty,
+            center_line(info),
+            empty,
+        ]
+
+        return "\n".join([top] + content_lines + [bot])
 
     @staticmethod
     def _build_capabilities_text() -> str:
@@ -272,7 +314,7 @@ class EmberApp(App):
         return "\n".join(lines)
 
     def compose(self) -> ComposeResult:
-        _quit_key = "Ctrl+D"
+        _quit_key = shortcut_label("Ctrl+D")
         yield Static(
             f" [bold]Ember Code[/bold] [dim]v{__version__}[/dim]"
             f"    [dim]/help for commands · {_quit_key} to quit[/dim]",
@@ -531,12 +573,28 @@ class EmberApp(App):
             pass  # never break the app for an update check
 
     async def on_resize(self, event: Resize) -> None:
-        """Refresh the welcome box on terminal resize."""
+        """Rebuild the welcome box on resize and force full repaint."""
         try:
-            welcome = self.query_one("#welcome-box", Static)
-            welcome.update(self._build_welcome_banner())
+            old_box = self.query_one("#welcome-box", Static)
         except NoMatches:
-            pass
+            return
+
+        # Use the event's width for accurate box sizing
+        new_content = self._build_welcome_banner(width=event.size.width)
+        await old_box.remove()
+
+        # Re-mount before the capabilities widget (or at start of container)
+        container = self.query_one("#conversation", ScrollableContainer)
+        try:
+            caps = self.query_one("#capabilities", Static)
+            new_box = Static(new_content, id="welcome-box")
+            await container.mount(new_box, before=caps)
+        except NoMatches:
+            new_box = Static(new_content, id="welcome-box")
+            await container.mount(new_box, before=0)
+
+        # Force full repaint of the screen
+        self.screen.refresh(layout=True)
 
     def action_cancel(self) -> None:
         self._execution.cancel()

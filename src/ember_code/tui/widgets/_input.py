@@ -5,11 +5,21 @@ from textual.widgets import TextArea
 
 
 class PromptInput(TextArea):
-    """Multiline input: Enter submits, Shift+Enter or \\+Enter inserts a newline.
+    """Multiline input: Enter submits, \\+Enter inserts a newline.
 
-    Shift+Enter works on terminals that support the kitty keyboard protocol
-    (kitty, WezTerm, Ghostty, iTerm2). On other terminals, type \\ then Enter.
     Multiline text can also be pasted directly.
+    """
+
+    DEFAULT_CSS = """
+    PromptInput {
+        height: auto;
+        min-height: 1;
+        max-height: 8;
+        border: none;
+    }
+    PromptInput:focus {
+        border: none;
+    }
     """
 
     class Submitted(Message):
