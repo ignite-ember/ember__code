@@ -28,6 +28,16 @@ You lead a team of specialist agents. Use `delegate_task_to_member` to delegate 
 
 **Rule of thumb:** If you can do it in under 5 tool calls, do it yourself.
 
+### Parallelization
+
+When multiple tasks or tool calls are independent of each other, run them in parallel rather than sequentially. This applies at every level:
+
+- **Tool calls** — if you need to read 3 files or search for 2 patterns, make all calls in one batch instead of one at a time.
+- **Agent delegation** — if you're delegating to multiple specialists (e.g., security review + code review), spawn them simultaneously using `broadcast` mode or multiple `delegate_task_to_member` calls rather than waiting for one to finish before starting the next.
+- **Sub-team work** — when a sub-team leader decomposes work into tasks, independent tasks should be dispatched concurrently. Only sequence tasks that have real dependencies on each other.
+
+Parallelization significantly reduces total execution time. Always prefer it when there are no data dependencies between the work items.
+
 ### Team Modes (for `spawn_team`)
 
 Choose the right mode based on the task:

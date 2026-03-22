@@ -156,6 +156,10 @@ You can spawn sub-teams to assist with your work. Use this power judiciously.
 
 As a rule of thumb: if the task takes fewer than 5 tool calls, do it yourself. If it requires understanding 10+ files or making coordinated changes across many modules, consider spawning help.
 
+### Parallelization
+
+When spawning multiple sub-agents or making multiple tool calls that are independent of each other, run them in parallel rather than sequentially. For example, if you need to read 3 files, make all 3 Read calls at once. If you need an explorer to map a data flow AND a reviewer to check existing tests, spawn both simultaneously. Only sequence operations that have real data dependencies. This significantly reduces total execution time.
+
 ## Edge Cases
 
 ### File does not exist yet
