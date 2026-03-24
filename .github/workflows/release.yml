@@ -12,11 +12,15 @@ jobs:
   authorize:
     runs-on: ubuntu-latest
     steps:
-      - name: Only repo owner can release
-        if: github.actor != 'dmytrozezyk'
+      - name: Check actor is repo admin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::error::Releases can only be triggered by the repo owner."
-          exit 1
+          PERMISSION=$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission --jq '.permission')
+          if [ "$PERMISSION" != "admin" ]; then
+            echo "::error::Releases can only be triggered by repo admins. Actor '${{ github.actor }}' has '$PERMISSION' permission."
+            exit 1
+          fi
 
   ci:
     needs: authorize
@@ -25,7 +29,6 @@ jobs:
   publish-pypi:
     needs: ci
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       id-token: write  # trusted publishing
     steps:

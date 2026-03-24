@@ -6,7 +6,7 @@
 # Protections applied:
 #   1. Main branch: require PR with review, block force push & deletion
 #   2. All branches: block deletion
-#   3. Release tags: only owner can create
+#   3. Release tags: only repo admins can create
 #
 # Usage: bash .github/setup-repo-rules.sh
 
