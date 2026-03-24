@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only repo owner can release
+        if: github.actor != 'dmytrozezyk'
+        run: |
+          echo "::error::Releases can only be triggered by the repo owner."
+          exit 1
+
+  ci:
+    needs: authorize
+    uses: ./.github/workflows/ci.yml
+
+  publish-pypi:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
+          TAG=${GITHUB_REF#refs/tags/}
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$TAG" ]; then
+            echo "body=Initial release" >> "$GITHUB_OUTPUT"
+          else
+            NOTES=$(git log --pretty=format:"- %s" "$PREV_TAG".."$TAG" -- | head -50)
+            # Write multiline output
+            {
+              echo "body<<RELEASE_EOF"
+              echo "$NOTES"
+              echo "RELEASE_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ${{ steps.notes.outputs.body }}
+
+            ## Install
+
+            ```bash
+            pip install ember-code==${{ github.ref_name }}
+            ```
+
+  update-homebrew:
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for PyPI propagation
+        run: sleep 30
+
+      - name: Get tag version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download sdist and compute SHA
+        id: sha
+        run: |
+          # Wait for PyPI to serve the file
+          for i in 1 2 3 4 5; do
+            URL="https://files.pythonhosted.org/packages/source/e/ember-code/ember_code-${{ steps.version.outputs.version }}.tar.gz"
+            if curl -fsSL -o sdist.tar.gz "$URL" 2>/dev/null; then
+              break
+            fi
+            sleep 15
+          done
+          SHA=$(sha256sum sdist.tar.gz | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: ignite-ember/homebrew-tap
+          event-type: update-formula
+          client-payload: |
+            {
+              "formula": "ember-code",
+              "version": "${{ steps.version.outputs.version }}",
+              "sha256": "${{ steps.sha.outputs.sha256 }}"
+            }
