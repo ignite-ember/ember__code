@@ -5,10 +5,13 @@ and surface the most relevant suggestion.  This makes tips feel like a
 helpful nudge rather than noise.
 """
 
+import logging
 import random
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ember_code.config.settings import Settings
@@ -56,11 +59,6 @@ def _web_denied(settings: "Settings", _p: Path) -> bool:
     return settings.permissions.web_search == "deny"
 
 
-def _cross_tool_off(settings: "Settings", _p: Path) -> bool:
-    claude_dir = Path.cwd() / ".claude" / "agents"
-    return not settings.agents.cross_tool_support and claude_dir.exists()
-
-
 CONTEXTUAL_TIPS: list[tuple[Callable, str]] = [
     (
         _no_ember_md,
@@ -93,10 +91,6 @@ CONTEXTUAL_TIPS: list[tuple[Callable, str]] = [
     (
         _web_denied,
         'Install ember-code[web] and set "web_search: allow" to let agents search the web.',
-    ),
-    (
-        _cross_tool_off,
-        "Found .claude/agents/ — set cross_tool_support: true to reuse your Claude Code agents.",
     ),
 ]
 
@@ -133,7 +127,8 @@ def get_tip(settings: "Settings | None" = None, project_dir: Path | None = None)
         try:
             if condition(settings, project_dir):
                 matching.append(message)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Tip condition check failed: %s", exc)
             continue
 
     if matching:

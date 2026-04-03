@@ -1,5 +1,6 @@
 """Session knowledge operations — add, search, sync, and status."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from ember_code.knowledge.models import (
     KnowledgeSyncResult,
 )
 from ember_code.knowledge.sync import KnowledgeSyncer
+
+logger = logging.getLogger(__name__)
 
 
 class SessionKnowledgeManager:
@@ -79,33 +82,110 @@ class SessionKnowledgeManager:
         query: str,
         limit: int = 5,
         filters: KnowledgeFilter | None = None,
+        cross_project: bool = True,
     ) -> KnowledgeSearchResponse:
-        """Search the knowledge base with optional metadata filters."""
+        """Search the knowledge base with optional metadata filters.
+
+        By default, searches across all project collections in the shared
+        ChromaDB instance. Set ``cross_project=False`` to search only the
+        current project's collection.
+        """
         if self.knowledge is None:
             return KnowledgeSearchResponse(query=query)
         try:
             chroma_filters = filters.where if filters and filters.where else None
-            docs = await self.knowledge.asearch(
-                query=query,
-                limit=limit,
-                filters=chroma_filters,
-            )
-            results = [
-                KnowledgeSearchResult(
-                    content=d.content[:200] if d.content else "",
-                    name=d.name or "",
-                    score=d.reranking_score,
-                    metadata={k: str(v) for k, v in (d.meta_data or {}).items()},
-                )
-                for d in docs
-            ]
+
+            if cross_project:
+                results = await self._search_all_collections(query, limit, chroma_filters)
+            else:
+                results = await self._search_single(query, limit, chroma_filters)
+
             return KnowledgeSearchResponse(
                 query=query,
                 results=results,
                 total=len(results),
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("Knowledge search failed: %s", exc)
             return KnowledgeSearchResponse(query=query)
+
+    async def _search_single(
+        self, query: str, limit: int, filters: dict | None
+    ) -> list[KnowledgeSearchResult]:
+        """Search the current project's collection only."""
+        docs = await self.knowledge.asearch(
+            query=query,
+            max_results=limit,
+            filters=filters,
+        )
+        return [
+            KnowledgeSearchResult(
+                content=d.content[:200] if d.content else "",
+                name=d.name or "",
+                score=d.reranking_score,
+                metadata={k: str(v) for k, v in (d.meta_data or {}).items()},
+            )
+            for d in docs
+        ]
+
+    async def _search_all_collections(
+        self, query: str, limit: int, filters: dict | None
+    ) -> list[KnowledgeSearchResult]:
+        """Search all ember_knowledge_* collections in the shared ChromaDB."""
+        try:
+            client = self.knowledge.vector_db.client
+            collections = client.list_collections()
+        except Exception:
+            logger.debug("Could not list collections — falling back to single search")
+            return await self._search_single(query, limit, filters)
+
+        base_name = self.settings.knowledge.collection_name
+        matching = [c for c in collections if c.name.startswith(f"{base_name}_")]
+
+        if not matching:
+            return await self._search_single(query, limit, filters)
+
+        all_results: list[KnowledgeSearchResult] = []
+        embedder = self.knowledge.vector_db.embedder
+
+        for collection in matching:
+            try:
+                # Get embedding for query
+                embedding = embedder.get_embedding(query)
+                if not embedding:
+                    continue
+
+                raw = collection.query(
+                    query_embeddings=[embedding],
+                    n_results=limit,
+                    include=["documents", "metadatas", "distances"],
+                )
+                if not raw or not raw.get("ids") or not raw["ids"][0]:
+                    continue
+
+                for i, _doc_id in enumerate(raw["ids"][0]):
+                    content = raw["documents"][0][i] if raw.get("documents") else ""
+                    meta = raw["metadatas"][0][i] if raw.get("metadatas") else {}
+                    distance = raw["distances"][0][i] if raw.get("distances") else None
+                    score = 1.0 - distance if distance is not None else None
+                    all_results.append(
+                        KnowledgeSearchResult(
+                            content=(content or "")[:200],
+                            name=(meta or {}).get("name", collection.name),
+                            score=score,
+                            metadata={
+                                **{k: str(v) for k, v in (meta or {}).items()},
+                                "collection": collection.name,
+                            },
+                        )
+                    )
+            except Exception:
+                logger.debug("Search failed for collection %s", collection.name, exc_info=True)
+                continue
+
+        # Sort by score (highest first) and trim to limit
+        all_results.sort(key=lambda r: r.score or 0, reverse=True)
+        return all_results[:limit]
 
     async def sync_from_file(self) -> KnowledgeSyncResult:
         """Sync knowledge file -> ChromaDB."""

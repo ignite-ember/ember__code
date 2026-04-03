@@ -1,7 +1,6 @@
 """Live task progress widget — shows task list during tasks-mode execution."""
 
 from pydantic import BaseModel, Field
-
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -64,7 +63,10 @@ class TaskProgressWidget(Widget):
     def on_task_created(self, task_id: str, title: str, assignee: str | None, status: str) -> None:
         """Called when a new task is created."""
         self._tasks[task_id] = TaskItem(
-            id=task_id, title=title, status=status, assignee=assignee,
+            id=task_id,
+            title=title,
+            status=status,
+            assignee=assignee,
         )
         self._rebuild()
 
@@ -87,7 +89,11 @@ class TaskProgressWidget(Widget):
             assignee = getattr(t, "assignee", None)
             deps = getattr(t, "dependencies", []) or []
             self._tasks[tid] = TaskItem(
-                id=tid, title=title, status=status, assignee=assignee, dependencies=deps,
+                id=tid,
+                title=title,
+                status=status,
+                assignee=assignee,
+                dependencies=deps,
             )
         self._rebuild()
 

@@ -1,11 +1,15 @@
 """Task panel widget — shows scheduled/background tasks and their status."""
 
+import logging
+
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
 from ember_code.scheduler.models import ScheduledTask, TaskStatus
+
+logger = logging.getLogger(__name__)
 
 _STATUS_ICONS = {
     TaskStatus.pending: "[dim]⏳[/dim]",
@@ -121,13 +125,13 @@ class TaskPanel(Widget):
         try:
             old_w = self.query_one(f"#task-{old}", Static)
             old_w.remove_class("-selected")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to deselect task item #task-%d: %s", old, exc)
         try:
             new_w = self.query_one(f"#task-{new}", Static)
             new_w.add_class("-selected")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to select task item #task-%d: %s", new, exc)
 
     def on_key(self, event) -> None:
         if not self._tasks:

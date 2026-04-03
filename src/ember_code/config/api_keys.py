@@ -5,6 +5,7 @@ so that ``ModelRegistry`` and ``EmbedderRegistry`` don't duplicate it.
 """
 
 import os
+import shlex
 import subprocess
 from typing import Any
 
@@ -26,7 +27,7 @@ def resolve_api_key(entry: dict[str, Any]) -> str | None:
         if key:
             return key
     if "api_key_cmd" in entry:
-        result = subprocess.run(entry["api_key_cmd"], shell=True, capture_output=True, text=True)
+        result = subprocess.run(shlex.split(entry["api_key_cmd"]), capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     return None

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class VectorStoreAdapter:
-    """Read-only adapter for querying entry IDs and full entries from ChromaDB.
+    """Adapter for querying, adding, and deleting entries in ChromaDB.
 
     Wraps the Agno ``ChromaDb`` object so callers never touch
     ``vector_db._collection`` directly.
@@ -76,3 +76,15 @@ class VectorStoreAdapter:
         except Exception:
             logger.debug("Could not read vector DB entries")
             return []
+
+    def delete(self, ids: list[str]) -> int:
+        """Delete documents by ID. Returns the number of IDs requested for deletion."""
+        collection = self._get_collection()
+        if collection is None:
+            return 0
+        try:
+            collection.delete(ids=ids)
+            return len(ids)
+        except Exception:
+            logger.debug("Could not delete vector DB entries")
+            return 0

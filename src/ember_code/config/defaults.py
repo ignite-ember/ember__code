@@ -11,7 +11,6 @@ DEFAULT_CONFIG = {
                 "provider": "openai_like",
                 "model_id": "MiniMax-Text-01",
                 "url": "https://api.ignite-ember.sh/v1",
-                "api_key_env": "EMBER_API_KEY",
                 "context_window": 204_800,
             },
         },
@@ -21,8 +20,8 @@ DEFAULT_CONFIG = {
         "file_write": "ask",
         "shell_execute": "ask",
         "shell_restricted": "allow",
-        "web_search": "deny",
-        "web_fetch": "deny",
+        "web_search": "allow",
+        "web_fetch": "allow",
         "git_push": "ask",
         "git_destructive": "ask",
     },
@@ -46,6 +45,10 @@ DEFAULT_CONFIG = {
             "git push --force",
             "npm publish",
             "pip install",
+            "docker run",
+            "terraform apply",
+            "kubectl apply",
+            "kubectl delete",
         ],
     },
     "storage": {
@@ -55,9 +58,14 @@ DEFAULT_CONFIG = {
         "audit_log": "~/.ember/audit.log",
         "max_history_runs": 10,
     },
+    "rules": {
+        "cross_tool_support": True,
+    },
+    "hooks": {
+        "cross_tool_support": True,
+    },
     "context": {
         "project_file": "ember.md",
-        "auto_load": ["ember.md", ".ember/config.yaml"],
         "ignore_patterns": [
             "node_modules/",
             ".git/",
@@ -102,7 +110,6 @@ DEFAULT_CONFIG = {
                 "provider": "openai_compatible",
                 "model_id": "text2vec-transformers",
                 "url": "https://api.ignite-ember.sh",
-                "api_key_env": "EMBER_API_KEY",
                 "dimensions": 384,
             },
         },
@@ -115,10 +122,10 @@ DEFAULT_CONFIG = {
         "embedder": "ember",
     },
     "agents": {
-        "cross_tool_support": False,
+        "cross_tool_support": True,
     },
     "skills": {
-        "cross_tool_support": False,
+        "cross_tool_support": True,
         "auto_trigger": True,
     },
     "scheduler": {

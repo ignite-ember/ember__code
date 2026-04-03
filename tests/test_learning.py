@@ -1,0 +1,66 @@
+"""Tests for learning integration — LearningMachine creation from config."""
+
+from ember_code.config.settings import Settings
+from ember_code.learn import create_learning_machine
+
+
+class TestCreateLearningMachine:
+    def test_disabled_returns_none(self):
+        """When learning.enabled is False, returns None."""
+        s = Settings()
+        assert s.learning.enabled is False
+        assert create_learning_machine(s) is None
+
+    def test_enabled_no_db_returns_none(self):
+        """When learning is enabled but no db, returns None."""
+        s = Settings()
+        s.learning.enabled = True
+        assert create_learning_machine(s, db=None) is None
+
+    def test_enabled_with_db(self):
+        """When learning is enabled with a db, returns a LearningMachine."""
+        from agno.db.sqlite import AsyncSqliteDb
+
+        s = Settings()
+        s.learning.enabled = True
+        db = AsyncSqliteDb(db_file=":memory:", session_table="test")
+        lm = create_learning_machine(s, db=db)
+        assert lm is not None
+
+    def test_config_flags_passed_through(self):
+        """Config flags are forwarded to LearningMachine."""
+        from agno.db.sqlite import AsyncSqliteDb
+
+        s = Settings()
+        s.learning.enabled = True
+        s.learning.user_profile = True
+        s.learning.user_memory = False
+        s.learning.session_context = True
+        s.learning.entity_memory = True
+        s.learning.learned_knowledge = False
+        db = AsyncSqliteDb(db_file=":memory:", session_table="test")
+
+        lm = create_learning_machine(s, db=db)
+        assert lm.user_profile is True
+        assert lm.user_memory is False
+        assert lm.session_context is True
+        assert lm.entity_memory is True
+        assert lm.learned_knowledge is False
+
+    def test_all_disabled_flags(self):
+        """Even with learning enabled, individual stores can be disabled."""
+        from agno.db.sqlite import AsyncSqliteDb
+
+        s = Settings()
+        s.learning.enabled = True
+        s.learning.user_profile = False
+        s.learning.user_memory = False
+        s.learning.session_context = False
+        s.learning.entity_memory = False
+        s.learning.learned_knowledge = False
+        db = AsyncSqliteDb(db_file=":memory:", session_table="test")
+
+        lm = create_learning_machine(s, db=db)
+        assert lm is not None
+        assert lm.user_profile is False
+        assert lm.user_memory is False

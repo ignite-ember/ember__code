@@ -5,10 +5,13 @@ Thin shell that composes Textual widgets and delegates logic to
 ``HITLHandler``, and ``SessionManager``.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import os
 import sys
+from pathlib import Path
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -198,11 +201,15 @@ class EmberApp(App):
         settings: Settings | None = None,
         resume_session_id: str | None = None,
         initial_message: str | None = None,
+        project_dir: Path | None = None,
+        additional_dirs: list[Path] | None = None,
     ):
         super().__init__()
         self.settings = settings or load_settings()
         self.resume_session_id = resume_session_id
         self.initial_message = initial_message
+        self._project_dir = project_dir
+        self._additional_dirs = additional_dirs
 
         self._session: Session | None = None
         self._conversation: ConversationView | None = None
@@ -219,12 +226,12 @@ class EmberApp(App):
     # ── Public accessors ────────────────────────────────────────────
 
     @property
-    def session(self) -> "Session | None":
+    def session(self) -> Session | None:
         """Public accessor for the current session."""
         return self._session
 
     @property
-    def command_handler(self) -> "CommandHandler | None":
+    def command_handler(self) -> CommandHandler | None:
         """Public accessor for the command handler."""
         return self._command_handler
 
@@ -324,7 +331,9 @@ class EmberApp(App):
 
         self._session = Session(
             self.settings,
+            project_dir=self._project_dir,
             resume_session_id=self.resume_session_id,
+            additional_dirs=self._additional_dirs,
         )
 
         container = self.query_one("#conversation", ScrollableContainer)
@@ -360,7 +369,10 @@ class EmberApp(App):
         from ember_code.config.models import ModelRegistry
 
         registry = ModelRegistry(self.settings)
-        self._status.max_context_tokens = await registry.aget_context_window()
+        self._status.max_context_tokens = min(
+            await registry.aget_context_window(),
+            self.settings.models.max_context_window,
+        )
 
         self._status.update_status_bar()
 
@@ -383,7 +395,7 @@ class EmberApp(App):
             self._controller.set_current_task(task)
 
     async def on_unmount(self) -> None:
-        """Clean up scheduler and MCP connections on app exit."""
+        """Clean up scheduler, ephemeral agents, and MCP connections on app exit."""
         import os
         import sys
 
@@ -391,6 +403,8 @@ class EmberApp(App):
             self._scheduler_runner.stop()
 
         if self._session:
+            if self._session.settings.orchestration.auto_cleanup:
+                self._session.pool.cleanup_ephemeral()
             has_sse = any(c.type == "sse" for c in self._session.mcp_manager.configs.values())
             if has_sse and self._session.mcp_manager.list_connected():
                 # Redirect fd 2 → /dev/null BEFORE abandoning SSE clients.

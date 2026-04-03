@@ -1,6 +1,9 @@
 """Session persistence — listing, naming, and resuming sessions."""
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class SessionPersistence:
@@ -51,7 +54,8 @@ class SessionPersistence:
                     }
                 )
             return results
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to list sessions: %s", exc)
             return []
 
     async def auto_name(self, executor: Any) -> None:
@@ -62,7 +66,8 @@ class SessionPersistence:
                     session_id=self.session_id,
                     autogenerate=True,
                 )
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to auto-name session: %s", exc)
             pass
 
     async def rename(self, new_name: str) -> None:
@@ -77,7 +82,8 @@ class SessionPersistence:
                 session_type=SessionType.AGENT,
                 session_name=new_name,
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to rename session: %s", exc)
             pass
 
     async def get_name(self) -> str:
@@ -94,6 +100,7 @@ class SessionPersistence:
             )
             if session and session.session_data:
                 return session.session_data.get("session_name", "")
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to get session name: %s", exc)
             pass
         return ""

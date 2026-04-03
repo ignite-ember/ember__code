@@ -25,7 +25,9 @@ class SkillPool:
     def load_directory(self, path: Path, priority: int = 0):
         """Load all skills from a directory.
 
-        Each skill lives in a named subdirectory containing a SKILL.md file.
+        Each skill lives in a named subdirectory containing a SKILL.md file,
+        e.g. ``deploy/SKILL.md``. Supporting files (templates, references)
+        can be placed alongside SKILL.md in the same directory.
         Higher priority wins on name conflicts.
         """
         if not path.exists():

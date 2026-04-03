@@ -10,36 +10,36 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
-    "agno[openai,ddg,sqlite,mcp]>=1.0.0",
-    "aiosqlite>=0.20.0",
-    "greenlet>=3.0.0",
-    "rich>=13.0.0",
-    "textual>=0.40.0",
-    "pyyaml>=6.0",
-    "click>=8.0",
-    "pydantic>=2.0",
-    "httpx>=0.25.0",
-    "google-genai>=1.0.0",
+    "agno[openai,ddg,sqlite,mcp]~=2.5",
+    "aiosqlite~=0.22",
+    "greenlet~=3.3",
+    "rich~=14.3",
+    "textual~=8.1",
+    "pyyaml~=6.0",
+    "click~=8.3",
+    "pydantic~=2.12",
+    "httpx~=0.28",
+    "google-genai~=1.67",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21",
-    "ruff>=0.1.0",
-    "mypy>=1.5.0",
+    "pytest~=9.0",
+    "pytest-asyncio~=1.3",
+    "ruff~=0.15",
+    "mypy~=1.19",
 ]
 mcp = [
-    "mcp>=1.0.0",
+    "mcp~=1.26",
 ]
 knowledge = [
-    "chromadb>=0.4.0",
+    "chromadb~=1.5",
 ]
 gemini = [
-    "google-genai>=1.0.0",
+    "google-genai~=1.67",
 ]
 web = [
-    "duckduckgo-search>=4.0",
+    "duckduckgo-search~=8.1",
 ]
 
 [project.scripts]

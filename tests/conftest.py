@@ -65,7 +65,6 @@ def sample_skill_md(tmp_path):
         "name: test-skill\n"
         "description: A test skill\n"
         "argument-hint: <arg>\n"
-        "allowed-tools: Read, Edit\n"
         "---\n"
         "Do something with $ARGUMENTS\n"
     )

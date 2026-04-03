@@ -351,15 +351,7 @@ safety:
 
 ### CodeIndex Data Residency
 
-For teams that can't send code to the cloud, CodeIndex can be [self-hosted](CODEINDEX.md#self-hosting-advanced):
-
-```yaml
-# CodeIndex (config key is 'vectorbridge' for SDK compatibility)
-vectorbridge:
-  api_url: "https://vectorbridge.internal.corp.com"
-```
-
-All code analysis and embeddings stay on your infrastructure.
+For teams that can't send code to the cloud, self-hosted CodeIndex is planned for a future release. This will allow all code analysis and embeddings to stay on your infrastructure. See [CodeIndex](CODEINDEX.md#self-hosting-planned) for details.
 
 ---
 
@@ -378,7 +370,7 @@ All code analysis and embeddings stay on your infrastructure.
 | Hooks | PreToolUse/PostToolUse/Stop | Same events, same format |
 | Guardrails | Not built-in | PII detection, prompt injection, moderation pre-hooks |
 | Network control | Not built-in | allowed_domains, deny-by-default |
-| CodeIndex | N/A | Self-hostable for data residency |
+| CodeIndex | N/A | Self-hosting planned for data residency |
 
 ---
 
@@ -402,7 +394,7 @@ All code analysis and embeddings stay on your infrastructure.
 ### For Enterprise
 
 - [ ] Deploy managed-settings.json via MDM/configuration management
-- [ ] Self-host CodeIndex for code data residency
+- [ ] Self-host CodeIndex for code data residency (planned — coming soon)
 - [ ] Restrict allowed MCP servers to approved list
 - [ ] Enable network deny-by-default with whitelisted domains
 - [ ] Mandate shell sandboxing

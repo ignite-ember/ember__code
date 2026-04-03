@@ -13,9 +13,10 @@ if TYPE_CHECKING:
 class SkillExecutor:
     """Executes skills inline or in a forked sub-agent."""
 
-    def __init__(self, pool: "AgentPool", settings: "Settings"):
+    def __init__(self, pool: "AgentPool", settings: "Settings", session_id: str = ""):
         self.pool = pool
         self.settings = settings
+        self.session_id = session_id
 
     async def execute(self, skill: "SkillDefinition", arguments: str = "") -> str:
         """Execute a skill.
@@ -27,7 +28,7 @@ class SkillExecutor:
         Returns:
             The execution result as text.
         """
-        rendered = skill.render(arguments)
+        rendered = skill.render(arguments, session_id=self.session_id)
 
         if skill.context == "fork" and skill.agent:
             return await self._execute_forked(rendered, skill)
@@ -35,7 +36,7 @@ class SkillExecutor:
 
     async def _execute_forked(self, prompt: str, skill: "SkillDefinition") -> str:
         """Execute a skill in a forked sub-agent."""
-        agent_name = skill.agent or "editor"
+        agent_name = skill.agent or self.settings.skills.default_agent
 
         try:
             agent = self.pool.get(agent_name)
@@ -49,11 +50,12 @@ class SkillExecutor:
             return f"Error executing skill '{skill.name}': {e}"
 
     async def _execute_inline(self, prompt: str, skill: "SkillDefinition") -> str:
-        """Execute a skill inline using the editor agent."""
+        """Execute a skill inline using the default agent."""
+        default = self.settings.skills.default_agent
         try:
-            agent = self.pool.get("editor")
+            agent = self.pool.get(default)
         except KeyError:
-            return f"Error: No 'editor' agent available for skill '{skill.name}'."
+            return f"Error: No '{default}' agent available for skill '{skill.name}'."
 
         try:
             response = await agent.arun(prompt)

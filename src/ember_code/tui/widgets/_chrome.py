@@ -1,5 +1,7 @@
 """App chrome widgets: banners, bars, spinner, queue panel."""
 
+import logging
+
 from rich.text import Text
 from textual.message import Message
 from textual.reactive import reactive
@@ -10,6 +12,8 @@ from textual.widgets import Static
 from ember_code import __version__
 from ember_code.tui.widgets._constants import SPINNER_FRAMES
 from ember_code.tui.widgets._formatting import format_elapsed_time, format_token_count
+
+logger = logging.getLogger(__name__)
 
 _QUIT_KEY = "Ctrl+D"
 
@@ -113,6 +117,8 @@ class StatusBar(Widget):
         self._total_output: int = 0
         self._ide_name: str = ""
         self._ide_connected: bool = False
+        self._cloud_connected: bool = False
+        self._cloud_org: str = ""
 
     @property
     def total_input_tokens(self) -> int:
@@ -152,6 +158,12 @@ class StatusBar(Widget):
         """Update the IDE MCP connection indicator."""
         self._ide_name = name
         self._ide_connected = connected
+        self._tick += 1
+
+    def set_cloud_status(self, connected: bool, org_name: str = "") -> None:
+        """Update the Ember Cloud connection indicator."""
+        self._cloud_connected = connected
+        self._cloud_org = org_name
         self._tick += 1
 
     def start_run(self) -> None:
@@ -196,6 +208,9 @@ class StatusBar(Widget):
 
         if self._model_name:
             parts.append(f"[bold]{self._model_name}[/bold]")
+
+        if self._cloud_connected:
+            parts.append(f"[cyan]\u2601[/cyan] {self._cloud_org}")
 
         if self._running:
             # Show live elapsed time only while running
@@ -325,13 +340,13 @@ class QueuePanel(Widget):
         try:
             old_w = self.query_one(f"#q-{old}", Static)
             old_w.remove_class("-selected")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to deselect queue item #q-%d: %s", old, exc)
         try:
             new_w = self.query_one(f"#q-{new}", Static)
             new_w.add_class("-selected")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to select queue item #q-%d: %s", new, exc)
 
     def on_key(self, event) -> None:
         if not self._items:
@@ -365,8 +380,8 @@ class QueuePanel(Widget):
                 if target is widget or target.is_descendant_of(widget):
                     self.selected_index = i
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to match click to queue item #q-%d: %s", i, exc)
 
 
 class TipBar(Static):

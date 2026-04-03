@@ -5,8 +5,12 @@ in the embeddings registry (``defaults.py`` / user config) and passed
 as kwargs by ``EmbedderRegistry``.
 """
 
+import logging
+
 import httpx
 from agno.knowledge.embedder.base import Embedder
+
+logger = logging.getLogger(__name__)
 
 
 class EmberEmbedder(Embedder):
@@ -83,7 +87,8 @@ class EmberEmbedder(Embedder):
             resp = self.sync_client.post(self._url, json=payload, headers=self._headers)
             resp.raise_for_status()
             return self._parse_response(resp.json())
-        except Exception:
+        except Exception as exc:
+            logger.debug("Sync embedding request failed: %s", exc)
             return [], None
 
     # ── Async ───────────────────────────────────────────────────────
@@ -98,5 +103,6 @@ class EmberEmbedder(Embedder):
             resp = await self.async_client.post(self._url, json=payload, headers=self._headers)
             resp.raise_for_status()
             return self._parse_response(resp.json())
-        except Exception:
+        except Exception as exc:
+            logger.debug("Async embedding request failed: %s", exc)
             return [], None

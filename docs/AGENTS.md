@@ -48,7 +48,6 @@ Agent `.md` files use **the same format as Claude Code** — YAML frontmatter wi
 name: code-explorer
 description: Deeply analyzes existing codebase features by tracing execution paths, mapping architecture layers, and documenting dependencies
 tools: Glob, Grep, LS, Read, NotebookRead, WebFetch, WebSearch
-model: MiniMax-M2.7
 color: yellow
 ---
 
@@ -65,7 +64,6 @@ Provide a complete understanding of how a specific feature works by tracing its 
 name: code-explorer
 description: Deeply analyzes existing codebase features by tracing execution paths, mapping architecture layers, and documenting dependencies
 tools: Glob, Grep, LS, Read, NotebookRead, WebFetch, WebSearch
-model: MiniMax-M2.7
 color: yellow
 
 # Ember extensions (ignored by Claude Code, used by Ember Code)
@@ -145,17 +143,11 @@ By default, the agent pool loads from **Ember Code directories only**:
 
 **Merging rule:** All agents are combined into one pool. The only conflict is when two agents share the same `name` — in that case, **project-level always wins over global, and global always wins over built-in**. Agents with different names never conflict — they all coexist in the pool.
 
-### Cross-Tool Support (opt-in)
+### Cross-Tool Support (on by default)
 
-Enable `cross_tool_support` to also scan Claude Code and Codex directories:
+Cross-tool support is enabled by default. Ember Code scans Claude Code and Codex directories automatically. To disable, set `agents.cross_tool_support: false`.
 
-```yaml
-# .ember/config.yaml
-agents:
-  cross_tool_support: true
-```
-
-When enabled, these additional directories are scanned:
+Additional directories scanned:
 
 | Scope | Location | Source | Format |
 |---|---|---|---|
@@ -172,7 +164,7 @@ Within the same scope, Ember Code directories take precedence over Claude Code, 
 - **Codex agents** — Codex defines agent roles in `config.toml` and instructions in `AGENTS.md`. The loader parses these into the same internal representation.
 - **Ember Code agents** — native format. Claude Code compatible fields + Ember extensions (tags, reasoning, can_orchestrate).
 
-If you're coming from Claude Code or Codex, enable `cross_tool_support` and your existing agents are picked up automatically — zero migration. See [Migration](MIGRATION.md) for details.
+If you're coming from Claude Code or Codex, your existing agents are picked up automatically — zero migration. See [Migration](MIGRATION.md) for details.
 
 ### Built-in Agents
 
@@ -181,14 +173,12 @@ Ember Code ships with foundational agents in Claude Code compatible format plus 
 **explorer.md** — Read-only codebase search and analysis.
 ```yaml
 tools: Glob, Grep, LS, Read, WebFetch, WebSearch
-model: MiniMax-M2.7
 tags: [search, read-only, exploration]
 ```
 
 **architect.md** — Designs component architecture, data flows, and interfaces.
 ```yaml
 tools: Glob, Grep, LS, Read, WebSearch
-model: MiniMax-M2.7
 reasoning: true
 tags: [architecture, design, read-only]
 ```
@@ -196,7 +186,6 @@ tags: [architecture, design, read-only]
 **planner.md** — Analyzes tasks, produces structured implementation plans.
 ```yaml
 tools: Glob, Grep, LS, Read, WebSearch
-model: MiniMax-M2.7
 reasoning: true
 tags: [planning, reasoning, read-only]
 ```
@@ -204,21 +193,18 @@ tags: [planning, reasoning, read-only]
 **editor.md** — Creates and modifies files. Can spawn sub-teams for exploration or review.
 ```yaml
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: MiniMax-M2.7
 tags: [coding, editing, file-write]
 ```
 
 **simplifier.md** — Post-edit code polish, dead code removal, complexity reduction.
 ```yaml
 tools: Read, Edit, Glob, Grep, Bash
-model: MiniMax-M2.7
 tags: [quality, refactoring, simplification]
 ```
 
 **reviewer.md** — Reviews code for bugs, security issues, and style compliance.
 ```yaml
 tools: Glob, Grep, LS, Read, WebFetch, WebSearch
-model: MiniMax-M2.7
 color: red
 reasoning: true
 tags: [review, quality, read-only]
@@ -227,7 +213,6 @@ tags: [review, quality, read-only]
 **security.md** — Vulnerability analysis, OWASP Top 10, auth and input validation review.
 ```yaml
 tools: Glob, Grep, LS, Read, WebSearch
-model: MiniMax-M2.7
 reasoning: true
 tags: [security, audit, vulnerabilities, read-only]
 ```
@@ -235,14 +220,12 @@ tags: [security, audit, vulnerabilities, read-only]
 **qa.md** — Test generation, test quality review, and coverage gap analysis.
 ```yaml
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: MiniMax-M2.7
 tags: [testing, qa, coverage]
 ```
 
 **debugger.md** — Bug diagnosis, stack trace analysis, root cause finding.
 ```yaml
 tools: Read, Edit, Bash, Glob, Grep
-model: MiniMax-M2.7
 reasoning: true
 tags: [debugging, diagnostics, bug-fix]
 ```
@@ -250,20 +233,17 @@ tags: [debugging, diagnostics, bug-fix]
 **git.md** — Version control: commits, branches, PRs, diffs.
 ```yaml
 tools: Bash, Read, Glob, Grep
-model: MiniMax-M2.7
 tags: [git, github, version-control]
 ```
 
 **conversational.md** — General Q&A and explanations, no tools.
 ```yaml
-model: MiniMax-M2.7
 tags: [chat, explain, no-tools]
 ```
 
 **diagnostician.md** — System diagnostics and issue diagnosis.
 ```yaml
 tools: Read, Bash, Glob, Grep
-model: MiniMax-M2.7
 reasoning: true
 tags: [diagnostics, system, troubleshooting]
 ```
@@ -271,7 +251,6 @@ tags: [diagnostics, system, troubleshooting]
 **docs.md** — Documentation writing and updates.
 ```yaml
 tools: Read, Write, Edit, Glob, Grep
-model: MiniMax-M2.7
 tags: [documentation, writing, docs]
 ```
 
@@ -456,7 +435,6 @@ orchestration:
 name: editor
 description: Creates and modifies code files with minimal focused changes. Can spawn sub-teams for exploration or review when the task requires it.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: MiniMax-M2.7
 color: blue
 
 # Ember extensions
@@ -547,7 +525,6 @@ No built-in agent knows Terraform. The Orchestrator generates:
 name: terraform-migrator
 description: Migrates Terraform configurations from AWS provider v4 to v5, handling breaking changes and deprecated resources
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: MiniMax-M2.7
 color: orange
 
 tags: [terraform, infrastructure, migration]
@@ -731,7 +708,6 @@ Drop a `.md` file in any agents directory. That's it — it joins the pool immed
 name: docker
 description: Manages Docker containers, images, and docker-compose configurations
 tools: Bash, Read, Glob
-model: MiniMax-M2.7
 color: blue
 ---
 
@@ -750,7 +726,6 @@ This file works in both Claude Code and Ember Code. In Ember Code, the Orchestra
 name: database
 description: Database operations including queries, migrations, schema design, and optimization. Connects to the project database via MCP.
 tools: Read, Write, Grep, Glob, LS
-model: MiniMax-M2.7
 color: green
 
 # Ember extensions
@@ -780,7 +755,6 @@ Use the format: `YYYYMMDD_HHMMSS_description.sql` (or framework equivalent)
 name: security-auditor
 description: Security-focused code review that checks for OWASP Top 10 vulnerabilities, dependency issues, and security anti-patterns with confidence-based scoring
 tools: Glob, Grep, LS, Read, WebSearch
-model: MiniMax-M2.7
 color: red
 
 # Ember extensions

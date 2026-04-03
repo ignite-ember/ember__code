@@ -33,13 +33,7 @@ models:
       provider: openai_like
       model_id: MiniMax-Text-01
       url: https://api.ignite-ember.sh/v1    # Ember hosted endpoint
-      api_key_env: EMBER_API_KEY
-
-    MiniMax-M2.7-highspeed:
-      provider: openai_like
-      model_id: MiniMax-Text-01-highspeed
-      url: https://api.ignite-ember.sh/v1
-      api_key_env: EMBER_API_KEY
+      # authenticated via /login — no API key needed
 ```
 
 Agent `.md` files just reference the registry name:
@@ -65,8 +59,6 @@ Sign up at **https://ignite-ember.sh**. All built-in models route through the Em
 
 ```bash
 ignite-ember /login         # opens browser for device-flow login
-# or
-export EMBER_API_KEY=ek_...
 ```
 
 **Device-flow login:** Running `/login` opens your browser to the Ember portal. After you authenticate, the CLI automatically receives your access token and model credentials. Platform credentials are saved to `~/.ember/credentials.json` (token, email, expiry). Model credentials (API key, URL) are saved to `~/.ember/config.yaml`.
@@ -129,7 +121,7 @@ Claude Code uses a simple alias map (`"sonnet"` → `"claude-sonnet-4-6"`) becau
 | Aspect | Claude Code | Ember Code |
 |---|---|---|
 | Model resolution | Alias map (string → string) | Config-driven registry (name → provider + URL + key) |
-| First-party API | `ANTHROPIC_API_KEY` | `EMBER_API_KEY` (Ember hosted MiniMax M2.7) |
+| First-party API | `ANTHROPIC_API_KEY` | `/login` device-flow (Ember hosted MiniMax M2.7) |
 | Hosted endpoint | `api.anthropic.com` | `api.ignite-ember.sh` |
 | AWS Bedrock | `CLAUDE_CODE_USE_BEDROCK` | BYOM registry entry with Bedrock URL |
 | Google Vertex | `CLAUDE_CODE_USE_VERTEX` | BYOM registry entry with Vertex URL |
@@ -159,6 +151,7 @@ The key difference: Claude Code only supports Anthropic models through different
 models:
   default: "MiniMax-M2.7"             # Default model for most agents
   fast: "MiniMax-M2.7-highspeed"      # Fast model (~100 TPS, 2x cost)
+  max_context_window: 200000          # Hard ceiling for context usage (see below)
 
   # Model registry: maps model names (used in agent .md files) to providers.
   # Built-in entries (MiniMax-M2.7, MiniMax-M2.7-highspeed) route through
@@ -254,12 +247,46 @@ session:
   enable_agentic_memory: true          # Give agents an update_user_memory tool
   add_memories_to_context: true        # Include user memories in agent context
 
+# Context compression
+#
+# Ember Code uses a two-layer compression strategy to keep conversations
+# within a token budget:
+#
+# 1. **Tool result compression** (Agno CompressionManager)
+#    Automatically compresses tool outputs (file contents, shell output, etc.)
+#    when context usage reaches 80% of the effective context window.
+#
+# 2. **Conversation history compaction** (Ember's compact_if_needed)
+#    At the same 80% threshold, Ember generates a session summary covering
+#    older turns, then trims the verbatim history to keep only recent turns.
+#    Subsequent compactions halve the kept turns (minimum 2).
+#
+# The effective context window is:
+#
+#     effective = min(model_context_window, max_context_window)
+#
+# So if a model reports a 1M-token window, compression still triggers at
+# 80% of 200k (160k tokens) by default. If a model has a *smaller* window
+# (e.g. 32k), that smaller value is used — the ceiling never inflates the
+# actual model limit.
+#
+# Tune this based on your cost/quality trade-off:
+# - Lower values (e.g. 100000) → more aggressive compression, lower cost
+# - Higher values (e.g. 500000) → more context retained, higher cost
+# - Set to a very large number to effectively disable the ceiling
+#
+# The setting is models.max_context_window (shown above in the models section).
+
+# Project rules
+# Controls cross-tool compatibility for project instruction files.
+# When cross_tool_support is true, Ember Code reads CLAUDE.md files
+# in addition to ember.md at every level (root + subdirectories).
+rules:
+  cross_tool_support: true         # also reads CLAUDE.md files (set false to disable)
+
 # Project context
 context:
-  project_file: "ember.md"         # Project instructions file (like CLAUDE.md)
-  auto_load:                       # Files to auto-load into context
-    - "ember.md"
-    - ".ember/config.yaml"
+  project_file: "ember.md"         # Project instructions file
   ignore_patterns:                 # Patterns to exclude from search
     - "node_modules/"
     - ".git/"
@@ -283,28 +310,28 @@ scheduler:
   max_concurrent: 1                # Max tasks running at once (bounded by semaphore)
 
 # Agents & Skills
-# By default, only Ember Code directories are scanned.
-# Enable cross_tool_support to also scan Claude Code and Codex directories.
+# By default, Ember Code scans its own directories AND Claude Code / Codex directories.
+# Set cross_tool_support: false to only scan Ember Code directories.
 agents:
-  cross_tool_support: false        # true = also scan .claude/agents/, .codex/, etc.
-  # Default dirs (always scanned):
+  cross_tool_support: true         # also scans .claude/agents/, .codex/, etc.
+  # Ember dirs (always scanned):
   #   .ember/agents/              (project, committed)
   #   .ember/agents.local/        (project, gitignored)
   #   ~/.ember/agents/            (user global)
-  # With cross_tool_support: true, also scans:
+  # Cross-tool dirs (when cross_tool_support: true):
   #   .claude/agents/             (Claude Code project)
   #   ~/.claude/agents/           (Claude Code user global)
   #   AGENTS.md / .codex/         (Codex project)
   #   ~/.codex/                   (Codex user global)
 
 skills:
-  cross_tool_support: false        # true = also scan .claude/skills/
+  cross_tool_support: true         # also scans .claude/skills/
   auto_trigger: true               # Allow Orchestrator to auto-trigger skills
-  # Default dirs (always scanned):
+  # Ember dirs (always scanned):
   #   .ember/skills/              (project, committed)
   #   .ember/skills.local/        (project, gitignored)
   #   ~/.ember/skills/            (user global)
-  # With cross_tool_support: true, also scans:
+  # Cross-tool dirs (when cross_tool_support: true):
   #   .claude/skills/             (Claude Code project)
   #   ~/.claude/skills/           (Claude Code user global)
 
@@ -346,13 +373,14 @@ knowledge:
   share_file: ".ember/knowledge.yaml"  # Knowledge file path (relative to project)
   auto_sync: true                  # Auto-sync on session start/end
 
-# Learning (Agno LearningMachine)
+# Learning
 learning:
   enabled: false                   # Enable learning across sessions
   user_profile: true               # Build user preference profiles
   user_memory: true                # Persist user-specific memories
   session_context: true            # Carry session context forward
   entity_memory: false             # Track entities across conversations
+  learned_knowledge: false         # Accumulate learned knowledge
 
 # Reasoning tools
 reasoning:
@@ -366,6 +394,13 @@ guardrails:
   prompt_injection: false          # Detect injection attempts (pre-hook)
   moderation: false                # OpenAI moderation API (pre-hook)
 
+# Agent evaluations
+evals:
+  judge_model: "MiniMax-M2.7"       # Model for AccuracyEval LLM-as-judge
+  num_iterations: 3                  # Default AccuracyEval iterations per case
+  accuracy_threshold: 7.0            # Default passing score (0-10 scale)
+  timeout_per_case: 30               # Seconds per eval case
+
 # Display
 display:
   markdown: true                   # Render markdown in terminal
@@ -377,21 +412,9 @@ display:
 
 ## Environment Variables
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `EMBER_API_KEY` | Ember Code account API key (for hosted models) | required if no custom model |
-| `MINIMAX_API_KEY` | MiniMax API key (BYOM) | - |
-| `OPENAI_API_KEY` | OpenAI API key (BYOM) | - |
-| `ANTHROPIC_API_KEY` | Anthropic API key (BYOM) | - |
-| `OPENROUTER_API_KEY` | OpenRouter API key (BYOM) | - |
-| `EMBER_MODEL` | Override default model | `MiniMax-M2.7` |
-| `EMBER_CONFIG` | Path to config file | auto-discovered |
-| `EMBER_SANDBOX` | Enable shell sandboxing | `false` |
-| `EMBER_LOG_LEVEL` | Logging verbosity | `warning` |
-| `EMBER_NO_MEMORY` | Disable persistent memory | `false` |
-| `VECTORBRIDGE_API_KEY` | CodeIndex cloud API key (env var name unchanged for SDK compat) | - |
-| `EMBER_SKIP_ONBOARDING` | Skip first-run onboarding | `false` |
-| `CHROMADB_PATH` | Override ChromaDB storage path | `~/.ember/chromadb` |
+Authentication is handled by `/login` — no API key environment variables needed for Ember hosted models. The default model is set via `models.default` in your config, and agents can override it per-agent in their `.md` files.
+
+> **Note:** BYOM API keys (OpenAI, Anthropic, etc.) are configured per model in your registry via `api_key_env`, `api_key`, or `api_key_cmd` — you choose the variable name yourself.
 
 ## CLI Flags
 
@@ -424,12 +447,55 @@ ignite-ember -m "add tests for auth module"   # non-interactive single task
 cat src/auth.py | ignite-ember -p              # pipe stdin as context
 ```
 
-## Project Instructions (ember.md)
+## Project Instructions (Hierarchical Rules)
 
-Similar to Claude Code's `CLAUDE.md`, place an `ember.md` file in your project root with project-specific instructions:
+Ember Code loads project instructions from multiple levels, merging them top-down. This is similar to Claude Code's `CLAUDE.md` system.
+
+### Rules Hierarchy
+
+(Most general → most specific)
+
+1. **User-level** — `~/.ember/rules.md` (global rules for all projects)
+2. **Project root** — `ember.md` at the project root
+3. **Subdirectory** — `ember.md` in any parent directory between the current working file and the project root
+
+At each level, rules are merged additively. Subdirectory rules add specificity without overriding root rules.
+
+### CLAUDE.md Compatibility
+
+When `rules.cross_tool_support` is `true`, Ember Code also reads `CLAUDE.md` files at every level (root and subdirectories), in addition to `ember.md`. If both files exist in the same directory, their contents are merged.
+
+```yaml
+# .ember/config.yaml
+rules:
+  cross_tool_support: true   # read CLAUDE.md files alongside ember.md
+```
+
+### Example
+
+```
+my-project/
+├── ember.md                  # root rules (always loaded)
+├── CLAUDE.md                 # loaded when rules.cross_tool_support: true
+├── src/
+│   ├── ember.md              # subdirectory rules for src/
+│   └── auth/
+│       ├── ember.md          # subdirectory rules for src/auth/
+│       └── middleware/
+│           └── handler.py    # ← working file
+└── ~/.ember/rules.md         # user-level global rules
+```
+
+When editing `handler.py`, the merged context includes:
+1. `~/.ember/rules.md` (user rules)
+2. `my-project/ember.md` + `CLAUDE.md` (project root)
+3. `src/ember.md` (subdirectory)
+4. `src/auth/ember.md` (subdirectory, most specific)
+
+### Root-Level Example
 
 ```markdown
-# Project: My API
+# ember.md — Project: My API
 
 ## Stack
 - Python 3.12, FastAPI, SQLAlchemy, PostgreSQL
@@ -447,7 +513,69 @@ Similar to Claude Code's `CLAUDE.md`, place an `ember.md` file in your project r
 - Run `make test` to execute the full test suite
 ```
 
-This file is loaded into context at session start and shared with all agents.
+### Subdirectory Example
+
+```markdown
+# src/auth/ember.md
+
+## Auth Module Rules
+- All auth endpoints must validate JWT tokens
+- Never log token values, only token IDs
+- Rate limiting is required on all login endpoints
+```
+
+## Progress Tracking (TODO.md)
+
+Ember Code uses a two-level TODO system for persistent progress tracking across sessions.
+
+### Two Levels
+
+- **Root `.ember/TODO.md`** — high-level goals and milestones. Automatically loaded into agent context at session start. Tracks *what* needs to happen, not *how*.
+- **Subdirectory `.ember/TODO.md`** (e.g., `src/auth/.ember/TODO.md`) — detailed implementation steps for that specific area. Not auto-loaded; agents read them when working in that directory.
+
+The root TODO is the map. Subdirectory TODOs are the turn-by-turn directions.
+
+### Example
+
+**Root** (`.ember/TODO.md`):
+```markdown
+# TODO — Add authentication module
+
+> Started: 2026-03-28 | Last updated: 2026-04-01
+
+- [x] User model and migration
+- [ ] Auth endpoints (login, logout, refresh)
+- [ ] Integration tests
+- [ ] API documentation
+```
+
+**Subdirectory** (`src/auth/.ember/TODO.md`):
+```markdown
+# TODO — Auth endpoints
+
+> Last updated: 2026-04-01
+
+- [x] POST /login — validate credentials, return JWT + refresh token
+- [x] POST /logout — revoke refresh token in Redis
+- [ ] POST /refresh — rotate refresh token, return new JWT
+- [ ] Rate limiting on /login (5 attempts per minute)
+- [ ] Add 401 response schema to OpenAPI docs
+
+## Notes
+Using PyJWT with RS256. Refresh tokens stored in Redis with 7-day TTL.
+```
+
+### TODO.md vs Agno Task Mode
+
+| | `.ember/TODO.md` | Agno task mode (`spawn_team` with `mode="tasks"`) |
+|---|---|---|
+| **Lifetime** | Persistent — survives across sessions, commits, context resets | Ephemeral — exists only for the current team run |
+| **Scope** | Big-picture progress across days/weeks | Task decomposition within a single run |
+| **Visibility** | Human-readable file in `.ember/`, can be committed | In-memory, visible only during execution |
+| **Who updates it** | Agents check off items as they work | Agno manages task state automatically |
+| **Use case** | "Implement auth module" (multi-session) | "Write 3 test files in parallel" (one run) |
+
+Both can be used together: TODO.md tracks the overall feature, Agno task mode orchestrates the work within each session.
 
 ## Permission Modes
 
@@ -477,7 +605,6 @@ Drop Python files in `.ember/agents/` to add project-specific agents:
 name: deploy
 description: Handles deployment to staging and production environments
 tools: Bash, Read, Glob
-model: MiniMax-M2.7
 color: cyan
 
 tags: [deploy, infrastructure, devops]
@@ -491,7 +618,7 @@ You handle deployment operations.
 - Show the deployment plan before executing
 ```
 
-Custom agents are auto-discovered and added to the agent pool. The `model: MiniMax-M2.7` field is resolved through the model registry — no hardcoded provider classes needed.
+Custom agents are auto-discovered and added to the agent pool. If no `model` is specified, the config default (`models.default`) is used. To override, add `model: <name>` — the name is resolved through the model registry.
 
 ## Custom Tools
 

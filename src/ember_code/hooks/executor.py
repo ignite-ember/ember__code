@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 import httpx
 
 from ember_code.hooks.schemas import HookDefinition, HookResult
+
+logger = logging.getLogger(__name__)
 
 
 class HookExecutor:
@@ -136,7 +139,8 @@ class HookExecutor:
 
         except asyncio.TimeoutError:
             return HookResult(should_continue=True, message="Hook timed out")
-        except Exception:
+        except Exception as exc:
+            logger.debug("Command hook failed: %s", exc)
             return HookResult(should_continue=True)
 
     async def _run_http_hook(self, hook: HookDefinition, payload: dict[str, Any]) -> HookResult:
@@ -163,10 +167,12 @@ class HookExecutor:
                         should_continue=data.get("continue", True),
                         message=data.get("systemMessage", ""),
                     )
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Failed to parse HTTP hook response: %s", exc)
                     return HookResult(should_continue=True)
 
             return HookResult(should_continue=True)
 
-        except Exception:
+        except Exception as exc:
+            logger.debug("HTTP hook failed: %s", exc)
             return HookResult(should_continue=True)

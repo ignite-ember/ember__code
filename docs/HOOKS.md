@@ -42,7 +42,7 @@ Agent calls Edit tool
 | `Stop` | When agent wants to finish | Yes | Completion validation (did tests run?) |
 | `SubagentStart` | When a sub-team spawns | No | Logging, resource tracking |
 | `SubagentStop` | When a sub-team finishes | No | Result validation |
-| `Notification` | System notifications | No | Custom notification handlers |
+| `Notification` | *(reserved for future use)* | No | Custom notification handlers |
 
 ---
 
@@ -115,9 +115,20 @@ Hooks are defined in settings files, with the same format as Claude Code:
     "Authorization": "Bearer ${HOOK_API_KEY}"
   },
   "matcher": "Bash",
-  "timeout": 5000
+  "timeout": 10000
 }
 ```
+
+**Fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `type` | Yes | `"command"` or `"http"` |
+| `command` / `url` | Yes | Shell command or HTTP endpoint |
+| `matcher` | No | Regex to filter which tools/agents trigger the hook |
+| `timeout` | No | Milliseconds before the hook is killed (default: 10 000) |
+| `background` | No | `true` for fire-and-forget hooks that don't block the agent |
+| `headers` | No | HTTP headers (supports `${ENV_VAR}` expansion) |
 
 ---
 
@@ -127,10 +138,9 @@ Matchers are regex patterns that filter when a hook fires. Only hooks whose matc
 
 | Event | Matcher Field | Examples |
 |---|---|---|
-| `PreToolUse` / `PostToolUse` | Tool name | `Bash`, `Write\|Edit`, `mcp__.*` |
-| `SessionStart` | Start mode | `startup`, `resume` |
-| `SubagentStart` / `SubagentStop` | Agent name | `explorer`, `editor` |
-| `Notification` | Notification type | `permission_prompt` |
+| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | Tool name | `Bash`, `Write\|Edit`, `mcp__.*` |
+| `SubagentStart` / `SubagentStop` | Agent name | `coder`, `explorer` |
+| `SessionStart` / `SessionEnd` / `Stop` / `UserPromptSubmit` | *(no target — matcher not used)* | Omit matcher |
 
 **Examples:**
 ```json
@@ -151,9 +161,7 @@ Every hook receives a JSON object on stdin with common fields plus event-specifi
 **Common fields (all events):**
 ```json
 {
-  "session_id": "abc-123",
-  "cwd": "/path/to/project",
-  "hook_event_name": "PreToolUse"
+  "session_id": "abc-123"
 }
 ```
 
@@ -161,26 +169,47 @@ Every hook receives a JSON object on stdin with common fields plus event-specifi
 ```json
 {
   "tool_name": "Edit",
-  "tool_input": {
+  "tool_args": {
     "file_path": "/path/to/file.py",
     "old_string": "def foo():",
     "new_string": "def bar():"
   },
-  "tool_result": "..."       // PostToolUse only
+  "result_preview": "..."    // PostToolUse only
+  // "error": "..."          // PostToolUseFailure only
 }
 ```
 
 **UserPromptSubmit:**
 ```json
 {
-  "user_prompt": "Add tests for the auth module"
+  "message": "Add tests for the auth module",
+  "session_id": "abc-123"
 }
 ```
 
 **Stop:**
 ```json
 {
-  "reason": "task_complete"
+  "session_id": "abc-123",
+  "response": "I've completed the changes..."
+}
+```
+
+**SubagentStart:**
+```json
+{
+  "session_id": "abc-123",
+  "agent_name": "coder",
+  "task": "Write the auth module"
+}
+```
+
+**SubagentStop:**
+```json
+{
+  "session_id": "abc-123",
+  "agent_name": "coder",
+  "result_preview": "Done. Created auth.py with..."
 }
 ```
 
@@ -215,7 +244,7 @@ Run Prettier/Black/Ruff after every file write:
 # Hook: PostToolUse, matcher: Write|Edit
 
 input=$(cat)
-file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty')
+file_path=$(echo "$input" | jq -r '.tool_args.file_path // empty')
 
 if [[ -z "$file_path" ]]; then
   exit 0
@@ -260,11 +289,11 @@ Prevent destructive operations:
 # Hook: PreToolUse, matcher: Bash
 
 input=$(cat)
-command=$(echo "$input" | jq -r '.tool_input.command // empty')
+command=$(echo "$input" | jq -r '.tool_args.command // empty')
 
 # Block dangerous patterns
 if echo "$command" | grep -qE '(rm -rf /|:()\{|DROP TABLE|TRUNCATE|--force)'; then
-  echo '{"continue": false, "systemMessage": "Blocked: destructive command detected"}' >&2
+  echo '{"continue": false, "systemMessage": "Blocked: destructive command detected"}'
   exit 2
 fi
 
@@ -281,10 +310,10 @@ Don't let the agent stop without running tests:
 # Hook: Stop
 
 input=$(cat)
-transcript=$(echo "$input" | jq -r '.transcript_path // empty')
+response=$(echo "$input" | jq -r '.response // empty')
 
-# Check if any test command was run in this session
-if [[ -n "$transcript" ]] && ! grep -q '"pytest\|npm test\|cargo test"' "$transcript"; then
+# Check if the agent's response mentions running tests
+if ! echo "$response" | grep -qiE '(pytest|npm test|cargo test|test.*pass)'; then
   cat << 'EOF'
 {"continue": false, "systemMessage": "Please run the test suite before finishing. Use pytest, npm test, or the project's test command."}
 EOF
@@ -293,6 +322,8 @@ fi
 
 echo '{"continue": true}'
 ```
+
+When blocked, the agent receives the `systemMessage` as feedback and retries (up to 3 times).
 
 ### 4. Load Environment on Session Start
 
@@ -328,7 +359,7 @@ EOF
 # Hook: PreToolUse, matcher: Write|Edit
 
 input=$(cat)
-file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty')
+file_path=$(echo "$input" | jq -r '.tool_args.file_path // empty')
 
 # Block writes to sensitive files
 if echo "$file_path" | grep -qE '(\.env|\.pem|\.key|credentials|secrets|\.ssh)'; then
@@ -366,9 +397,10 @@ echo '{"continue": true}'
 
 - All matching hooks for an event run **in parallel**
 - Hooks don't see each other's output — design them to be independent
-- For `PreToolUse`: if **any** hook exits with code 2, the tool call is blocked
-- Hooks load at **session startup only** — changes require restarting the session
-- Default timeout: 10 seconds for commands, 5 seconds for HTTP
+- For `PreToolUse`, `UserPromptSubmit`, and `Stop`: if **any** hook exits with code 2, the action is blocked
+- Hooks load at session startup. Use `/hooks reload` to pick up changes without restarting
+- Default timeout: 10 seconds for all hook types
+- Set `"background": true` for fire-and-forget hooks that don't block the agent
 
 ---
 
@@ -419,7 +451,7 @@ The one addition: Ember Code hooks also fire for **sub-team events** (`SubagentS
 
 3. **Exit 0 by default.** Only exit 2 when you need to block. Unhandled errors should not block the agent.
 
-4. **Validate input.** Check that expected JSON fields exist before using them. `jq -r '.tool_input.file_path // empty'` handles missing fields gracefully.
+4. **Validate input.** Check that expected JSON fields exist before using them. `jq -r '.tool_args.file_path // empty'` handles missing fields gracefully.
 
 5. **Don't mutate files in PreToolUse.** PreToolUse runs before the tool — if you modify the file there, the subsequent Edit tool may fail due to content mismatch.
 

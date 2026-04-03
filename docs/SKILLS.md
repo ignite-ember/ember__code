@@ -124,17 +124,11 @@ By default, skills are loaded from **Ember Code directories only**:
 
 Name conflicts: project-level wins over user-level, which wins over built-in.
 
-### Cross-Tool Support (opt-in)
+### Cross-Tool Support (on by default)
 
-Enable `cross_tool_support` to also scan Claude Code directories:
+Cross-tool support is enabled by default. Ember Code scans Claude Code directories automatically. To disable, set `skills.cross_tool_support: false`.
 
-```yaml
-# .ember/config.yaml
-skills:
-  cross_tool_support: true
-```
-
-When enabled, these additional directories are scanned:
+Additional directories scanned:
 
 | Location | Scope |
 |---|---|
@@ -298,8 +292,6 @@ Ember Code ships with built-in skills in `<install>/skills/`:
 | `/explain [path]` | Deep-dive explanation of a file or module using CodeIndex |
 | `/simplify` | Review changed code for reuse, quality, and efficiency |
 | `/update-docs` | Update documentation to reflect code changes |
-| `/onboard` | Run the full onboarding flow |
-| `/propose-agents` | Propose project-specific agents based on current project |
 | `/evals run` | Run agent evaluations |
 
 Override any built-in skill by creating a skill with the same name in `.ember/skills/`.
@@ -507,7 +499,7 @@ Use `${EMBER_SKILL_DIR}/templates/endpoint.py` as a starting template.
 # .ember/config.yaml
 
 skills:
-  cross_tool_support: false        # true = also scan .claude/skills/ directories
+  cross_tool_support: true         # also scans .claude/skills/ (set false to disable)
   auto_trigger: true               # Allow Orchestrator to auto-trigger skills
   max_metadata_tokens: 5000        # Token budget for skill metadata in context
 ```

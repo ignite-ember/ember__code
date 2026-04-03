@@ -81,7 +81,8 @@ def _read_cache(ttl: int) -> dict[str, Any] | None:
         if time.time() - data.get("checked_at", 0) > ttl:
             return None
         return data
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to read update cache: %s", exc)
         return None
 
 
@@ -91,7 +92,8 @@ def _write_cache(data: dict[str, Any]) -> None:
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         data["checked_at"] = time.time()
         CACHE_FILE.write_text(json.dumps(data))
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to write update cache: %s", exc)
         pass  # cache is best-effort
 
 

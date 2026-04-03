@@ -2,7 +2,6 @@
 name: explain
 description: This skill should be used when the user asks to "explain", "how does X work", "what does X do", or wants a deep-dive explanation of code.
 argument-hint: [file-or-directory]
-allowed-tools: Read, Grep, Glob
 ---
 
 Explain `$ARGUMENTS` in depth by tracing the actual source code.

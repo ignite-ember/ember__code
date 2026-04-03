@@ -54,6 +54,7 @@ class StatusTracker:
         bar = self._bar()
         if bar:
             bar.update_model(session.settings.models.default)
+            bar.set_cloud_status(session.cloud_connected, session.cloud_org_id or "")
 
     def add_context_tokens(self, input_tokens: int) -> None:
         """Track main conversation input tokens for context % calculation.
@@ -76,6 +77,12 @@ class StatusTracker:
         bar = self._bar()
         if bar:
             bar.set_ide_status(name, connected)
+
+    def set_cloud_status(self, connected: bool, org_name: str = "") -> None:
+        """Update the Ember Cloud connection indicator in the status bar."""
+        bar = self._bar()
+        if bar:
+            bar.set_cloud_status(connected, org_name)
 
     def record_turn(self) -> None:
         pass  # No longer tracking message count in status bar

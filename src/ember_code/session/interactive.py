@@ -1,6 +1,8 @@
 """Interactive session loop — REPL for Ember Code."""
 
+import logging
 import time
+from pathlib import Path
 
 from rich.prompt import Prompt
 
@@ -18,16 +20,22 @@ from ember_code.utils.display import (
     print_welcome,
 )
 
+logger = logging.getLogger(__name__)
+
 
 async def run_session_interactive(
     settings: Settings,
     resume_session_id: str | None = None,
+    project_dir: Path | None = None,
+    additional_dirs: list[Path] | None = None,
 ):
     """Run an interactive session loop."""
 
     session = Session(
         settings,
+        project_dir=project_dir,
         resume_session_id=resume_session_id,
+        additional_dirs=additional_dirs,
     )
 
     # ── Hook: SessionStart ──────────────────────────────────────────
@@ -58,7 +66,8 @@ async def run_session_interactive(
         update_info = await check_for_update()
         if update_info.available:
             print_warning(update_info.message)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Update check failed: %s", exc)
         pass
 
     pool_info = session.pool.agent_names
@@ -103,7 +112,9 @@ async def run_session_interactive(
                 print_info(f"Running skill: /{skill.name}")
                 from ember_code.skills.executor import SkillExecutor
 
-                result = await SkillExecutor(session.pool, session.settings).execute(skill, args)
+                result = await SkillExecutor(
+                    session.pool, session.settings, session.session_id
+                ).execute(skill, args)
                 print_response(result)
 
                 session.audit.log(
@@ -130,6 +141,12 @@ async def run_session_interactive(
             break
         except EOFError:
             break
+
+    # ── Ephemeral agent cleanup ──────────────────────────────────────
+    if session.settings.orchestration.auto_cleanup:
+        removed = session.pool.cleanup_ephemeral()
+        if removed:
+            print_info(f"Cleaned up {removed} ephemeral agent(s).")
 
     # ── Knowledge sync: DB → file (export for git) ─────────────────
     if session.settings.knowledge.share and session.settings.knowledge.auto_sync:

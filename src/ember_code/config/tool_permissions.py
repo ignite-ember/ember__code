@@ -51,6 +51,7 @@ _DEFAULTS: dict[str, str] = {
     "Python": "ask",
     "WebSearch": "deny",
     "WebFetch": "deny",
+    "NotebookEdit": "ask",
 }
 
 # Maps Agno function names to our tool names
@@ -67,6 +68,11 @@ FUNC_TO_TOOL: dict[str, str] = {
     "duckduckgo_search": "WebSearch",
     "duckduckgo_news": "WebSearch",
     "run_python_code": "Python",
+    "notebook_read": "NotebookEdit",
+    "notebook_read_cell": "NotebookEdit",
+    "notebook_edit_cell": "NotebookEdit",
+    "notebook_add_cell": "NotebookEdit",
+    "notebook_remove_cell": "NotebookEdit",
 }
 
 _RULE_RE = re.compile(r"^(\w+)(?:\((.+)\))?$")
@@ -101,7 +107,8 @@ def _extract_domain(url: str) -> str:
         from urllib.parse import urlparse
 
         return urlparse(url).netloc
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to extract domain from URL: %s", exc)
         return ""
 
 

@@ -2,7 +2,6 @@
 name: simplifier
 description: Simplifies and cleans up code for clarity, consistency, and maintainability while preserving exact functionality.
 tools: Read, Edit, Glob, Grep, Bash
-model: MiniMax-M2.7
 color: magenta
 
 tags:

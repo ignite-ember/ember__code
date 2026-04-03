@@ -57,7 +57,7 @@ Traditional code search is syntactic — `grep "authenticate"` finds the string,
 
 ### Configuration
 
-See [CodeIndex configuration](CODEINDEX.md#configuration) for full details. Config keys and env vars use the `vectorbridge` prefix (SDK interface unchanged).
+CodeIndex works out of the box with zero configuration. Per-project customization (categories, indexing options, ignore patterns) is planned for a future release.
 
 ### Fallback: Local Mode
 

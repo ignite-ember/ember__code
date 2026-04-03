@@ -2,7 +2,6 @@
 name: update-docs
 description: This skill should be used when the user asks to "update docs", "sync documentation", "refresh docs", "generate changelog", "update TODO", or wants documentation to reflect recent code changes.
 argument-hint: [scope: all|readme|todo|changelog|progress|agents|architecture|config]
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 
 Update project documentation to reflect the current state of the codebase.

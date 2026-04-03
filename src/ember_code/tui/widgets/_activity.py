@@ -2,8 +2,8 @@
 
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
 
+from pydantic import BaseModel, Field
 from textual.timer import Timer
 from textual.widgets import Static
 
@@ -13,15 +13,14 @@ from ember_code.tui.widgets._formatting import format_elapsed_time, format_token
 _MAX_DISPLAY_LINES = 4
 
 
-@dataclass
-class AgentState:
+class AgentState(BaseModel):
     """Tracks the live state of a single agent in a run."""
 
     name: str
     run_id: str
     parent_run_id: str | None = None
     model: str = ""
-    start_time: float = field(default_factory=time.monotonic)
+    start_time: float = Field(default_factory=time.monotonic)
     status: str = "running"  # "running" | "done" | tool name like "Shell"
     input_tokens: int = 0
     output_tokens: int = 0

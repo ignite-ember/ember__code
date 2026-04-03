@@ -10,8 +10,9 @@ from ember_code.hooks.schemas import HookDefinition
 class HookLoader:
     """Loads hook definitions from settings files."""
 
-    def __init__(self, project_dir: Path | None = None):
+    def __init__(self, project_dir: Path | None = None, cross_tool_support: bool = False):
         self.project_dir = project_dir or Path.cwd()
+        self.cross_tool_support = cross_tool_support
 
     def load(self) -> dict[str, list[HookDefinition]]:
         """Load hooks from all settings files.
@@ -31,6 +32,17 @@ class HookLoader:
             self.project_dir / ".ember" / "settings.json",
             self.project_dir / ".ember" / "settings.local.json",
         ]
+
+        if self.cross_tool_support:
+            home_claude = Path.home() / ".claude"
+            paths.extend(
+                [
+                    home_claude / "settings.json",
+                    home_claude / "settings.local.json",
+                    self.project_dir / ".claude" / "settings.json",
+                    self.project_dir / ".claude" / "settings.local.json",
+                ]
+            )
 
         for path in paths:
             self._load_from_file(path, hooks)

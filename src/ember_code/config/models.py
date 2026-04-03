@@ -112,10 +112,6 @@ class ModelRegistry:
         if name is None:
             name = self.settings.models.default
 
-        env_model = os.environ.get("EMBER_MODEL")
-        if env_model:
-            name = env_model
-
         entry = self._resolve_entry(name)
         if entry is None:
             raise ValueError(

@@ -1,9 +1,12 @@
 """Session memory operations — reading and optimizing user memories."""
 
+import logging
 from typing import Any
 
 from ember_code.config.models import ModelRegistry
 from ember_code.config.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class SessionMemoryManager:
@@ -45,7 +48,8 @@ class SessionMemoryManager:
             return [
                 {"memory": m.memory or "", "topics": ", ".join(m.topics or [])} for m in memories
             ]
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to get user memories: %s", exc)
             return []
 
     async def optimize(self) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from ember_code.config.defaults import DEFAULT_CONFIG
 
 class ModelsConfig(BaseModel):
     default: str = "MiniMax-M2.7"
+    max_context_window: int = 200_000
     registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -19,14 +20,15 @@ class PermissionsConfig(BaseModel):
     file_write: str = "ask"
     shell_execute: str = "ask"
     shell_restricted: str = "allow"
-    web_search: str = "deny"
-    web_fetch: str = "deny"
+    web_search: str = "allow"
+    web_fetch: str = "allow"
     git_push: str = "ask"
     git_destructive: str = "ask"
 
 
 class SafetyConfig(BaseModel):
     sandbox_shell: bool = False
+    sandbox_allowed_network_commands: list[str] = Field(default_factory=list)
     protected_paths: list[str] = Field(
         default_factory=lambda: [
             ".env",
@@ -50,6 +52,10 @@ class SafetyConfig(BaseModel):
             "git push --force",
             "npm publish",
             "pip install",
+            "docker run",
+            "terraform apply",
+            "kubectl apply",
+            "kubectl delete",
         ]
     )
 
@@ -62,9 +68,16 @@ class StorageConfig(BaseModel):
     max_history_runs: int = 3
 
 
+class RulesConfig(BaseModel):
+    cross_tool_support: bool = True
+
+
+class HooksConfig(BaseModel):
+    cross_tool_support: bool = True
+
+
 class ContextConfig(BaseModel):
     project_file: str = "ember.md"
-    auto_load: list[str] = Field(default_factory=lambda: ["ember.md", ".ember/config.yaml"])
     ignore_patterns: list[str] = Field(
         default_factory=lambda: [
             "node_modules/",
@@ -89,12 +102,13 @@ class OrchestrationConfig(BaseModel):
 
 
 class AgentsConfig(BaseModel):
-    cross_tool_support: bool = False
+    cross_tool_support: bool = True
 
 
 class SkillsConfig(BaseModel):
-    cross_tool_support: bool = False
+    cross_tool_support: bool = True
     auto_trigger: bool = True
+    default_agent: str = "editor"
 
 
 class MemoryConfig(BaseModel):
@@ -142,6 +156,13 @@ class GuardrailsConfig(BaseModel):
     moderation: bool = False
 
 
+class EvalsConfig(BaseModel):
+    judge_model: str = "MiniMax-M2.7"
+    num_iterations: int = 3
+    accuracy_threshold: float = 7.0
+    timeout_per_case: int = 30
+
+
 class SchedulerConfig(BaseModel):
     poll_interval: int = 30
     task_timeout: int = 300
@@ -150,6 +171,7 @@ class SchedulerConfig(BaseModel):
 
 class AuthConfig(BaseModel):
     credentials_file: str = "~/.ember/credentials.json"
+    server_url: str = "https://api.ignite-ember.sh"
 
 
 class DisplayConfig(BaseModel):
@@ -173,6 +195,8 @@ class Settings(BaseModel):
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    rules: RulesConfig = Field(default_factory=RulesConfig)
+    hooks: HooksConfig = Field(default_factory=HooksConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     orchestration: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
@@ -182,6 +206,7 @@ class Settings(BaseModel):
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    evals: EvalsConfig = Field(default_factory=EvalsConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)

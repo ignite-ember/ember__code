@@ -11,17 +11,17 @@ and prioritize their work accordingly.
 
 import re
 import time
-from dataclasses import dataclass, field
+
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class OpenFile:
+class OpenFile(BaseModel):
     """A file the user has open in their IDE."""
 
     path: str
-    opened_at: float = field(default_factory=time.time)
+    opened_at: float = Field(default_factory=time.time)
     is_active: bool = False
-    diagnostics: list[dict] = field(default_factory=list)
+    diagnostics: list[dict] = Field(default_factory=list)
 
 
 class IDEContext:

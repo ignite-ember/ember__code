@@ -135,8 +135,8 @@ class RunController:
             run_id = getattr(team, "run_id", None)
             if run_id:
                 Agent.cancel_run(run_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to cancel run: %s", exc)
 
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
@@ -439,8 +439,8 @@ class RunController:
                 if w.is_running():
                     w.mark_done(summary, full_result)
                     break
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark tool completed in widget: %s", exc)
 
         if self._spinner:
             self._spinner.set_label("Thinking")
@@ -453,8 +453,8 @@ class RunController:
                 if w.is_running():
                     w.mark_done(f"Error: {error[:60]}")
                     break
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark tool error in widget: %s", exc)
         if self._spinner:
             self._spinner.set_label("Thinking")
 
@@ -598,16 +598,16 @@ class RunController:
         try:
             panel = self._app.query_one("#queue-panel", QueuePanel)
             panel.refresh_items(list(self._queue))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to sync queue panel: %s", exc)
 
     def _finalize_spinner(self) -> None:
         if self._spinner:
             try:
                 self._spinner.stop()
                 self._spinner.remove()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to finalize spinner: %s", exc)
             self._spinner = None
         # Task progress widget stays visible after run completes (read-only)
         self._task_progress = None
@@ -618,5 +618,5 @@ class RunController:
                 for s in self._app.query(cls):
                     s.stop()
                     s.remove()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to cleanup spinner %s: %s", cls.__name__, exc)

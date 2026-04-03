@@ -115,11 +115,7 @@ ember-code/
 │       │   ├── tools.py               # MCP → Agno tool integration
 │       │   ├── config.py              # .mcp.json loading
 │       │   ├── transport.py           # Transport layer (stdio, HTTP)
-│       │   ├── ide_detect.py          # Base IDE detector class
-│       │   ├── vscode.py              # VS Code MCP client integration
-│       │   ├── vscode_detect.py       # VS Code auto-detection
-│       │   ├── jetbrains.py           # JetBrains MCP client integration
-│       │   └── jetbrains_detect.py    # JetBrains auto-detection
+│       │   └── approval.py           # First-use MCP server approval
 │       ├── tui/
 │       │   ├── __init__.py            # Exports EmberApp
 │       │   ├── app.py                 # EmberApp — thin Textual shell, scheduler integration
@@ -142,6 +138,12 @@ ember-code/
 │       │       ├── _task_progress.py  # TaskProgressWidget — live task visualization
 │       │       ├── _activity.py       # AgentActivityWidget
 │       │       └── _formatting.py     # Rich formatting utilities
+│       ├── evals/
+│       │   ├── __init__.py            # Public API exports
+│       │   ├── loader.py              # YAML eval file parser → EvalSuite/EvalCase
+│       │   ├── assertions.py          # File and tool-call assertions
+│       │   ├── runner.py              # Eval orchestration (Agno ReliabilityEval + AccuracyEval)
+│       │   └── reporter.py            # Terminal output formatting
 │       ├── scheduler/
 │       │   ├── __init__.py
 │       │   ├── runner.py              # SchedulerRunner — bounded concurrency, timeout
@@ -355,7 +357,7 @@ make test            # verify tests still pass
 - **Integration tests** — Orchestrator decisions, team assembly, AgnoFeatures application
 - **Mock LLM calls** — mock model responses to test orchestration logic
 - **Agent definition tests** — validate all built-in `.md` files parse correctly
-- **513 tests** across 20+ test files, all passing
+- **912 tests** across 53 test files, all passing
 
 ## Slash Commands
 
@@ -377,6 +379,7 @@ Built-in commands available in interactive mode:
 | `/knowledge` | Show knowledge base status |
 | `/knowledge add <url\|path\|text>` | Add content to knowledge base |
 | `/knowledge search <query>` | Search the knowledge base |
+| `/evals [agent]` | Run agent evals (optionally filter by agent name) |
 | `/sync-knowledge` | Sync knowledge between git file and vector DB |
 | `/login` | Authenticate via device-flow (opens browser) |
 | `/<skill-name> [args]` | Invoke a skill (e.g., `/commit`, `/review-pr`) |

@@ -94,10 +94,36 @@ class PermissionGuard:
             return True
         return self._prompt_approval("file_write", f"Write file: {path}", path)
 
+    def check_sandbox(self, command: str, project_dir: Path | None = None) -> bool:
+        """Check if a command passes sandbox restrictions.
+
+        When ``safety.sandbox_shell`` is enabled, delegates to
+        :func:`ember_code.tools.sandbox.check_sandbox_command` to block
+        directory escapes and network commands.
+
+        Returns True if the command is allowed, False if blocked.
+        """
+        if not self.settings.safety.sandbox_shell:
+            return True
+
+        from ember_code.tools.sandbox import check_sandbox_command
+
+        base = project_dir or Path.cwd()
+        allowed_net = frozenset(self.settings.safety.sandbox_allowed_network_commands)
+        violation = check_sandbox_command(command, base, allowed_net)
+        if violation:
+            console.print(f"[red]Blocked:[/red] {violation}")
+            return False
+        return True
+
     def check_shell_execute(self, command: str) -> bool:
         """Check permission for shell command execution."""
         if self._is_blocked_command(command):
             console.print("[red]Blocked:[/red] Command matches blocked pattern.")
+            return False
+
+        # Check sandbox restrictions
+        if not self.check_sandbox(command):
             return False
 
         # Check if it needs confirmation

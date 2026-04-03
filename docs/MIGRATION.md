@@ -6,23 +6,13 @@ Already using Claude Code? Ember Code is designed to feel familiar while giving 
 
 | What | Where | Status |
 |---|---|---|
-| Agent `.md` files | `.claude/agents/` | Loaded when `cross_tool_support: true` |
-| Skills | `.claude/skills/` | Loaded when `cross_tool_support: true` |
+| Agent `.md` files | `.claude/agents/` | Loaded automatically (cross-tool support is on by default) |
+| Skills | `.claude/skills/` | Loaded automatically |
 | MCP config | `.mcp.json` | Same format, same location, works as-is |
 | Hooks | `.claude/settings.json` | Same event names, same JSON format, same exit codes |
-| Project instructions | `CLAUDE.md` | Ember Code reads `CLAUDE.md` in addition to `ember.md` |
+| Project instructions | `CLAUDE.md` | Read automatically (root + subdirectories) |
 
-Enable cross-tool support to scan Claude Code directories:
-
-```yaml
-# .ember/config.yaml
-agents:
-  cross_tool_support: true
-skills:
-  cross_tool_support: true
-```
-
-Or copy your agents/skills into `.ember/agents/` and `.ember/skills/` — no conversion needed since the file format is the same.
+Cross-tool support is **enabled by default** — Ember Code reads `CLAUDE.md` files, `.claude/agents/`, `.claude/skills/`, and `.claude/settings.json` out of the box. No configuration needed.
 
 ---
 
@@ -32,16 +22,10 @@ Or copy your agents/skills into `.ember/agents/` and `.ember/skills/` — no con
 brew install ignite-ember
 # or: pip install ignite-ember
 ignite-ember /login                   # sign up at ignite-ember.sh
-ignite-ember                         # start — enable cross_tool_support to pick up existing agents
+ignite-ember                         # start — picks up existing agents, skills, CLAUDE.md automatically
 ```
 
-To use your existing Claude Code agents and skills immediately, add to `.ember/config.yaml`:
-```yaml
-agents:
-  cross_tool_support: true
-skills:
-  cross_tool_support: true
-```
+Your existing Claude Code agents, skills, and `CLAUDE.md` files are picked up automatically — cross-tool support is enabled by default.
 
 ---
 
@@ -87,7 +71,6 @@ Both use `.md` files with YAML frontmatter. Ember Code adds **optional** extensi
 name: my-agent
 description: Does things
 tools: Read, Write, Edit, Bash
-model: MiniMax-M2.7        # (Claude Code uses: claude-sonnet-4-6)
 
 # Ember extensions (ignored by Claude Code)
 tags: [backend, api]
@@ -136,8 +119,8 @@ models:
 | `~/.claude/settings.json` | `~/.ember/settings.json` | Global settings |
 | `.claude/settings.json` | `.ember/settings.json` | Project settings |
 | `.claude/settings.local.json` | `.ember/settings.local.json` | Local overrides (gitignored) |
-| `CLAUDE.md` | `ember.md` | Project instructions (both are read) |
-| `~/.claude/CLAUDE.md` | `~/.ember/ember.md` | Global instructions |
+| `CLAUDE.md` | `ember.md` | `CLAUDE.md` also read by default (cross-tool support) |
+| `~/.claude/CLAUDE.md` | `~/.ember/rules.md` | User-level global rules |
 | `.claude/agents/*.md` | `.ember/agents/*.md` | Agent definitions (both dirs scanned) |
 | `.mcp.json` | `.mcp.json` | MCP config (same file, same format) |
 
@@ -153,11 +136,11 @@ models:
 | `--dangerously-skip-permissions` | `--auto-approve` | Skip all permission prompts |
 | `--permission-mode plan` | `--read-only` | Read-only mode |
 | `--permission-mode acceptEdits` | `--accept-edits` | Auto-approve file edits |
-| `--worktree` | Not yet available | Planned feature |
+| `--worktree` | `--worktree` | Isolated git worktree session |
 | `--effort low\|high` | Not applicable | Ember Code uses Agno reasoning instead |
 | `--tools <list>` | Per-agent in `.md` file | Tool access is per-agent, not global |
 | N/A | `--no-tui` | Fall back to plain Rich CLI (TUI is the default) |
-| `--add-dir <path>` | Not yet available | Planned feature |
+| `--add-dir <path>` | `--add-dir <path>` | Additional directories (repeatable) |
 
 ### Slash Commands
 
@@ -165,29 +148,24 @@ models:
 |---|---|---|
 | `/help` | `/help` | Same |
 | `/clear` | `/clear` | Same |
-| `/compact` | `/compact` | Same |
 | `/config` | `/config` | Same |
 | `/model <name>` | `/model <name>` | Same |
-| `/plan` | `/plan` | Same — enters planning mode |
 | `/agent` | `/agents` | List/manage agents |
-| `/resume` | `/resume` | Resume session |
-| `/cost` | `/cost` | Token/cost stats |
-| `/mcp` | `/mcp` | Manage MCP servers |
 | `/hooks` | `/hooks` | View loaded hooks |
-| — | `/onboard` | First-run onboarding (Ember Code only) |
-| — | `/propose-agents` | Generate project-specific agents |
-| — | `/evals run` | Run agent evaluations |
 | — | `/knowledge` | Knowledge base status |
 | — | `/knowledge add` | Add content to knowledge base |
 | — | `/knowledge search` | Search the knowledge base |
-| — | `/sync-knowledge` | Sync knowledge between git file and vector DB |
 | — | `/memory` | List stored memories |
 | — | `/memory optimize` | Consolidate memories |
 | — | `/sessions` | Browse and resume past sessions |
 | — | `/rename <name>` | Rename current session |
 | — | `/skills` | List loaded skills |
 | — | `/login` | Device-flow authentication (opens browser) |
-| — | `/codeindex status` | CodeIndex indexing status |
+| — | `/logout` | Sign out |
+| — | `/whoami` | Show current user |
+| — | `/schedule` | Manage scheduled tasks |
+| — | `/evals` | Run agent evaluations |
+| — | `/sync-knowledge` | Sync knowledge base |
 
 ### Permissions
 
@@ -214,21 +192,19 @@ models:
 - [ ] `brew install ignite-ember` (or `pip install ignite-ember`)
 - [ ] `ignite-ember /login` (sign up at ignite-ember.sh)
 - [ ] Run `ignite-ember` — it automatically picks up:
-  - `.claude/agents/*.md` (your agents)
   - `.mcp.json` (your MCP servers)
-  - `CLAUDE.md` (your project instructions)
+  - `ember.md` and `CLAUDE.md` (project instructions)
+  - `.claude/agents/` and `.claude/skills/` (cross-tool support is on by default)
 
 ### Recommended (get the full benefit)
 
-- [ ] Copy `CLAUDE.md` → `ember.md` (or keep both — Ember reads both)
+- [ ] Copy `CLAUDE.md` → `ember.md` (or keep both — Ember reads both by default)
 - [ ] Add Ember extensions to agents that benefit from them:
   - `tags` for better Orchestrator routing
   - `reasoning: true` for agents that need chain-of-thought
   - `can_orchestrate: false` for agents that shouldn't spawn sub-teams
 - [ ] Copy hooks from `.claude/settings.json` → `.ember/settings.json`
-- [ ] Run `/onboard` to set up CodeIndex indexing
-- [ ] Run `/propose-agents` to get project-specific agent suggestions
-- [ ] Run `/evals run` to verify agents work correctly
+- [ ] Run `/agents refresh` to reload the agent pool
 
 ### Optional (power features)
 
@@ -261,7 +237,7 @@ Features you get that Claude Code doesn't have:
 | **TUI mode** | Full Textual-based terminal UI with streaming, session management, token tracking (default; `--no-tui` for plain Rich CLI) |
 | **Task scheduling** | Schedule one-shot or recurring background tasks with configurable timeout and concurrency |
 | **Task visualization** | Live TUI widget showing task list, statuses, assignees, dependencies during tasks-mode execution |
-| **IDE auto-detection** | Automatically detects VS Code and JetBrains IDEs and configures MCP integration |
+| **IDE MCP support** | Agents declare which MCP servers they use via `mcp_servers` in their `.md` file |
 | **Team modes** | Route, Coordinate, Broadcast, Tasks — right tool for each job |
 
 ---
@@ -272,13 +248,7 @@ Features in Claude Code that Ember Code hasn't implemented:
 
 | Feature | Status | Notes |
 |---|---|---|
-| Git worktrees (`--worktree`) | Planned | Isolated parallel sessions |
 | Effort levels (`--effort`) | N/A | Ember uses Agno reasoning instead |
-| Remote Control (web UI) | Planned | Access from browser |
-| Voice mode | Not planned | |
-| Plugin marketplace | Not planned | Use agents + tools instead |
-| VS Code extension | Planned | MCP integration works today |
-| `--add-dir` (multi-repo) | Planned | Multi-workspace support |
 
 ---
 

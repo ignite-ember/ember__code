@@ -15,7 +15,7 @@ from ember_code.config.settings import (
 )
 from ember_code.knowledge.embedder import EmberEmbedder
 from ember_code.knowledge.embedder_registry import EmbedderRegistry
-from ember_code.knowledge.manager import KnowledgeManager
+from ember_code.knowledge.manager import KnowledgeManager, _resolve_collection_name
 from ember_code.knowledge.models import (
     KnowledgeAddResult,
     KnowledgeFilter,
@@ -147,6 +147,77 @@ class TestEmberEmbedder:
         embedding, usage = await e.async_get_embedding_and_usage("test")
         assert embedding == []
         assert usage is None
+
+
+# ── Collection Name Resolution ──────────────────────────────────
+
+
+class TestResolveCollectionName:
+    def test_uses_git_remote(self, tmp_path):
+        """When a git repo with a remote exists, hash is based on remote URL."""
+        import subprocess
+
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/my-repo.git"],
+            cwd=tmp_path,
+            capture_output=True,
+        )
+        name = _resolve_collection_name("ember_knowledge", tmp_path)
+        assert name.startswith("ember_knowledge_")
+        assert len(name) == len("ember_knowledge_") + 8
+
+        # Same remote URL should produce same hash
+        name2 = _resolve_collection_name("ember_knowledge", tmp_path)
+        assert name == name2
+
+    def test_different_remotes_differ(self, tmp_path):
+        """Different remote URLs produce different collection names."""
+        import subprocess
+
+        # Repo A
+        repo_a = tmp_path / "a"
+        repo_a.mkdir()
+        subprocess.run(["git", "init"], cwd=repo_a, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo-a.git"],
+            cwd=repo_a,
+            capture_output=True,
+        )
+
+        # Repo B
+        repo_b = tmp_path / "b"
+        repo_b.mkdir()
+        subprocess.run(["git", "init"], cwd=repo_b, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo-b.git"],
+            cwd=repo_b,
+            capture_output=True,
+        )
+
+        name_a = _resolve_collection_name("ember_knowledge", repo_a)
+        name_b = _resolve_collection_name("ember_knowledge", repo_b)
+        assert name_a != name_b
+
+    def test_falls_back_to_path_without_git(self, tmp_path):
+        """Non-git directories fall back to path-based hash."""
+        name = _resolve_collection_name("ember_knowledge", tmp_path)
+        assert name.startswith("ember_knowledge_")
+        assert len(name) == len("ember_knowledge_") + 8
+
+    def test_different_dirs_differ(self, tmp_path):
+        """Different directories produce different collection names."""
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        name_a = _resolve_collection_name("ember_knowledge", dir_a)
+        name_b = _resolve_collection_name("ember_knowledge", dir_b)
+        assert name_a != name_b
+
+    def test_preserves_base_name(self, tmp_path):
+        name = _resolve_collection_name("my_project", tmp_path)
+        assert name.startswith("my_project_")
 
 
 # ── KnowledgeManager ─────────────────────────────────────────────

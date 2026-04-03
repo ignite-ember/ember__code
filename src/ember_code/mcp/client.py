@@ -5,7 +5,8 @@ import logging
 import os
 from typing import Any
 
-from ember_code.mcp.config import MCPConfigLoader
+from ember_code.mcp.approval import MCPApprovalManager
+from ember_code.mcp.config import MCPConfigLoader, MCPPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,14 @@ def _suppress_subprocess_output():
 class MCPClientManager:
     """Manages connections to external MCP servers."""
 
-    def __init__(self, project_dir=None):
+    def __init__(self, project_dir=None, *, policy: MCPPolicy | None = None):
         self.configs = MCPConfigLoader(project_dir).load()
         self._clients: dict[str, Any] = {}
         self._errors: dict[str, str] = {}
+        self._approval = MCPApprovalManager()
+        self._policy: MCPPolicy = (
+            policy if policy is not None else MCPPolicy.from_managed_settings()
+        )
 
     async def connect(self, name: str) -> Any | None:
         """Connect to an MCP server by name.
@@ -48,6 +53,23 @@ class MCPClientManager:
         config = self.configs.get(name)
         if not config:
             self._errors[name] = "No config found"
+            return None
+
+        # --- MCP policy enforcement ---
+        if self._policy.is_denied(name):
+            self._errors[name] = f"Server '{name}' is blocked by admin policy"
+            logger.warning("MCP '%s' blocked by managed policy (denied)", name)
+            return None
+
+        if not self._policy.is_allowed(name):
+            self._errors[name] = f"Server '{name}' is not in the allowed list"
+            logger.warning("MCP '%s' blocked by managed policy (not allowed)", name)
+            return None
+
+        # --- First-use approval ---
+        if not self._approval.check_approval(name, config.source_path):
+            self._errors[name] = "User denied MCP server connection"
+            logger.info("MCP '%s' denied by user approval prompt", name)
             return None
 
         try:
@@ -129,3 +151,8 @@ class MCPClientManager:
     def list_connected(self) -> list[str]:
         """List currently connected MCP server names."""
         return list(self._clients.keys())
+
+    def list_required(self) -> list[str]:
+        """List servers required by admin policy that are not yet connected."""
+        connected = set(self._clients.keys())
+        return [s for s in self._policy.required if s not in connected]

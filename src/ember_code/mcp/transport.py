@@ -1,5 +1,9 @@
 """MCP transport layer — stdio and HTTP transport handling."""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class StdioTransport:
     """Handles stdio-based MCP communication."""
@@ -34,7 +38,8 @@ class StdioTransport:
             self._process.terminate()
             try:
                 await self._process.wait()
-            except Exception:
+            except Exception as exc:
+                logger.debug("Failed to wait for process termination, killing: %s", exc)
                 self._process.kill()
             self._process = None
 

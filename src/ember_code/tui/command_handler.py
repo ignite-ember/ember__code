@@ -93,6 +93,9 @@ class CommandHandler:
             "- `/help` — show this help\n"
             "- `/quit` — exit\n"
             "- `/agents` — list loaded agents\n"
+            "- `/agents ephemeral` — list ephemeral agents\n"
+            "- `/agents promote <name>` — promote ephemeral agent to permanent\n"
+            "- `/agents discard <name>` — delete an ephemeral agent\n"
             "- `/skills` — list loaded skills\n"
             "- `/hooks` — list loaded hooks\n"
             "- `/clear` — reset conversation context\n"
@@ -113,7 +116,39 @@ class CommandHandler:
             f"\n{SHORTCUT_HELP}"
         )
 
-    async def _cmd_agents(self, _args: str) -> "CommandResult":
+    async def _cmd_agents(self, args: str) -> "CommandResult":
+        parts = args.strip().split(None, 1)
+        subcommand = parts[0].lower() if parts else ""
+        sub_args = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcommand == "promote" and sub_args:
+            name = sub_args.strip()
+            try:
+                dest = self._session.pool.promote_ephemeral(name, self._session.project_dir)
+                return CommandResult.info(f"Promoted '{name}' to {dest}")
+            except (KeyError, ValueError, RuntimeError) as e:
+                return CommandResult.error(str(e))
+
+        if subcommand == "discard" and sub_args:
+            name = sub_args.strip()
+            try:
+                self._session.pool.discard_ephemeral(name)
+                return CommandResult.info(f"Discarded ephemeral agent '{name}'.")
+            except (KeyError, ValueError, RuntimeError) as e:
+                return CommandResult.error(str(e))
+
+        if subcommand == "ephemeral":
+            agents = self._session.pool.list_ephemeral()
+            if not agents:
+                return CommandResult.info("No ephemeral agents.")
+            lines = "## Ephemeral Agents\n"
+            for defn in agents:
+                tools = ", ".join(defn.tools) if defn.tools else "none"
+                lines += f"- **{defn.name}** — {defn.description}\n  tools: {tools}\n"
+            lines += "\n[dim]Use `/agents promote <name>` to make permanent.[/dim]\n"
+            return CommandResult.markdown(lines)
+
+        # Default: list all agents
         lines = "## Agents\n"
         for defn in self._session.pool.list_agents():
             tools = ", ".join(defn.tools) if defn.tools else "none"
@@ -127,7 +162,12 @@ class CommandHandler:
             lines += f"- **/{skill.name}**{hint} — {skill.description}\n"
         return CommandResult.markdown(lines or "## Skills\n(no skills loaded)")
 
-    async def _cmd_hooks(self, _args: str) -> "CommandResult":
+    async def _cmd_hooks(self, args: str) -> "CommandResult":
+        subcommand = args.strip().lower()
+        if subcommand == "reload":
+            count = self._session.reload_hooks()
+            return CommandResult.info(f"Hooks reloaded. {count} hook(s) loaded.")
+
         if not self._session.hooks_map:
             return CommandResult.info("No hooks loaded.")
         lines = "## Hooks\n"
@@ -424,9 +464,9 @@ class CommandHandler:
             skill, args = skill_match
             from ember_code.skills.executor import SkillExecutor
 
-            result = await SkillExecutor(self._session.pool, self._session.settings).execute(
-                skill, args
-            )
+            result = await SkillExecutor(
+                self._session.pool, self._session.settings, self._session.session_id
+            ).execute(skill, args)
             return CommandResult.markdown(result)
         return CommandResult.error(f"Unknown command: {stripped.split()[0]}")
 

@@ -118,6 +118,7 @@ Agno's built-in memory system replaces file-based memory:
 - **User memory** — preferences, role, expertise level (persists across sessions)
 - **Session storage** — conversation history, tool outputs (per-session, DB-backed)
 - **Session state** — current task progress, open files, working context
+- **Progress tracking** — `.ember/TODO.md` auto-loaded into context for cross-session task continuity
 
 ## Request Lifecycle
 
@@ -215,7 +216,7 @@ Startup
            └── Orchestrator reads pool on each request
 ```
 
-By default, Ember Code loads agents and skills from its own directories only. Enable `cross_tool_support: true` in config to also scan Claude Code and Codex directories — useful for teams migrating from those tools. See [Agents](AGENTS.md) and [Skills](SKILLS.md) for format details.
+By default, Ember Code loads agents and skills from both its own directories and Claude Code / Codex directories (`cross_tool_support` is on by default). Set `cross_tool_support: false` to only scan Ember Code directories. See [Agents](AGENTS.md) and [Skills](SKILLS.md) for format details.
 
 ## Session Management
 
@@ -346,7 +347,7 @@ When scheduled tasks complete, toast notifications appear via Textual's `notify(
 - **Tool failures** — agents retry with alternative approaches (Agno's built-in retry)
 - **Model errors** — graceful fallback with user notification
 - **Permission denied** — clear explanation of what was blocked and why
-- **Context overflow** — automatic compaction of older conversation turns via `num_history_runs` limiting
+- **Context overflow** — two-layer compression (tool result compression + conversation history compaction) triggers at 80% of `min(model_window, models.max_context_window)`, default ceiling 200k tokens
 - **Agent not found** — Orchestrator falls back to available agents with a warning
 - **Team failure** — if a coordinated team fails mid-execution, partial results are preserved and shown
 

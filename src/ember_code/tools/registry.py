@@ -3,13 +3,14 @@
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from agno.tools.file import FileTools
 from agno.tools.shell import ShellTools
 
 from ember_code.config.tool_permissions import ToolPermissions
 from ember_code.tools.edit import EmberEditTools
+from ember_code.tools.notebook import NotebookTools
+from ember_code.tools.sandbox import SandboxedShellTools
 from ember_code.tools.schedule import ScheduleTools
 from ember_code.tools.search import GlobTools, GrepTools
 from ember_code.tools.web import WebTools
@@ -26,11 +27,26 @@ class ToolRegistry:
     Integrates with ToolPermissions to:
     - Skip denied tools entirely
     - Pass requires_confirmation_tools for "ask" tools
+
+    CodeIndex tools (CodeIndexSearch, CodeIndexEntity, CodeIndexDeps) are
+    only available when an Ember Cloud access token is provided.
     """
 
-    def __init__(self, base_dir: str | None = None, permissions: ToolPermissions | None = None):
+    def __init__(
+        self,
+        base_dir: str | None = None,
+        permissions: ToolPermissions | None = None,
+        cloud_token: str | None = None,
+        cloud_server_url: str | None = None,
+        sandbox_shell: bool = False,
+        sandbox_allowed_network_commands: list[str] | None = None,
+    ):
         self.base_dir = Path(base_dir) if base_dir else Path.cwd()
         self.permissions = permissions or ToolPermissions(project_dir=self.base_dir)
+        self._cloud_token = cloud_token
+        self._cloud_server_url = cloud_server_url or "https://api.ignite-ember.sh"
+        self._sandbox_shell = sandbox_shell
+        self._sandbox_allowed_network = sandbox_allowed_network_commands or []
         self._factories: dict[str, Callable] = {
             "Read": self._make_read,
             "Write": self._make_write,
@@ -44,7 +60,11 @@ class ToolRegistry:
             "WebFetch": self._make_web_fetch,
             "Python": self._make_python,
             "Schedule": self._make_schedule,
+            "NotebookEdit": self._make_notebook,
         }
+        # Register CodeIndex tools only when authenticated with Ember Cloud
+        if self._cloud_token:
+            self._factories["CodeIndex"] = self._make_codeindex
 
     @property
     def available_tools(self) -> list[str]:
@@ -55,29 +75,14 @@ class ToolRegistry:
         """Register a custom tool factory."""
         self._factories[name] = factory
 
-    def resolve(
-        self,
-        tool_names: list[str] | str,
-        jetbrains_mcp: Any = None,
-        vscode_mcp: Any = None,
-        ide_mcp_clients: dict[str, Any] | None = None,
-    ) -> list:
+    def resolve(self, tool_names: list[str] | str) -> list:
         """Resolve tool names to Agno toolkit instances.
 
         Denied tools are skipped. Tools with "ask" permission get
         ``requires_confirmation_tools`` set so Agno triggers HITL.
 
-        When IDE MCP clients are provided, Agno tools that the IDE covers
-        are replaced with MCP equivalents. JetBrains and VS Code are
-        supported. Only one IDE override is applied (JetBrains takes
-        priority if both are present).
-
         Args:
             tool_names: Comma-separated string or list of tool names.
-            jetbrains_mcp: Optional connected JetBrains MCPTools instance.
-            vscode_mcp: Optional connected VS Code MCPTools instance.
-            ide_mcp_clients: Dict of IDE name → MCPTools (alternative to
-                             individual params). Keys: ``"jetbrains"``, ``"vscode"``.
 
         Returns:
             List of Agno toolkit instances.
@@ -89,7 +94,7 @@ class ToolRegistry:
         seen: set[str] = set()
 
         for name in tool_names:
-            if name.startswith("MCP:") or name == "Orchestrate":
+            if name.startswith("MCP:") or name in ("Orchestrate", "Knowledge"):
                 continue
 
             if self.permissions.is_denied(name):
@@ -108,20 +113,6 @@ class ToolRegistry:
             needs_confirm = self.permissions.needs_confirmation(name)
             toolkit = self._factories[name](confirm=needs_confirm)
             tools.append(toolkit)
-
-        # Resolve IDE MCP clients from both param styles
-        jb = jetbrains_mcp or (ide_mcp_clients or {}).get("jetbrains")
-        vsc = vscode_mcp or (ide_mcp_clients or {}).get("vscode")
-
-        # Apply IDE MCP overrides (JetBrains takes priority)
-        if jb is not None:
-            from ember_code.mcp.jetbrains import filter_tools_with_jetbrains
-
-            tools = filter_tools_with_jetbrains(tools, tool_names, jb)
-        elif vsc is not None:
-            from ember_code.mcp.vscode import filter_tools_with_vscode
-
-            tools = filter_tools_with_vscode(tools, tool_names, vsc)
 
         return tools
 
@@ -176,6 +167,12 @@ class ToolRegistry:
         kwargs: dict = {}
         if confirm:
             kwargs["requires_confirmation_tools"] = ["run_shell_command"]
+        if self._sandbox_shell:
+            return SandboxedShellTools(
+                project_dir=self.base_dir,
+                allowed_network_commands=self._sandbox_allowed_network,
+                **kwargs,
+            )
         return ShellTools(**kwargs)
 
     def _make_ls(self, confirm: bool = False):
@@ -222,3 +219,49 @@ class ToolRegistry:
         if confirm:
             kwargs["requires_confirmation_tools"] = ["run_python_code"]
         return PythonTools(**kwargs)
+
+    def _make_notebook(self, confirm: bool = False):
+        kwargs: dict = dict(base_dir=str(self.base_dir))
+        if confirm:
+            kwargs["requires_confirmation_tools"] = [
+                "notebook_edit_cell",
+                "notebook_add_cell",
+                "notebook_remove_cell",
+            ]
+        return NotebookTools(**kwargs)
+
+    # ── CodeIndex (Ember Cloud) ───────────────────────────────────
+
+    def _make_codeindex(self, confirm: bool = False):
+        from ember_code.tools.codeindex import CodeIndexTools
+
+        kwargs: dict = dict(
+            server_url=self._cloud_server_url,
+            access_token=self._cloud_token,
+            project_dir=str(self.base_dir),
+        )
+        if confirm:
+            kwargs["requires_confirmation_tools"] = [
+                "codeindex_search",
+                "codeindex_similar",
+                "codeindex_item",
+                "codeindex_references",
+                "codeindex_tree",
+            ]
+        return CodeIndexTools(**kwargs)
+
+    def load_custom_tools(self, project_dir: Path | None = None) -> list:
+        """Discover custom tools from .ember/tools/ and return as toolkit list.
+
+        Scans directories in priority order:
+        1. ~/.ember/tools/ (global user tools)
+        2. <project>/.ember/tools/ (project tools)
+        """
+        from ember_code.tools.custom_loader import load_custom_tools as _load
+
+        return _load(project_dir or self.base_dir)
+
+    @property
+    def cloud_connected(self) -> bool:
+        """Whether Ember Cloud tools are available."""
+        return self._cloud_token is not None

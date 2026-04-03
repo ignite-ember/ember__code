@@ -1,5 +1,7 @@
 """Conversation content widgets: messages, tool calls, MCP calls, agent tree."""
 
+import logging
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
@@ -8,6 +10,8 @@ from textual.widgets import Collapsible, Markdown, Static, Tree
 
 # Shared friendly display names for internal tool names.
 # Used by ToolCallWidget, ToolCallLiveWidget, and StreamHandler.
+logger = logging.getLogger(__name__)
+
 TOOL_FRIENDLY_NAMES: dict[str, str] = {
     "run_shell_command": "Shell",
     "read_file": "Read",
@@ -192,8 +196,8 @@ class StreamingMessageWidget(Widget):
         try:
             md = self.query_one(".stream-content", Markdown)
             md.update(self.text)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to update streaming content: %s", exc)
 
     def finalize(self) -> str:
         """Return the full text."""

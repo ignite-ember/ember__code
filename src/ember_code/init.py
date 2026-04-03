@@ -177,9 +177,14 @@ def _write_default_config(home_ember: Path) -> None:
 
         from ember_code.config.defaults import DEFAULT_CONFIG
 
-        config_path.write_text(CONFIG_YAML_HEADER + yaml.dump(
-            DEFAULT_CONFIG, default_flow_style=False, sort_keys=False,
-        ))
+        config_path.write_text(
+            CONFIG_YAML_HEADER
+            + yaml.dump(
+                DEFAULT_CONFIG,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+        )
 
 
 def _copy_agents(project_dir: Path) -> None:

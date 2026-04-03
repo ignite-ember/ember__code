@@ -1,6 +1,7 @@
 """Single-message session runner."""
 
 import time
+from pathlib import Path
 
 from ember_code.config.settings import Settings
 from ember_code.hooks.events import HookEvent
@@ -12,12 +13,16 @@ async def run_single_message(
     settings: Settings,
     message: str,
     resume_session_id: str | None = None,
+    project_dir: Path | None = None,
+    additional_dirs: list[Path] | None = None,
 ):
     """Run a single non-interactive message."""
 
     session = Session(
         settings,
+        project_dir=project_dir,
         resume_session_id=resume_session_id,
+        additional_dirs=additional_dirs,
     )
 
     await session.hook_executor.execute(

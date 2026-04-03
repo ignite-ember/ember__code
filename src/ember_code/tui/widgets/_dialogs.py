@@ -1,6 +1,7 @@
 """Modal/overlay widgets: permission dialog, session picker, model picker, login."""
 
 import asyncio
+import logging
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -10,6 +11,8 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
+
+logger = logging.getLogger(__name__)
 
 
 class SessionInfo(BaseModel):
@@ -162,8 +165,8 @@ class PermissionDialog(Widget):
             old_widget.remove_class("-selected")
             new_widget = self.query_one(f"#opt-{new}", Static)
             new_widget.add_class("-selected")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to update permission dialog selection: %s", exc)
 
     def on_key(self, event) -> None:
         event.stop()
@@ -193,8 +196,8 @@ class PermissionDialog(Widget):
                     self.selected_index = i
                     self._confirm_selection()
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to match click to permission option #opt-%d: %s", i, exc)
 
     def _confirm_selection(self) -> None:
         key, _label = self._OPTIONS[self.selected_index]

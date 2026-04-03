@@ -1,0 +1,194 @@
+"""Tests for auth/credentials.py — credential storage and JWT handling."""
+
+import json
+import time
+
+from ember_code.auth.credentials import (
+    Credentials,
+    _credentials_path,
+    clear_credentials,
+    decode_jwt_claims,
+    get_access_token,
+    get_org_id,
+    get_org_name,
+    is_token_expired,
+    load_credentials,
+    save_credentials,
+)
+
+
+def _make_jwt(payload: dict) -> str:
+    """Create a fake JWT with the given payload (no signature verification)."""
+    import base64
+
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    sig = base64.urlsafe_b64encode(b"fakesig").rstrip(b"=").decode()
+    return f"{header}.{body}.{sig}"
+
+
+class TestCredentialsPath:
+    def test_default_path(self):
+        from pathlib import Path
+
+        path = _credentials_path()
+        assert path == Path.home() / ".ember" / "credentials.json"
+
+    def test_custom_path(self, tmp_path):
+        path = _credentials_path(str(tmp_path / "creds.json"))
+        assert path == tmp_path / "creds.json"
+
+    def test_expands_tilde(self):
+        from pathlib import Path
+
+        path = _credentials_path("~/.ember/credentials.json")
+        assert str(Path.home()) in str(path)
+
+
+class TestSaveAndLoadCredentials:
+    def test_save_creates_file(self, tmp_path):
+        creds_path = str(tmp_path / "creds.json")
+        save_credentials("tok123", "user@test.com", path=creds_path)
+
+        assert (tmp_path / "creds.json").exists()
+        data = json.loads((tmp_path / "creds.json").read_text())
+        assert data["access_token"] == "tok123"
+        assert data["email"] == "user@test.com"
+
+    def test_load_returns_credentials(self, tmp_path):
+        creds_path = str(tmp_path / "creds.json")
+        save_credentials("tok456", "a@b.com", path=creds_path)
+        creds = load_credentials(path=creds_path)
+
+        assert creds is not None
+        assert creds.access_token == "tok456"
+        assert creds.email == "a@b.com"
+
+    def test_load_returns_none_for_missing(self, tmp_path):
+        creds = load_credentials(path=str(tmp_path / "missing.json"))
+        assert creds is None
+
+    def test_load_returns_none_for_invalid_json(self, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_text("not json")
+        creds = load_credentials(path=str(bad))
+        assert creds is None
+
+
+class TestClearCredentials:
+    def test_removes_file(self, tmp_path):
+        creds_path = str(tmp_path / "creds.json")
+        save_credentials("tok", "a@b.com", path=creds_path)
+        assert (tmp_path / "creds.json").exists()
+
+        clear_credentials(path=creds_path)
+        assert not (tmp_path / "creds.json").exists()
+
+    def test_no_error_on_missing(self, tmp_path):
+        clear_credentials(path=str(tmp_path / "missing.json"))  # should not raise
+
+
+class TestTokenExpiry:
+    def test_not_expired(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        creds = Credentials(
+            access_token="tok",
+            email="a@b.com",
+            expires_at=future,
+        )
+        assert not is_token_expired(creds)
+
+    def test_expired(self):
+        from datetime import datetime, timedelta, timezone
+
+        past = (datetime.now(timezone.utc) - timedelta(seconds=100)).isoformat()
+        creds = Credentials(
+            access_token="tok",
+            email="a@b.com",
+            expires_at=past,
+        )
+        assert is_token_expired(creds)
+
+    def test_no_expiry_is_not_expired(self):
+        creds = Credentials(
+            access_token="tok",
+            email="a@b.com",
+        )
+        assert not is_token_expired(creds)
+
+
+class TestGetAccessToken:
+    def test_returns_token(self, tmp_path):
+        creds_path = str(tmp_path / "creds.json")
+        save_credentials("my_token", "a@b.com", path=creds_path)
+        token = get_access_token(path=creds_path)
+        assert token == "my_token"
+
+    def test_returns_none_for_missing(self, tmp_path):
+        token = get_access_token(path=str(tmp_path / "nope.json"))
+        assert token is None
+
+    def test_returns_none_for_expired(self, tmp_path):
+        creds_path = tmp_path / "creds.json"
+        data = {
+            "access_token": "expired_tok",
+            "email": "a@b.com",
+            "expires_at": time.time() - 100,
+        }
+        creds_path.write_text(json.dumps(data))
+        token = get_access_token(path=str(creds_path))
+        assert token is None
+
+
+class TestDecodeJwtClaims:
+    def test_decodes_valid_jwt(self):
+        token = _make_jwt({"sub": "user1", "org": "org123"})
+        claims = decode_jwt_claims(token)
+        assert claims["sub"] == "user1"
+        assert claims["org"] == "org123"
+
+    def test_returns_empty_for_invalid(self):
+        assert decode_jwt_claims("not.a.jwt") == {}
+        assert decode_jwt_claims("") == {}
+        assert decode_jwt_claims("single") == {}
+
+    def test_handles_padding(self):
+        # Payload that needs padding
+        token = _make_jwt({"org": "x"})
+        claims = decode_jwt_claims(token)
+        assert claims["org"] == "x"
+
+
+class TestGetOrgIdAndName:
+    def test_get_org_id(self, tmp_path):
+        token = _make_jwt({"org": "org_42", "org_name": "Acme"})
+        creds_path = tmp_path / "creds.json"
+        data = {"access_token": token, "email": "a@b.com"}
+        creds_path.write_text(json.dumps(data))
+
+        org_id = get_org_id(path=str(creds_path))
+        assert org_id == "org_42"
+
+    def test_get_org_name(self, tmp_path):
+        token = _make_jwt({"org": "org_42", "org_name": "Acme"})
+        creds_path = tmp_path / "creds.json"
+        data = {"access_token": token, "email": "a@b.com"}
+        creds_path.write_text(json.dumps(data))
+
+        name = get_org_name(path=str(creds_path))
+        assert name == "Acme"
+
+    def test_returns_none_when_no_token(self, tmp_path):
+        assert get_org_id(path=str(tmp_path / "missing.json")) is None
+        assert get_org_name(path=str(tmp_path / "missing.json")) is None
+
+    def test_returns_none_when_claim_missing(self, tmp_path):
+        token = _make_jwt({"sub": "user1"})  # no org claims
+        creds_path = tmp_path / "creds.json"
+        data = {"access_token": token, "email": "a@b.com"}
+        creds_path.write_text(json.dumps(data))
+
+        assert get_org_id(path=str(creds_path)) is None
+        assert get_org_name(path=str(creds_path)) is None

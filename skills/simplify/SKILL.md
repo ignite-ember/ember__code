@@ -1,7 +1,6 @@
 ---
 name: simplify
 description: This skill should be used when the user asks to "simplify", "clean up", "reduce complexity", or wants to review changed code for reuse, quality, and efficiency.
-allowed-tools: Read, Edit, Grep, Glob, Bash
 ---
 
 Review recently changed code for opportunities to simplify while preserving exact functionality.

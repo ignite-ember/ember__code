@@ -89,7 +89,8 @@ def is_token_expired(creds: Credentials) -> bool:
         if expires.tzinfo is None:
             expires = expires.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) >= expires
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to check token expiry: %s", exc)
         return False
 
 
@@ -109,7 +110,8 @@ def save_model_credentials(api_key: str, url: str, model_name: str = "MiniMax-M2
             data = yaml.safe_load(config_path.read_text())
             if isinstance(data, dict):
                 config = data
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to load config.yaml: %s", exc)
             pass
 
     registry = config.setdefault("models", {}).setdefault("registry", {})
@@ -130,3 +132,43 @@ def get_access_token(path: str | None = None) -> str | None:
         logger.debug("Token expired for %s", creds.email)
         return None
     return creds.access_token
+
+
+def decode_jwt_claims(token: str) -> dict:
+    """Decode JWT payload without verifying the signature.
+
+    This is safe for reading claims client-side — the server still
+    validates the signature on every API call.
+    """
+    import base64
+
+    try:
+        # JWT format: header.payload.signature
+        payload = token.split(".")[1]
+        # Add padding if needed
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded)
+    except Exception as exc:
+        logger.debug("Failed to decode JWT claims: %s", exc)
+        return {}
+
+
+def get_org_id(path: str | None = None) -> str | None:
+    """Extract the organization ID from the stored JWT token ('org' claim)."""
+    token = get_access_token(path)
+    if token is None:
+        return None
+    claims = decode_jwt_claims(token)
+    return claims.get("org")
+
+
+def get_org_name(path: str | None = None) -> str | None:
+    """Extract the organization display name from the stored JWT token ('org_name' claim)."""
+    token = get_access_token(path)
+    if token is None:
+        return None
+    claims = decode_jwt_claims(token)
+    return claims.get("org_name")

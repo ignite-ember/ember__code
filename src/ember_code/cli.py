@@ -29,6 +29,13 @@ from ember_code import __version__
 @click.option("--no-color", is_flag=True, help="Disable color output")
 @click.option("--debug", is_flag=True, help="Enable debug logging to ~/.ember/debug.log")
 @click.option("--strict", is_flag=True, help="Strict mode: deny all dangerous operations")
+@click.option("--worktree", is_flag=True, help="Run in an isolated git worktree")
+@click.option(
+    "--add-dir",
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False),
+    help="Additional directory to include (can be repeated)",
+)
 @click.pass_context
 def cli(
     ctx,
@@ -48,6 +55,8 @@ def cli(
     no_color,
     debug,
     strict,
+    worktree,
+    add_dir,
 ):
     """Ember Code — AI coding assistant powered by Agno."""
     ctx.ensure_object(dict)
@@ -139,6 +148,33 @@ def cli(
     # Determine resume session id
     resume_session_id = resume if resume else None
 
+    # ── Worktree setup ───────────────────────────────────────────
+    project_dir = None
+    worktree_manager = None
+
+    if worktree:
+        from pathlib import Path
+
+        from ember_code.worktree import WorktreeManager
+
+        wm = WorktreeManager(Path.cwd())
+        wt_info = wm.create(session_id=resume_session_id)
+        project_dir = wt_info.worktree_path
+        worktree_manager = wm
+        click.echo(f"Worktree: {wt_info.worktree_path} (branch: {wt_info.branch_name})")
+
+    # ── Additional directories ───────────────────────────────────
+    additional_dirs = None
+    if add_dir:
+        from pathlib import Path
+
+        additional_dirs = [Path(d).resolve() for d in add_dir]
+
+    # ── Store for cleanup ────────────────────────────────────────
+    ctx.obj["worktree_manager"] = worktree_manager
+    ctx.obj["project_dir"] = project_dir
+    ctx.obj["additional_dirs"] = additional_dirs
+
     # -- Pipe mode --
     if pipe:
         import sys
@@ -151,29 +187,58 @@ def cli(
             raise SystemExit(1)
         from ember_code.session import run_single_message
 
-        asyncio.run(run_single_message(settings, text, resume_session_id=resume_session_id))
+        asyncio.run(
+            run_single_message(
+                settings,
+                text,
+                resume_session_id=resume_session_id,
+                project_dir=project_dir,
+                additional_dirs=additional_dirs,
+            )
+        )
+        _worktree_cleanup(worktree_manager)
         return
 
     # -- Single message mode (non-interactive) --
     if message:
         from ember_code.session import run_single_message
 
-        asyncio.run(run_single_message(settings, message, resume_session_id=resume_session_id))
+        asyncio.run(
+            run_single_message(
+                settings,
+                message,
+                resume_session_id=resume_session_id,
+                project_dir=project_dir,
+                additional_dirs=additional_dirs,
+            )
+        )
+        _worktree_cleanup(worktree_manager)
         return
 
     # -- Interactive mode (TUI by default, --no-tui for plain Rich CLI) --
     if no_tui:
         from ember_code.session import run_session_interactive
 
-        asyncio.run(run_session_interactive(settings, resume_session_id=resume_session_id))
+        asyncio.run(
+            run_session_interactive(
+                settings,
+                resume_session_id=resume_session_id,
+                project_dir=project_dir,
+                additional_dirs=additional_dirs,
+            )
+        )
+        _worktree_cleanup(worktree_manager)
     else:
         from ember_code.tui import EmberApp
 
         app = EmberApp(
             settings=settings,
             resume_session_id=resume_session_id,
+            project_dir=project_dir,
+            additional_dirs=additional_dirs,
         )
         _run_app(app)
+        _worktree_cleanup(worktree_manager)
 
 
 def _run_app(app):
@@ -181,52 +246,22 @@ def _run_app(app):
     app.run()
 
 
-# -- MCP subcommand --
-
-
-@cli.group()
-@click.pass_context
-def mcp(ctx):
-    """MCP (Model Context Protocol) server commands."""
-    pass
-
-
-@mcp.command("serve")
-@click.option(
-    "--transport", default="stdio", type=click.Choice(["stdio", "sse"]), help="Transport type"
-)
-@click.option("--port", default=3000, type=int, help="Port for SSE transport")
-@click.pass_context
-def mcp_serve(ctx, transport, port):
-    """Start Ember Code as an MCP server."""
-    settings = ctx.obj["settings"]
-    from ember_code.mcp.server import MCPServerFactory
-
-    server = MCPServerFactory(settings).create()
-    if server is None:
-        click.echo("Error: MCP dependencies not installed. Run: pip install mcp", err=True)
-        raise SystemExit(1)
-
-    click.echo(f"Starting MCP server (transport={transport})...")
-    if transport == "stdio":
-        asyncio.run(_run_mcp_stdio(server))
+def _worktree_cleanup(wm) -> None:
+    """Clean up worktree after session ends. Report if changes exist."""
+    if wm is None:
+        return
+    info = wm.info
+    if info is None:
+        return
+    cleaned = wm.cleanup()
+    if not cleaned:
+        click.echo("\nWorktree preserved (has changes):")
+        click.echo(f"  Path:   {info.worktree_path}")
+        click.echo(f"  Branch: {info.branch_name}")
+        click.echo(f"\nTo merge: git merge {info.branch_name}")
+        click.echo(f"To remove: git worktree remove {info.worktree_path}")
     else:
-        click.echo(f"SSE transport on port {port} — not yet implemented.", err=True)
-        raise SystemExit(1)
-
-
-async def _run_mcp_stdio(server):
-    """Run MCP server with stdio transport."""
-    try:
-        from mcp.server.stdio import stdio_server
-
-        async with stdio_server() as (read_stream, write_stream):
-            await server.run(read_stream, write_stream)
-    except ImportError:
-        import click as _click
-
-        _click.echo("Error: MCP stdio transport not available.", err=True)
-        raise SystemExit(1) from None
+        click.echo("Worktree cleaned up (no changes).")
 
 
 if __name__ == "__main__":

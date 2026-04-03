@@ -10,7 +10,6 @@ class TestSkillParser:
         assert defn.name == "test-skill"
         assert defn.description == "A test skill"
         assert defn.argument_hint == "<arg>"
-        assert defn.allowed_tools == ["Read", "Edit"]
         assert "$ARGUMENTS" in defn.body
 
     def test_parse_no_frontmatter_uses_dirname(self, tmp_path):
@@ -33,18 +32,17 @@ class TestSkillParser:
         assert defn.name == "minimal"
         assert defn.description == ""
         assert defn.version == "0.1.0"
-        assert defn.allowed_tools == []
         assert defn.user_invocable is True
         assert defn.context == "inline"
 
-    def test_parse_tools_as_string(self, tmp_path):
-        skill_dir = tmp_path / "s"
+    def test_parse_name_defaults_to_dirname(self, tmp_path):
+        skill_dir = tmp_path / "deploy"
         skill_dir.mkdir()
         f = skill_dir / "SKILL.md"
-        f.write_text("---\nname: s\nallowed-tools: Read, Write, Bash\n---\n")
+        f.write_text("---\ndescription: Deploy things\n---\nBody\n")
 
         defn = SkillParser.parse(f)
-        assert defn.allowed_tools == ["Read", "Write", "Bash"]
+        assert defn.name == "deploy"
 
 
 class TestSkillDefinition:
@@ -83,6 +81,16 @@ class TestSkillDefinition:
         defn = SkillDefinition(name="test", body="Do $ARGUMENTS now.")
         result = defn.render("")
         assert result == "Do  now."
+
+    def test_render_session_id(self):
+        defn = SkillDefinition(name="test", body="Session: ${EMBER_SESSION_ID}")
+        result = defn.render("", session_id="abc-123")
+        assert result == "Session: abc-123"
+
+    def test_render_session_id_empty_default(self):
+        defn = SkillDefinition(name="test", body="Session: ${EMBER_SESSION_ID}")
+        result = defn.render("")
+        assert result == "Session: "
 
 
 class TestSkillPool:

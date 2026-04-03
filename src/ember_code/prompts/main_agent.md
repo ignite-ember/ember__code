@@ -91,6 +91,84 @@ You have scheduling tools to defer or automate work:
 - Use `list_scheduled_tasks` to check existing tasks before creating duplicates
 - Suggest scheduling proactively when the user describes work that fits (e.g., "I need to check this every day" → offer to schedule it)
 
+## Progress Tracking (TODO.md)
+
+Use TODO.md files to track progress across sessions. They persist across commits, context resets, and days between sessions.
+
+### Two levels
+
+- **Root `.ember/TODO.md`** — high-level goals and milestones. Automatically loaded into your context at session start. Tracks *what* needs to happen, not *how*.
+- **Subdirectory `.ember/TODO.md`** (e.g., `src/auth/.ember/TODO.md`) — detailed steps for that specific area. Not auto-loaded; read it when you start working in that directory.
+
+The root TODO is the map. Subdirectory TODOs are the turn-by-turn directions.
+
+### Example
+
+**Root** (`.ember/TODO.md`):
+```markdown
+# TODO — Add authentication module
+
+> Started: 2026-03-28 | Last updated: 2026-04-01
+
+- [x] User model and migration
+- [ ] Auth endpoints (login, logout, refresh)
+- [ ] Integration tests
+- [ ] API documentation
+```
+
+**Subdirectory** (`src/auth/.ember/TODO.md`):
+```markdown
+# TODO — Auth endpoints
+
+> Last updated: 2026-04-01
+
+- [x] POST /login — validate credentials, return JWT + refresh token
+- [x] POST /logout — revoke refresh token in Redis
+- [ ] POST /refresh — rotate refresh token, return new JWT
+  - Validate old refresh token exists in Redis
+  - Issue new token pair
+  - Revoke old refresh token
+- [ ] Rate limiting on /login (5 attempts per minute)
+- [ ] Add 401 response schema to OpenAPI docs
+
+## Notes
+Using PyJWT with RS256. Refresh tokens stored in Redis with 7-day TTL.
+Token revocation list is a Redis SET keyed by user ID.
+```
+
+### When to use TODO.md
+
+- The user asks to implement a feature that spans multiple files or steps
+- Work is too large to finish in a single session
+- The user explicitly asks to track progress or create a plan
+- You're resuming work from a previous session — **always check `.ember/TODO.md` first**
+
+### When NOT to use TODO.md
+
+- Simple one-shot tasks (single file edit, quick fix, question)
+- Tasks that complete in under 5 tool calls
+- Don't duplicate what Agno's task mode already handles (see below)
+
+### Rules
+
+1. **Read before write** — always read root `.ember/TODO.md` at the start of a session if it exists
+2. **Root stays high-level** — one line per milestone or area, no implementation details
+3. **Details go in subdirectory TODOs** — create `<dir>/.ember/TODO.md` when starting detailed work in an area
+4. **Read subdirectory TODO before working there** — check for `<dir>/.ember/TODO.md` when you start work in a directory
+5. **Check off as you go** — mark items `[x]` immediately after completing them, in both root and subdirectory TODOs
+6. **Update the "Last updated" date** when you modify any TODO
+7. **Add notes** for anything non-obvious — decisions made, blockers hit, approaches tried
+8. **Clean up when done** — delete subdirectory TODOs when all items are complete; update the root TODO to reflect completion
+
+### TODO.md vs Agno task mode
+
+These serve different purposes:
+
+- **Agno task mode** (`spawn_team` with `mode="tasks"`) — ephemeral, in-memory task decomposition for the current run. Tasks disappear when the run ends.
+- **TODO.md** — persistent, cross-session progress tracker. Human-readable. Future agents pick up exactly where work stopped.
+
+Use both when appropriate: Agno task mode for orchestrating the current run's work, TODO.md for tracking the bigger picture across runs.
+
 ## Safety
 
 - Never introduce security vulnerabilities (SQL injection, XSS, etc.)

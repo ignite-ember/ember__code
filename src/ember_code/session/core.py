@@ -10,15 +10,19 @@ from agno.agent import Agent
 from agno.compression.manager import CompressionManager
 from agno.team.team import Team
 
+from ember_code.auth.credentials import get_access_token, get_org_id, get_org_name
 from ember_code.config.models import ModelRegistry
 from ember_code.config.permissions import PermissionGuard
 from ember_code.config.settings import Settings
 from ember_code.config.tool_permissions import ToolPermissions
+from ember_code.guardrails.runner import GuardrailRunner
 from ember_code.hooks.events import HookEvent
 from ember_code.hooks.executor import HookExecutor
 from ember_code.hooks.loader import HookLoader
+from ember_code.hooks.tool_hook import ToolEventHook
 from ember_code.init import initialize_project
 from ember_code.knowledge.manager import KnowledgeManager
+from ember_code.learn import create_learning_machine
 from ember_code.mcp.client import MCPClientManager
 from ember_code.memory.manager import setup_db
 from ember_code.pool import AgentPool
@@ -32,6 +36,7 @@ from ember_code.utils.audit import AuditLogger
 from ember_code.utils.context import load_project_context
 from ember_code.utils.display import print_error, print_info
 from ember_code.utils.response import extract_response_text
+from ember_code.workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +55,11 @@ class Session:
         settings: Settings,
         project_dir: Path | None = None,
         resume_session_id: str | None = None,
+        additional_dirs: list[Path] | None = None,
     ):
         self.settings = settings
         self.project_dir = project_dir or Path.cwd()
+        self.workspace = WorkspaceManager(self.project_dir, additional_dirs)
         self.session_id = resume_session_id or str(uuid.uuid4())[:8]
         self.session_named = bool(resume_session_id)
         self.user_id = getpass.getuser()
@@ -64,7 +71,7 @@ class Session:
         self.db = setup_db(settings)
 
         # ── Knowledge (ChromaDB + Agno Knowledge) ─────────────────────
-        self.knowledge = KnowledgeManager(settings).create_knowledge()
+        self.knowledge = KnowledgeManager(settings, self.project_dir).create_knowledge()
 
         # ── Permission Guard ─────────────────────────────────────────
         self.permission_guard = PermissionGuard(settings)
@@ -73,37 +80,90 @@ class Session:
         self.audit = AuditLogger(settings)
 
         # ── Hooks ────────────────────────────────────────────────────
-        self.hooks_map = HookLoader(self.project_dir).load()
+        self._hook_loader = HookLoader(
+            self.project_dir, cross_tool_support=settings.hooks.cross_tool_support
+        )
+        self.hooks_map = self._hook_loader.load()
         self.hook_executor = HookExecutor(self.hooks_map)
 
         # ── Project Context ──────────────────────────────────────────
         self.project_instructions = load_project_context(
-            self.project_dir, settings.context.project_file
+            self.project_dir,
+            settings.context.project_file,
+            read_claude_md=settings.rules.cross_tool_support,
         )
 
         # ── Agent Pool (definitions only — agents built after MCP connects) ─
         self.pool = AgentPool()
         self.pool.load_definitions(settings, self.project_dir)
+        if settings.orchestration.generate_ephemeral:
+            self.pool.init_ephemeral(
+                self.project_dir, settings.orchestration.max_ephemeral_per_session
+            )
         self.pool.build_agents()  # initial build without MCP
 
         # ── Skill Pool ───────────────────────────────────────────────
         self.skill_pool = SkillPool()
         self.skill_pool.load_all(self.project_dir, settings.skills.cross_tool_support)
 
-        # ── Context window (for compaction threshold) ─────────────────
-        self._context_window = ModelRegistry(settings).get_context_window()
+        # ── Context window (for compaction threshold, capped by setting) ──
+        self._context_window = min(
+            ModelRegistry(settings).get_context_window(),
+            settings.models.max_context_window,
+        )
 
-        # ── Main Team (leader + specialist members) ──────────────────
-        self.main_team = self._build_main_team()
+        # ── Learning (Agno LearningMachine) ─────────────────────────
+        self._learning = create_learning_machine(settings, self.db)
+
+        # ── Ember Cloud auth (for CodeIndex + cloud indicator) ─────
+        self._cloud_token = get_access_token(settings.auth.credentials_file)
+        self._cloud_server_url = settings.auth.server_url
+        self._cloud_org_id = get_org_id(settings.auth.credentials_file)
+        self._cloud_org_name = get_org_name(settings.auth.credentials_file)
 
         # ── MCP Client Manager (user-configured servers only) ────────
         self.mcp_manager = MCPClientManager(self.project_dir)
         self._mcp_initialized = False
 
+        # ── Guardrails ───────────────────────────────────────────────
+        self.guardrail_runner = GuardrailRunner(settings)
+
         # ── Delegated managers ───────────────────────────────────────
         self.persistence = SessionPersistence(self.db, self.session_id)
         self.memory_mgr = SessionMemoryManager(self.db, settings, self.user_id)
         self.knowledge_mgr = SessionKnowledgeManager(self.knowledge, settings, self.project_dir)
+
+        # ── Main Team (leader + specialist members) ──────────────────
+        self.main_team = self._build_main_team()
+
+    @property
+    def cloud_connected(self) -> bool:
+        """Whether the session is authenticated with Ember Cloud."""
+        return self._cloud_token is not None
+
+    @property
+    def cloud_org_id(self) -> str | None:
+        """The organization ID from the Ember Cloud JWT."""
+        return self._cloud_org_id
+
+    @property
+    def cloud_org_name(self) -> str | None:
+        """The organization display name from the Ember Cloud JWT."""
+        return self._cloud_org_name
+
+    def reload_hooks(self) -> int:
+        """Reload hooks from settings files. Returns the number of hooks loaded."""
+        self.hooks_map = self._hook_loader.load()
+        self.hook_executor = HookExecutor(self.hooks_map)
+        # Recreate tool event hook on the team
+        tool_event_hook = self._create_tool_event_hook()
+        if self.main_team:
+            # Replace any existing ToolEventHook in the team's tool_hooks
+            existing = self.main_team.tool_hooks or []
+            self.main_team.tool_hooks = [h for h in existing if not isinstance(h, ToolEventHook)]
+            self.main_team.tool_hooks.append(tool_event_hook)
+        count = sum(len(hl) for hl in self.hooks_map.values())
+        return count
 
     # ── Main Team setup ─────────────────────────────────────────────
 
@@ -117,14 +177,30 @@ class Session:
         registry = ToolRegistry(
             base_dir=str(self.project_dir),
             permissions=ToolPermissions(project_dir=self.project_dir),
+            cloud_token=self._cloud_token,
+            cloud_server_url=self._cloud_server_url,
+            sandbox_shell=self.settings.safety.sandbox_shell,
+            sandbox_allowed_network_commands=self.settings.safety.sandbox_allowed_network_commands,
         )
-        leader_tool_names = ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Schedule"]
+        leader_tool_names = [
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Grep",
+            "Glob",
+            "Schedule",
+            "NotebookEdit",
+        ]
         for name in ("WebSearch", "WebFetch"):
             try:
                 registry.resolve([name])
                 leader_tool_names.append(name)
             except (ImportError, ValueError):
                 pass
+        # Add CodeIndex tools when connected to Ember Cloud
+        if registry.cloud_connected:
+            leader_tool_names.append("CodeIndex")
         leader_tools = registry.resolve(leader_tool_names)
 
         # Reasoning tools (optional)
@@ -132,13 +208,21 @@ class Session:
         if reasoning:
             leader_tools = [*leader_tools, reasoning]
 
+        # Custom tools from .ember/tools/
+        custom_toolkits = registry.load_custom_tools(self.project_dir)
+        if custom_toolkits:
+            leader_tools = [*leader_tools, *custom_toolkits]
+
+        # Tool event hooks (PreToolUse/PostToolUse/PostToolUseFailure)
+        tool_event_hook = self._create_tool_event_hook()
+
         # Members (all pool agents)
         members = self.pool.get_member_agents()
 
         # Apply session settings to all members
         for member in members:
             if isinstance(member, Agent):
-                self._apply_settings(member)
+                self._apply_settings(member, tool_event_hook=tool_event_hook)
 
         # System prompt (Agno auto-generates member descriptions in <member> XML)
         prompt = load_prompt("main_agent")
@@ -148,15 +232,39 @@ class Session:
         if skill_descriptions and self.settings.skills.auto_trigger:
             prompt += "\n\n## Available Skills (user can invoke via /name)\n" + skill_descriptions
 
-        # Model + context window
+        # Model + context window (capped by settings to keep compression aggressive)
         model_registry = ModelRegistry(self.settings)
         model = model_registry.get_model()
-        context_window = model_registry.get_context_window()
+        context_window = min(
+            model_registry.get_context_window(),
+            self.settings.models.max_context_window,
+        )
 
         # Instructions
         instructions = [prompt]
         if self.project_instructions:
-            instructions.append(f"Project instructions:\n{self.project_instructions[:2000]}")
+            instructions.append(f"Project instructions:\n{self.project_instructions}")
+
+        # Persistent TODO — root only, loaded automatically
+        todo_path = self.project_dir / ".ember" / "TODO.md"
+        if todo_path.is_file():
+            todo_content = todo_path.read_text().strip()
+            if todo_content:
+                instructions.append(f"Active TODO (.ember/TODO.md):\n{todo_content}")
+
+        # Multi-workspace context
+        workspace_ctx = self.workspace.get_context_instructions()
+        if workspace_ctx:
+            instructions.append(workspace_ctx)
+            # Load project rules from additional directories
+            for extra_dir in self.workspace.additional_dirs:
+                extra_rules = load_project_context(
+                    extra_dir,
+                    self.settings.context.project_file,
+                    read_claude_md=self.settings.rules.cross_tool_support,
+                )
+                if extra_rules:
+                    instructions.append(f"Additional workspace ({extra_dir.name}):\n{extra_rules}")
 
         # Guardrails
         guardrails = _create_guardrails(self.settings)
@@ -201,10 +309,23 @@ class Session:
             search_knowledge=self.knowledge is not None,
             # Guardrails
             pre_hooks=guardrails,
+            # Learning
+            learning=self._learning,
+            add_learnings_to_context=self._learning is not None,
+            # Tool event hooks
+            tool_hooks=[tool_event_hook],
         )
         return team
 
-    def _apply_settings(self, agent: Agent) -> None:
+    def _create_tool_event_hook(self) -> ToolEventHook:
+        """Create a ToolEventHook for tool event hooks and protected path enforcement."""
+        return ToolEventHook(
+            executor=self.hook_executor,
+            session_id=self.session_id,
+            protected_paths=self.settings.safety.protected_paths,
+        )
+
+    def _apply_settings(self, agent: Agent, tool_event_hook: ToolEventHook) -> None:
         """Apply session settings to an individual agent."""
         if self.db is not None:
             agent.db = self.db
@@ -221,6 +342,16 @@ class Session:
         if self.knowledge is not None:
             agent.knowledge = self.knowledge
             agent.search_knowledge = True
+            from ember_code.tools.knowledge import KnowledgeTools
+
+            knowledge_tools = KnowledgeTools(knowledge_mgr=self.knowledge_mgr)
+            existing_tools = agent.tools or []
+            agent.tools = [*existing_tools, knowledge_tools]
+        if self._learning is not None:
+            agent.learning = self._learning
+            agent.add_learnings_to_context = True
+        existing = agent.tool_hooks or []
+        agent.tool_hooks = [*existing, tool_event_hook]
 
     # ── MCP initialization (async, runs once) ──────────────────────
 
@@ -382,9 +513,23 @@ class Session:
             )
             return blocked_msg
 
+        # ── Guardrails (inform, don't block) ──────────────────────────
+        guardrail_prefix = ""
+        if self.guardrail_runner.enabled:
+            gr_results = await self.guardrail_runner.check(message)
+            if gr_results:
+                warnings = "; ".join(r.message for r in gr_results)
+                guardrail_prefix = (
+                    f"[GUARDRAIL WARNING] The following issues were detected in "
+                    f"the user message: {warnings}\n"
+                    f"Please be cautious and do not repeat or use any flagged content.\n\n"
+                )
+                logger.info("Guardrails triggered: %s", warnings)
+
         try:
             # ── Execute (Agno auto-persists via db) ──────────────────
-            response = await self.main_team.arun(message)
+            effective_message = guardrail_prefix + message if guardrail_prefix else message
+            response = await self.main_team.arun(effective_message)
             self._log_run_messages()
             response_text = extract_response_text(response)
 
@@ -401,14 +546,25 @@ class Session:
                 status="success",
             )
 
-            # ── Hook: Stop ───────────────────────────────────────────
-            await self.hook_executor.execute(
-                event=HookEvent.STOP.value,
-                payload={
-                    "session_id": self.session_id,
-                    "response": response_text[:500],
-                },
-            )
+            # ── Hook: Stop (can block up to 3 times) ─────────────────
+            for _stop_attempt in range(3):
+                stop_result = await self.hook_executor.execute(
+                    event=HookEvent.STOP.value,
+                    payload={
+                        "session_id": self.session_id,
+                        "response": response_text[:500],
+                    },
+                )
+                if stop_result.should_continue:
+                    break
+                # Hook blocked — feed the rejection back to the agent
+                feedback = stop_result.message or "Response blocked by Stop hook."
+                system_msg = (
+                    f"[SYSTEM] Your previous response was rejected by a Stop hook: "
+                    f"{feedback}\nPlease revise your response to address this issue."
+                )
+                response = await self.main_team.arun(system_msg)
+                response_text = extract_response_text(response)
 
             # ── Compact history if approaching context limit ─────────
             metrics = getattr(getattr(self.main_team, "run_response", None), "metrics", None)

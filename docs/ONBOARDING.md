@@ -1,5 +1,7 @@
 # First-Run Onboarding
 
+> **Status: Planned — not yet implemented.** This document describes the design for a future release. Currently, first-run setup is handled by `init.py` which copies default agents, skills, and hooks into `.ember/` without an interactive onboarding flow.
+
 When a user starts Ember Code for the first time in a project, it doesn't just drop them into a blank prompt. It runs a guided onboarding flow that sets up agents tailored to their specific project.
 
 ## Flow Overview
@@ -139,8 +141,8 @@ Ember Code connects to **CodeIndex** cloud to pull project intelligence:
 
 ```python
 async def fetch_project_context(project_path: str) -> ProjectContext:
-    """Fetch project summaries and metadata from VectorBridge."""
-    client = VectorBridgeClient(api_key=config.vectorbridge_api_key)
+    """Fetch project summaries and metadata from CodeIndex."""
+    client = CodeIndexClient()  # authenticated via Ember Code login
 
     # Look up this project by repo URL or directory fingerprint
     project = await client.get_project(
@@ -307,7 +309,6 @@ Approved agents are written as `.md` files:
 name: api-developer
 description: Specializes in FastAPI endpoint development, Pydantic schemas, and OpenAPI documentation for this project
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: MiniMax-M2.7
 color: green
 
 # Ember extensions
@@ -356,10 +357,7 @@ were last configured. Want me to propose a graphql.md agent?
 Use slash commands interactively:
 
 ```
-/onboard          — run the full onboarding flow
-/propose-agents   — propose new agents based on current project state
 /agents refresh   — re-scan agent directories and reload pool
-/reset            — remove .ember/ and start fresh (requires confirmation)
 ```
 
 ---
@@ -373,18 +371,13 @@ onboarding:
   skip: false                    # Skip onboarding entirely
   auto_create_defaults: true     # Copy default agents on first run
   ask_questions: true            # Interactive Q&A step
-  # Config key is 'vectorbridge' (SDK interface unchanged)
-  vectorbridge:
-    enabled: true                # Fetch context from CodeIndex
-    api_url: "https://api.ignite-ember.sh"
-    # api_key is read from VECTORBRIDGE_API_KEY env var
+  codeindex: true                # Fetch context from CodeIndex (uses Ember Code login)
   propose_agents: true           # Generate project-specific agent proposals
   max_proposals: 5               # Max number of agents to propose
 ```
 
 Environment variables:
 ```
-VECTORBRIDGE_API_KEY=vb_...     # CodeIndex API key (env var name unchanged for SDK compat)
 EMBER_SKIP_ONBOARDING=true     # Skip onboarding (CI/CD)
 ```
 
