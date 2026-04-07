@@ -386,6 +386,16 @@ class Session:
         self.pool.build_agents(mcp_clients=clients)
         self.main_team = self._build_main_team()
 
+    def rebuild_mcp(self) -> None:
+        """Rebuild agents and main team with current MCP client set.
+
+        Called after toggling individual MCP servers on/off.
+        """
+        connected = self.mcp_manager.list_connected()
+        clients = {name: self.mcp_manager._clients[name] for name in connected}
+        self.pool.build_agents(mcp_clients=clients if clients else None)
+        self.main_team = self._build_main_team()
+
     # ── MCP status ─────────────────────────────────────────────────
 
     def get_mcp_status(self) -> list[tuple[str, bool]]:
@@ -441,6 +451,28 @@ class Session:
         )
         return True
 
+    async def force_compact(self) -> str:
+        """Manually compact conversation context.
+
+        Returns a human-readable status message.
+        """
+        current = self.main_team.num_history_runs
+
+        # Generate/update conversation summary before trimming
+        ssm = self.main_team.session_summary_manager
+        if ssm is not None:
+            try:
+                session = getattr(self.main_team, "_session", None)
+                if session is not None:
+                    await ssm.acreate_session_summary(session=session)
+            except Exception as e:
+                logger.warning("Failed to generate session summary: %s", e)
+
+        new_limit = 4 if current is None else max(2, current // 2)
+        self.main_team.num_history_runs = new_limit
+        logger.info("Manual compaction: trimmed history to %d runs", new_limit)
+        return f"Context compacted. History trimmed to {new_limit} recent runs (summary covers older turns)."
+
     # ── Debug logging ─────────────────────────────────────────────────
 
     def _log_run_messages(self) -> None:
@@ -491,8 +523,12 @@ class Session:
 
     # ── Message handling (headless path) ──────────────────────────────
 
-    async def handle_message(self, message: str) -> str:
-        """Handle a single user message and return the response."""
+    async def handle_message(self, message: str, **media_kwargs) -> str:
+        """Handle a single user message and return the response.
+
+        Accepts optional media keyword arguments (images, audio, videos, files)
+        which are forwarded directly to team.arun().
+        """
 
         # ── Connect MCP servers on first message ──────────────────────
         await self.ensure_mcp()
@@ -529,7 +565,7 @@ class Session:
         try:
             # ── Execute (Agno auto-persists via db) ──────────────────
             effective_message = guardrail_prefix + message if guardrail_prefix else message
-            response = await self.main_team.arun(effective_message)
+            response = await self.main_team.arun(effective_message, **media_kwargs)
             self._log_run_messages()
             response_text = extract_response_text(response)
 

@@ -133,6 +133,20 @@ The TUI launches by default — full terminal UI with streaming responses, sessi
 | Input history | `↑/↓` | `Up/Down` |
 | Cancel current operation | `Esc` | `Escape` |
 
+### Media Input (Paste)
+
+Include file paths or URLs directly in your message — Ember Code auto-detects and attaches them:
+
+```
+> Analyze ~/screenshots/error.png and explain what went wrong
+  Attached: 1 image(s)
+
+> Summarize https://example.com/report.pdf
+  Attached: 1 file(s)
+```
+
+Supported formats: images (`.png`, `.jpg`, `.gif`, `.webp`, etc.), audio (`.mp3`, `.wav`, `.ogg`, etc.), video (`.mp4`, `.mov`, `.webm`, etc.), and documents (`.pdf`, `.docx`, `.txt`, `.py`, `.json`, etc.).
+
 ---
 
 ## Key Concepts

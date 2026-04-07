@@ -18,6 +18,7 @@ from ember_code.tui.widgets._dialogs import (
     SessionPickerWidget,
 )
 from ember_code.tui.widgets._input import InputHistory, PromptInput
+from ember_code.tui.widgets._mcp_panel import MCPPanelWidget, MCPServerInfo
 from ember_code.tui.widgets._messages import (
     AgentTreeWidget,
     MCPCallWidget,
@@ -38,6 +39,8 @@ __all__ = [
     "PromptInput",
     "ModelPickerWidget",
     "MCPCallWidget",
+    "MCPPanelWidget",
+    "MCPServerInfo",
     "MessageWidget",
     "PermissionDialog",
     "QueuePanel",

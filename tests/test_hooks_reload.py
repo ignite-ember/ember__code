@@ -63,7 +63,8 @@ class TestHooksReload:
 class TestHooksReloadCommand:
     """The /hooks reload subcommand in session commands."""
 
-    def test_cmd_hooks_reload(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_cmd_hooks_reload(self, tmp_path):
         patches = _session_patches()
         _start_patches(patches)
 
@@ -74,16 +75,17 @@ class TestHooksReloadCommand:
             "PreToolUse": [HookDefinition(type="command", command="echo test")],
         }
 
-        from ember_code.session.commands import _cmd_hooks
+        from ember_code.tui.command_handler import CommandHandler
 
-        # Should not raise
-        _cmd_hooks(session, "reload")
+        handler = CommandHandler(session)
+        await handler.handle("/hooks reload")
         # Verify hooks were reloaded
         assert "PreToolUse" in session.hooks_map
 
         _stop_patches(patches)
 
-    def test_cmd_hooks_list(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_cmd_hooks_list(self, tmp_path):
         """Without 'reload' arg, _cmd_hooks lists hooks."""
         patches = _session_patches()
         _start_patches(patches)
@@ -93,9 +95,10 @@ class TestHooksReloadCommand:
         session = Session(Settings(), project_dir=tmp_path)
         session.hooks_map = {}
 
-        from ember_code.session.commands import _cmd_hooks
+        from ember_code.tui.command_handler import CommandHandler
 
-        # Should not raise (just prints info)
-        _cmd_hooks(session)
+        handler = CommandHandler(session)
+        # Should not raise (just returns result)
+        await handler.handle("/hooks")
 
         _stop_patches(patches)

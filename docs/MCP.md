@@ -64,6 +64,27 @@ If `mcp_servers` is omitted, the agent receives **all** connected MCP tools (bac
 
 See [Agents](AGENTS.md) for the full frontmatter reference.
 
+## Managing Servers (`/mcp`)
+
+Use the `/mcp` command in the TUI to open the MCP management panel. The panel shows all configured servers with their connection status, transport type, and available tools.
+
+**Features:**
+- **Browse** — see all servers from your `.mcp.json` files at a glance
+- **Toggle** — connect or disconnect individual servers mid-session with Space
+- **Inspect** — press Enter to expand a server and see its tool list
+- **Policy awareness** — servers blocked by admin policy show a lock icon
+
+After toggling a server, agents are automatically rebuilt with the updated tool set.
+
+```
+MCP Servers  2 connected / 3 total
+  ● playwright     stdio   5 tools
+  ● postgres       stdio   3 tools
+  ○ custom-api     sse     disconnected
+
+↑/↓ navigate · Space toggle · Enter expand tools · Esc close
+```
+
 ## Security
 
 - **Tool filtering** -- the `mcp_servers` frontmatter field limits which agents can use which MCP tools

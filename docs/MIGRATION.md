@@ -141,6 +141,7 @@ models:
 | `--tools <list>` | Per-agent in `.md` file | Tool access is per-agent, not global |
 | N/A | `--no-tui` | Fall back to plain Rich CLI (TUI is the default) |
 | `--add-dir <path>` | `--add-dir <path>` | Additional directories (repeatable) |
+| `--file <path>` | N/A | Ember auto-detects file paths and URLs in message text instead |
 
 ### Slash Commands
 
@@ -160,6 +161,7 @@ models:
 | — | `/sessions` | Browse and resume past sessions |
 | — | `/rename <name>` | Rename current session |
 | — | `/skills` | List loaded skills |
+| — | `/mcp` | Browse and toggle MCP server connections |
 | — | `/login` | Device-flow authentication (opens browser) |
 | — | `/logout` | Sign out |
 | — | `/whoami` | Show current user |

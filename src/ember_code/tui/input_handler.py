@@ -58,9 +58,14 @@ class AutocompleteProvider:
         "/clear",
         "/config",
         "/model",
+        "/mcp",
+        "/compact",
         "/login",
         "/logout",
         "/whoami",
+        "/bug",
+        "/evals",
+        "/sync-knowledge",
     )
 
     def __init__(self, skill_pool: "SkillPool | None" = None):

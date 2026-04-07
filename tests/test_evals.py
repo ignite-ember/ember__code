@@ -435,6 +435,6 @@ class TestEvalsCommand:
             )
 
     def test_evals_registered(self):
-        from ember_code.session.commands import _ASYNC_COMMANDS
+        from ember_code.tui.command_handler import CommandHandler
 
-        assert "/evals" in _ASYNC_COMMANDS
+        assert "/evals" in CommandHandler._COMMANDS

@@ -104,6 +104,7 @@ Claude Code has no equivalent — it's always "single agent decides everything, 
 | **Token tracking** | Cost display (`/cost`) | Real-time status bar (context/completion tokens) |
 | **Cloud indicator** | N/A | `☁ {org_name}` in status bar when connected |
 | **Cancellation** | Ctrl+C (exit) | Escape (cancel current agent, stay in session) |
+| **Media input** | `--file` flag or image paste | Auto-detect file paths and URLs in message text |
 | **Keyboard shortcuts** | Standard | Extended (Ctrl+O collapse, Ctrl+V verbose, Ctrl+Q queue panel) |
 
 ---
@@ -146,6 +147,7 @@ Claude Code has no equivalent — it's always "single agent decides everything, 
 | **Transports** | stdio, SSE | stdio, SSE |
 | **IDE integration** | Manual setup | Agents declare `mcp_servers` in their `.md` file |
 | **Exposed tools** | Full tool suite | Read, Write, Edit, Bash, Grep, Glob, ListDir, dispatch_agent |
+| **Runtime management** | N/A | `/mcp` panel — browse servers, toggle on/off mid-session |
 
 ---
 

@@ -144,6 +144,29 @@ class MCPClientManager:
                 logger.debug("MCP '%s' disconnect error (safe to ignore): %s", name, exc)
         self._clients.clear()
 
+    async def disconnect_one(self, name: str) -> bool:
+        """Disconnect a single MCP server by name. Returns True if disconnected."""
+        client = self._clients.pop(name, None)
+        if client is None:
+            return False
+        transport = getattr(self.configs.get(name), "type", "")
+        if transport == "sse":
+            logger.debug("MCP '%s' (SSE) — abandoning connection", name)
+            return True
+        try:
+            await client.__aexit__(None, None, None)
+        except BaseException as exc:
+            logger.debug("MCP '%s' disconnect error: %s", name, exc)
+        return True
+
+    def get_tools(self, name: str) -> list[str]:
+        """Return tool names provided by a connected MCP server."""
+        client = self._clients.get(name)
+        if client is None:
+            return []
+        functions = getattr(client, "functions", None) or {}
+        return list(functions.keys())
+
     def list_servers(self) -> list[str]:
         """List available MCP server names."""
         return list(self.configs.keys())

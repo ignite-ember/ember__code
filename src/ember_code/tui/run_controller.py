@@ -159,6 +159,15 @@ class RunController:
             self._app.render_command_result(result)
             return
 
+        # Auto-detect media (images, audio, videos, documents) from message text
+        from ember_code.utils.media import parse_media_from_text
+
+        cleaned, media = parse_media_from_text(message)
+        media_kwargs = media.as_kwargs()
+        if media.has_media:
+            message = cleaned
+            self._conversation.append_info(f"Attached: {media.summary()}")
+
         # Mount activity spinner
         self._spinner = AgentActivityWidget(label="Thinking")
         self._stream_widget = None
@@ -182,7 +191,7 @@ class RunController:
         team.tool_hooks = [*existing_hooks, hook]
 
         try:
-            async for event in team.arun(message, stream=True):
+            async for event in team.arun(message, stream=True, **media_kwargs):
                 await self._dispatch(event, team)
         except Exception as e:
             self._conversation.append_error(f"Error: {e}")

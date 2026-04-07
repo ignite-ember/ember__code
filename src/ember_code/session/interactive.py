@@ -127,8 +127,15 @@ async def run_session_interactive(
                 continue
 
             # ── Handle the message via orchestrator ─────────────────
+            from ember_code.utils.media import parse_media_from_text
+
+            cleaned_msg, media = parse_media_from_text(message)
+            if media.has_media:
+                message = cleaned_msg
+                print_info(f"Attached: {media.summary()}")
+
             start_time = time.monotonic()
-            response = await session.handle_message(message)
+            response = await session.handle_message(message, **media.as_kwargs())
             elapsed = time.monotonic() - start_time
             print_response(response)
             print_run_stats(

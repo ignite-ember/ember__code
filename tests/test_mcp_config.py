@@ -2,7 +2,10 @@
 
 import json
 
-from ember_code.mcp.config import MCPConfigLoader, MCPServerConfig
+import pytest
+from pydantic import ValidationError
+
+from ember_code.mcp.config import MCPConfigLoader, MCPServerConfig, MCPTransport
 
 
 class TestMCPServerConfig:
@@ -34,6 +37,64 @@ class TestMCPServerConfig:
         )
         assert cfg.type == "sse"
         assert cfg.url == "http://localhost:3000/sse"
+
+
+class TestMCPTransport:
+    def test_values(self):
+        assert MCPTransport.stdio == "stdio"
+        assert MCPTransport.sse == "sse"
+
+    def test_string_comparison(self):
+        assert MCPTransport.stdio == "stdio"
+        assert MCPTransport.sse == "sse"
+        assert MCPTransport.stdio != "sse"
+
+    def test_config_accepts_string(self):
+        cfg = MCPServerConfig(name="test", type="sse")
+        assert cfg.type == MCPTransport.sse
+        assert cfg.type == "sse"
+
+    def test_config_accepts_enum(self):
+        cfg = MCPServerConfig(name="test", type=MCPTransport.sse)
+        assert cfg.type == MCPTransport.sse
+
+    def test_invalid_transport_rejected(self):
+        with pytest.raises(ValidationError):
+            MCPServerConfig(name="test", type="invalid")
+
+
+class TestMCPServerInfo:
+    def test_defaults(self):
+        from ember_code.tui.widgets._mcp_panel import MCPServerInfo
+
+        info = MCPServerInfo(name="test", connected=True)
+        assert info.transport == MCPTransport.stdio
+        assert info.tool_names == []
+        assert info.error == ""
+        assert info.policy_blocked is False
+
+    def test_accepts_string_transport(self):
+        from ember_code.tui.widgets._mcp_panel import MCPServerInfo
+
+        info = MCPServerInfo(name="test", connected=False, transport="sse")
+        assert info.transport == MCPTransport.sse
+
+    def test_with_tools(self):
+        from ember_code.tui.widgets._mcp_panel import MCPServerInfo
+
+        info = MCPServerInfo(
+            name="playwright",
+            connected=True,
+            transport=MCPTransport.stdio,
+            tool_names=["click", "navigate", "screenshot"],
+        )
+        assert len(info.tool_names) == 3
+
+    def test_policy_blocked(self):
+        from ember_code.tui.widgets._mcp_panel import MCPServerInfo
+
+        info = MCPServerInfo(name="blocked", connected=False, policy_blocked=True)
+        assert info.policy_blocked is True
 
 
 class TestMCPConfigLoader:

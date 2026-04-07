@@ -53,6 +53,10 @@ class CommandResult:
     def login(cls) -> "CommandResult":
         return cls(kind="action", action="login")
 
+    @classmethod
+    def mcp(cls) -> "CommandResult":
+        return cls(kind="action", action="mcp")
+
 
 class CommandHandler:
     """Handles slash commands, decoupled from the TUI rendering.
@@ -108,9 +112,14 @@ class CommandHandler:
             "- `/schedule add <task> at/in <time>` — schedule a deferred task\n"
             "- `/schedule` — list pending tasks\n"
             "- `/schedule cancel <id>` — cancel a scheduled task\n"
+            "- `/mcp` — manage MCP server connections\n"
+            "- `/compact` — manually compact conversation context\n"
             "- `/login` — authenticate with Ember Cloud\n"
             "- `/logout` — clear stored credentials\n"
             "- `/whoami` — show current auth status\n"
+            "- `/bug` — report an issue on GitHub\n"
+            "- `/evals [agent]` — run agent evals\n"
+            "- `/sync-knowledge` — sync knowledge between git file and vector DB\n"
             "\n## Skills\n"
             f"{skills_text or '(no skills loaded)'}\n"
             f"\n{SHORTCUT_HELP}"
@@ -312,6 +321,9 @@ class CommandHandler:
             f"- **Session:** {self._session.session_id}\n"
         )
 
+    async def _cmd_mcp(self, _args: str) -> "CommandResult":
+        return CommandResult.mcp()
+
     async def _cmd_login(self, _args: str) -> "CommandResult":
         return CommandResult.login()
 
@@ -457,6 +469,43 @@ class CommandHandler:
             "  /schedule add check dependencies daily"
         )
 
+    async def _cmd_evals(self, args: str) -> "CommandResult":
+        from ember_code.evals.reporter import format_results
+        from ember_code.evals.runner import SuiteResult
+
+        agent_filter = args.strip() or None
+
+        results = await SuiteResult.run_all(
+            pool=self._session.pool,
+            settings=self._session.settings,
+            project_dir=self._session.project_dir,
+            agent_filter=agent_filter,
+        )
+
+        if not results:
+            return CommandResult.info("No eval suites found. Add YAML files to .ember/evals/")
+        return CommandResult.markdown(format_results(results))
+
+    async def _cmd_sync_knowledge(self, _args: str) -> "CommandResult":
+        if not self._session.knowledge_mgr.share_enabled():
+            return CommandResult.info(
+                "Knowledge sharing is not enabled. Set knowledge.share=true in config."
+            )
+        results = await self._session.knowledge_mgr.sync_bidirectional()
+        lines = [f"[{r.direction}] {r.summary}" for r in results]
+        return CommandResult.info("\n".join(lines))
+
+    async def _cmd_compact(self, _args: str) -> "CommandResult":
+        result = await self._session.force_compact()
+        return CommandResult.info(result)
+
+    async def _cmd_bug(self, _args: str) -> "CommandResult":
+        import webbrowser
+
+        url = "https://github.com/vector-bridge/ember__code/issues"
+        webbrowser.open(url)
+        return CommandResult.info(f"Opened {url}")
+
     async def _handle_skill(self, stripped: str) -> "CommandResult":
         """Try to match and execute a skill command."""
         skill_match = self._session.skill_pool.match_user_command(stripped)
@@ -486,8 +535,13 @@ class CommandHandler:
         "/knowledge": _cmd_knowledge,
         "/config": _cmd_config,
         "/model": _cmd_model,
+        "/mcp": _cmd_mcp,
         "/login": _cmd_login,
         "/logout": _cmd_logout,
         "/whoami": _cmd_whoami,
         "/schedule": _cmd_schedule,
+        "/compact": _cmd_compact,
+        "/bug": _cmd_bug,
+        "/evals": _cmd_evals,
+        "/sync-knowledge": _cmd_sync_knowledge,
     }

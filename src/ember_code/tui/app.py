@@ -33,6 +33,8 @@ from ember_code.tui.session_manager import SessionManager
 from ember_code.tui.status_tracker import StatusTracker
 from ember_code.tui.widgets import (
     LoginWidget,
+    MCPPanelWidget,
+    MCPServerInfo,
     MessageWidget,
     ModelPickerWidget,
     PromptInput,
@@ -506,6 +508,8 @@ class EmberApp(App):
             self._show_model_picker()
         elif result.action == "login":
             self._show_login()
+        elif result.action == "mcp":
+            asyncio.create_task(self._show_mcp_panel())
         elif result.kind == "markdown":
             self._conversation.append_markdown(result.content)
         elif result.kind == "info":
@@ -558,6 +562,68 @@ class EmberApp(App):
 
     @on(LoginWidget.Cancelled)
     def _on_login_cancelled(self, _event: LoginWidget.Cancelled) -> None:
+        self.query_one("#user-input", PromptInput).focus()
+
+    # ── MCP panel ───────────────────────────────────────────────────
+
+    async def _show_mcp_panel(self) -> None:
+        """Gather MCP server info and mount the panel."""
+        if not self._session:
+            return
+        await self._session.ensure_mcp()
+        servers = self._build_mcp_server_list()
+        panel = MCPPanelWidget(servers=servers)
+        self.mount(panel)
+        panel.focus()
+
+    def _build_mcp_server_list(self) -> list[MCPServerInfo]:
+        mgr = self._session.mcp_manager
+        servers: list[MCPServerInfo] = []
+        for name in mgr.list_servers():
+            config = mgr.configs.get(name)
+            connected = name in mgr.list_connected()
+            servers.append(
+                MCPServerInfo(
+                    name=name,
+                    connected=connected,
+                    transport=config.type if config else "unknown",
+                    tool_names=mgr.get_tools(name),
+                    error=mgr.get_error(name),
+                    policy_blocked=mgr._policy.is_denied(name),
+                )
+            )
+        return servers
+
+    @on(MCPPanelWidget.ServerToggleRequested)
+    async def _on_mcp_toggle(self, event: MCPPanelWidget.ServerToggleRequested) -> None:
+        mgr = self._session.mcp_manager
+        if event.enable:
+            client = await mgr.connect(event.name)
+            if client:
+                status = "connected"
+            else:
+                status = f"failed: {mgr.get_error(event.name) or 'unknown error'}"
+        else:
+            await mgr.disconnect_one(event.name)
+            status = "disconnected"
+
+        self._session.rebuild_mcp()
+
+        # Update status bar
+        for name, connected in self._session.get_mcp_status():
+            self._status.set_ide_status(name, connected)
+
+        self._conversation.append_info(f"MCP '{event.name}': {status}")
+
+        # Refresh panel with updated data
+        try:
+            panel = self.query_one(MCPPanelWidget)
+            panel.refresh_servers(self._build_mcp_server_list())
+        except NoMatches:
+            pass
+
+    @on(MCPPanelWidget.PanelClosed)
+    def _on_mcp_panel_closed(self, _event: MCPPanelWidget.PanelClosed) -> None:
         self.query_one("#user-input", PromptInput).focus()
 
     # ── Queue panel events ─────────────────────────────────────────
@@ -792,6 +858,7 @@ class EmberApp(App):
         "/skills — list available skills",
         "/config — show current settings",
         "/schedule add <task> at <time> — schedule deferred tasks",
+        "/mcp — manage MCP server connections",
         "Ctrl+T — toggle the task panel",
     ]
 

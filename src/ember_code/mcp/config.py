@@ -3,16 +3,24 @@
 import fnmatch
 import json
 import platform
+from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
+
+
+class MCPTransport(str, Enum):
+    """Supported MCP transport types."""
+
+    stdio = "stdio"
+    sse = "sse"
 
 
 class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server."""
 
     name: str
-    type: str = "stdio"
+    type: MCPTransport = MCPTransport.stdio
     command: str = ""
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)

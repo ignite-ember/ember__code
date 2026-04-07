@@ -1,0 +1,266 @@
+"""MCP panel widget — browse and toggle MCP server connections."""
+
+import logging
+
+from pydantic import BaseModel, Field
+from textual.app import ComposeResult
+from textual.containers import Vertical
+from textual.message import Message
+from textual.reactive import reactive
+from textual.widget import Widget
+from textual.widgets import Static
+
+from ember_code.mcp.config import MCPTransport
+
+logger = logging.getLogger(__name__)
+
+
+class MCPServerInfo(BaseModel):
+    """Snapshot of an MCP server's state for the panel UI."""
+
+    name: str
+    connected: bool
+    transport: MCPTransport = MCPTransport.stdio
+    tool_names: list[str] = Field(default_factory=list)
+    error: str = ""
+    policy_blocked: bool = False
+
+
+class MCPPanelWidget(Widget):
+    """Bottom-docked panel for browsing and toggling MCP servers.
+
+    Navigate with Up/Down, toggle with Space/Enter, close with Escape.
+    """
+
+    can_focus = True
+
+    DEFAULT_CSS = """
+    MCPPanelWidget {
+        layer: dialog;
+        dock: bottom;
+        width: 100%;
+        height: auto;
+        max-height: 20;
+        background: $surface-darken-1;
+        border-top: heavy $accent;
+        padding: 0 2;
+    }
+
+    MCPPanelWidget .mcp-title {
+        text-style: bold;
+        color: $accent;
+    }
+
+    MCPPanelWidget .mcp-list {
+        height: auto;
+        max-height: 14;
+        overflow-y: auto;
+    }
+
+    MCPPanelWidget .mcp-entry {
+        padding: 0 1;
+        height: auto;
+    }
+
+    MCPPanelWidget .mcp-entry.-selected {
+        background: $accent;
+        color: $text;
+        text-style: bold;
+    }
+
+    MCPPanelWidget .mcp-empty {
+        color: $text-muted;
+        padding: 1 0;
+    }
+
+    MCPPanelWidget .hint {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    """
+
+    class ServerToggleRequested(Message):
+        """Posted when the user toggles a server on/off."""
+
+        def __init__(self, name: str, enable: bool):
+            self.name = name
+            self.enable = enable
+            super().__init__()
+
+    class PanelClosed(Message):
+        pass
+
+    selected_index = reactive(0)
+
+    def __init__(self, servers: list[MCPServerInfo]):
+        super().__init__()
+        self._servers = servers
+
+    def compose(self) -> ComposeResult:
+        connected = sum(1 for s in self._servers if s.connected)
+        total = len(self._servers)
+        yield Static(
+            f"[bold $accent]MCP Servers[/bold $accent]  "
+            f"[dim]{connected} connected / {total} total[/dim]",
+            classes="mcp-title",
+        )
+        with Vertical(classes="mcp-list"):
+            if not self._servers:
+                yield Static(
+                    "No MCP servers configured. Add servers to .mcp.json",
+                    classes="mcp-empty",
+                )
+            else:
+                for i, server in enumerate(self._servers):
+                    classes = ["mcp-entry"]
+                    if i == self.selected_index:
+                        classes.append("-selected")
+                    yield Static(
+                        self._render_entry(server),
+                        id=f"mcp-{i}",
+                        classes=" ".join(classes),
+                    )
+        yield Static(
+            "[dim]↑/↓ navigate · Space toggle · Enter expand tools · Esc close[/dim]",
+            classes="hint",
+        )
+
+    @staticmethod
+    def _render_entry(server: MCPServerInfo) -> str:
+        if server.policy_blocked:
+            return f"  [dim]🔒 {server.name}[/dim]  [dim]{server.transport}[/dim]  [red]blocked by policy[/red]"
+        if server.connected:
+            tool_count = len(server.tool_names)
+            return (
+                f"  [green]●[/green] {server.name}  "
+                f"[dim]{server.transport}[/dim]  "
+                f"[dim]{tool_count} tool{'s' if tool_count != 1 else ''}[/dim]"
+            )
+        if server.error:
+            short_err = server.error[:50] + ("..." if len(server.error) > 50 else "")
+            return f"  [red]○[/red] {server.name}  [dim]{server.transport}[/dim]  [red]{short_err}[/red]"
+        return (
+            f"  [red]○[/red] {server.name}  [dim]{server.transport}[/dim]  [dim]disconnected[/dim]"
+        )
+
+    def _render_entry_expanded(self, server: MCPServerInfo) -> str:
+        base = self._render_entry(server)
+        if not server.connected or not server.tool_names:
+            return base
+        tools = ", ".join(server.tool_names)
+        return f"{base}\n      [dim]{tools}[/dim]"
+
+    def refresh_servers(self, servers: list[MCPServerInfo]) -> None:
+        """Update the panel with fresh server data."""
+        self._servers = servers
+        self.selected_index = min(self.selected_index, max(0, len(self._servers) - 1))
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        """Rebuild the list entries in place."""
+        try:
+            container = self.query_one(".mcp-list", Vertical)
+        except Exception:
+            return
+        container.remove_children()
+        if not self._servers:
+            container.mount(
+                Static(
+                    "No MCP servers configured. Add servers to .mcp.json",
+                    classes="mcp-empty",
+                )
+            )
+            return
+        for i, server in enumerate(self._servers):
+            classes = ["mcp-entry"]
+            if i == self.selected_index:
+                classes.append("-selected")
+            container.mount(
+                Static(
+                    self._render_entry(server),
+                    id=f"mcp-{i}",
+                    classes=" ".join(classes),
+                )
+            )
+        # Update title
+        connected = sum(1 for s in self._servers if s.connected)
+        total = len(self._servers)
+        try:
+            title = self.query_one(".mcp-title", Static)
+            title.update(
+                f"[bold $accent]MCP Servers[/bold $accent]  "
+                f"[dim]{connected} connected / {total} total[/dim]"
+            )
+        except Exception:
+            pass
+
+    def watch_selected_index(self, old: int, new: int) -> None:
+        try:
+            old_widget = self.query_one(f"#mcp-{old}", Static)
+            old_widget.remove_class("-selected")
+            old_widget.update(self._render_entry(self._servers[old]))
+        except Exception:
+            pass
+        try:
+            new_widget = self.query_one(f"#mcp-{new}", Static)
+            new_widget.add_class("-selected")
+        except Exception:
+            pass
+
+    def on_key(self, event) -> None:
+        event.stop()
+        event.prevent_default()
+
+        if not self._servers:
+            if event.key in ("escape", "enter"):
+                self.post_message(self.PanelClosed())
+                self.remove()
+            return
+
+        if event.key == "up":
+            self.selected_index = max(0, self.selected_index - 1)
+        elif event.key == "down":
+            self.selected_index = min(len(self._servers) - 1, self.selected_index + 1)
+        elif event.key == "space":
+            self._toggle_selected()
+        elif event.key == "enter":
+            self._expand_selected()
+        elif event.key == "escape":
+            self.post_message(self.PanelClosed())
+            self.remove()
+
+    def _toggle_selected(self) -> None:
+        if not (0 <= self.selected_index < len(self._servers)):
+            return
+        server = self._servers[self.selected_index]
+        if server.policy_blocked:
+            return
+        self.post_message(self.ServerToggleRequested(name=server.name, enable=not server.connected))
+
+    def _expand_selected(self) -> None:
+        """Toggle tool list expansion on the selected entry."""
+        if not (0 <= self.selected_index < len(self._servers)):
+            return
+        server = self._servers[self.selected_index]
+        try:
+            widget = self.query_one(f"#mcp-{self.selected_index}", Static)
+            current = str(widget.renderable)
+            if "\n" in current:
+                widget.update(self._render_entry(server))
+            else:
+                widget.update(self._render_entry_expanded(server))
+        except Exception:
+            pass
+
+    def on_click(self, event) -> None:
+        target = event.widget if hasattr(event, "widget") else None
+        if target is None:
+            return
+        for i in range(len(self._servers)):
+            try:
+                widget = self.query_one(f"#mcp-{i}", Static)
+                if target is widget or target.is_descendant_of(widget):
+                    self.selected_index = i
+                    return
+            except Exception:
+                pass
