@@ -40,12 +40,15 @@ class QueueInjectorHook:
         on_inject: Callable[[str], None] | None = None,
         on_queue_changed: Callable[[], None] | None = None,
     ):
+        import inspect
+
+        inspect.markcoroutinefunction(self)
         self._queue = queue
         self._on_inject = on_inject
         self._on_queue_changed = on_queue_changed
         self._has_injected: bool = False
 
-    def __call__(
+    async def __call__(
         self,
         name: str = "",
         func: Callable | None = None,
@@ -55,20 +58,15 @@ class QueueInjectorHook:
     ) -> Any:
         """Hook entry point — called by Agno around each tool execution.
 
-        This is intentionally a **sync** function. Agno's sync tool execution
-        path filters out ``async def`` hooks via ``iscoroutinefunction`` and
-        skips them entirely — their coroutine repr then leaks into tool
-        results as ``<coroutine object ...>``. Keeping this sync ensures it
-        runs in both sync and async execution paths.
-
-        In Agno's sync path, ``func`` is always sync. In the async path,
-        Agno's wrapper awaits whatever this hook returns, so returning a
-        coroutine from an async ``func`` is fine.
+        Async to work correctly in Agno's async hook chain alongside
+        other async hooks (e.g. ToolEventHook).
 
         NOTE: The parameter MUST be named ``func`` (not ``next_func`` etc.)
         because Agno's ``_build_hook_args`` only recognises specific names:
         ``func``, ``function``, ``function_call``, ``name``, ``args``, etc.
         """
+        import inspect
+
         # Clear previously injected messages
         if agent and self._has_injected:
             agent.additional_input = None
@@ -80,6 +78,8 @@ class QueueInjectorHook:
         result = None
         if func is not None:
             result = func(**args)
+            if inspect.isawaitable(result):
+                result = await result
 
         # Inject queued messages so the agent sees them on the next model call
         if self._queue and agent:

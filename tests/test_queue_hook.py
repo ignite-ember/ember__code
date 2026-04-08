@@ -2,26 +2,32 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ember_code.queue_hook import QueueInjectorHook, create_queue_hook
 
 
 class TestQueueInjectorHook:
-    def test_passes_through_func_result(self):
+    @pytest.mark.asyncio
+    async def test_passes_through_func_result(self):
         hook = QueueInjectorHook(queue=[])
-        result = hook(name="test", func=lambda: "hello", args={})
+        result = await hook(name="test", func=lambda: "hello", args={})
         assert result == "hello"
 
-    def test_passes_args_to_func(self):
+    @pytest.mark.asyncio
+    async def test_passes_args_to_func(self):
         hook = QueueInjectorHook(queue=[])
-        result = hook(name="add", func=lambda x, y: x + y, args={"x": 1, "y": 2})
+        result = await hook(name="add", func=lambda x, y: x + y, args={"x": 1, "y": 2})
         assert result == 3
 
-    def test_no_func_returns_none(self):
+    @pytest.mark.asyncio
+    async def test_no_func_returns_none(self):
         hook = QueueInjectorHook(queue=[])
-        result = hook(name="test")
+        result = await hook(name="test")
         assert result is None
 
-    def test_injects_queued_messages(self):
+    @pytest.mark.asyncio
+    async def test_injects_queued_messages(self):
         queue = ["message 1", "message 2"]
         agent = MagicMock()
         agent.additional_input = None
@@ -29,51 +35,53 @@ class TestQueueInjectorHook:
         hook = QueueInjectorHook(queue=queue)
         with patch("agno.models.message.Message") as MockMessage:
             MockMessage.side_effect = lambda **kw: MagicMock(**kw)
-            hook(name="tool", func=lambda: "ok", args={}, agent=agent)
+            await hook(name="tool", func=lambda: "ok", args={}, agent=agent)
 
         assert agent.additional_input is not None
         assert len(agent.additional_input) == 2
-        assert queue == []  # queue should be drained
+        assert queue == []
 
-    def test_clears_previous_injection(self):
+    @pytest.mark.asyncio
+    async def test_clears_previous_injection(self):
         agent = MagicMock()
         agent.additional_input = "old stuff"
 
         hook = QueueInjectorHook(queue=[])
         hook._has_injected = True
 
-        # First call clears previous injection
-        hook(name="tool", func=lambda: "ok", args={}, agent=agent)
+        await hook(name="tool", func=lambda: "ok", args={}, agent=agent)
         assert agent.additional_input is None
 
-    def test_calls_on_inject_callback(self):
+    @pytest.mark.asyncio
+    async def test_calls_on_inject_callback(self):
         on_inject = MagicMock()
         queue = ["hello"]
         agent = MagicMock()
 
         hook = QueueInjectorHook(queue=queue, on_inject=on_inject)
         with patch("agno.models.message.Message", MagicMock()):
-            hook(name="tool", func=lambda: None, args={}, agent=agent)
+            await hook(name="tool", func=lambda: None, args={}, agent=agent)
 
         on_inject.assert_called_once_with("hello")
 
-    def test_calls_on_queue_changed_callback(self):
+    @pytest.mark.asyncio
+    async def test_calls_on_queue_changed_callback(self):
         on_changed = MagicMock()
         queue = ["msg"]
         agent = MagicMock()
 
         hook = QueueInjectorHook(queue=queue, on_queue_changed=on_changed)
         with patch("agno.models.message.Message", MagicMock()):
-            hook(name="tool", func=lambda: None, args={}, agent=agent)
+            await hook(name="tool", func=lambda: None, args={}, agent=agent)
 
         on_changed.assert_called_once()
 
-    def test_no_injection_when_queue_empty(self):
+    @pytest.mark.asyncio
+    async def test_no_injection_when_queue_empty(self):
         agent = MagicMock(spec=["additional_input"])
         agent.additional_input = None
         hook = QueueInjectorHook(queue=[])
-        hook(name="tool", func=lambda: "ok", args={}, agent=agent)
-        # additional_input should remain None when queue is empty
+        await hook(name="tool", func=lambda: "ok", args={}, agent=agent)
         assert agent.additional_input is None
 
     def test_reset_clears_state(self):
@@ -82,11 +90,20 @@ class TestQueueInjectorHook:
         hook.reset()
         assert hook._has_injected is False
 
+    @pytest.mark.asyncio
+    async def test_awaits_async_func(self):
+        hook = QueueInjectorHook(queue=[])
+
+        async def async_func():
+            return "async ok"
+
+        result = await hook(name="test", func=async_func, args={})
+        assert result == "async ok"
+
 
 class TestCreateQueueHook:
     def test_returns_hook_instance(self):
-        queue = []
-        hook = create_queue_hook(queue)
+        hook = create_queue_hook([])
         assert isinstance(hook, QueueInjectorHook)
 
     def test_passes_callbacks(self):

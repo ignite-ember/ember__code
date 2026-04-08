@@ -22,18 +22,18 @@ async def dispatch(session: Session, command: str) -> bool:
     if result.kind == "error" and "Unknown command" in result.content:
         return False
 
-    _render_result(session, result)
+    await _render_result(session, result)
     return True
 
 
-def _render_result(session: Session, result: CommandResult) -> None:
+async def _render_result(session: Session, result: CommandResult) -> None:
     """Render a CommandResult as plain text output."""
     if result.action == "quit":
         raise SystemExit(0)
     elif result.action == "clear":
         print_info(f"Conversation cleared. New session: {session.session_id}")
     elif result.action == "sessions":
-        _text_sessions(session)
+        await _text_sessions(session)
     elif result.action == "model":
         _text_model_picker(session)
     elif result.action == "mcp":
@@ -51,15 +51,11 @@ def _render_result(session: Session, result: CommandResult) -> None:
 # ── Text fallbacks for TUI-only actions ──────────────────────────────
 
 
-def _text_sessions(session: Session) -> None:
+async def _text_sessions(session: Session) -> None:
     """List past sessions as text (no interactive picker)."""
-    import asyncio
-
-    sessions = (
-        asyncio.get_event_loop().run_until_complete(session.persistence.list_sessions())
-        if hasattr(session.persistence, "list_sessions")
-        else []
-    )
+    sessions = []
+    if hasattr(session.persistence, "list_sessions"):
+        sessions = await session.persistence.list_sessions()
     if not sessions:
         print_info("No past sessions found.")
         return

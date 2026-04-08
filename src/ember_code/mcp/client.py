@@ -147,6 +147,7 @@ class MCPClientManager:
     async def disconnect_one(self, name: str) -> bool:
         """Disconnect a single MCP server by name. Returns True if disconnected."""
         client = self._clients.pop(name, None)
+        self._errors.pop(name, None)
         if client is None:
             return False
         transport = getattr(self.configs.get(name), "type", "")

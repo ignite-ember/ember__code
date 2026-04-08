@@ -1,5 +1,7 @@
 """Web tools — URL fetching and content extraction."""
 
+import re
+
 import httpx
 from agno.tools import Toolkit
 
@@ -12,7 +14,7 @@ class WebTools(Toolkit):
         self.register(self.fetch_url)
         self.register(self.fetch_json)
 
-    def fetch_url(self, url: str, max_length: int = 10000) -> str:
+    async def fetch_url(self, url: str, max_length: int = 10000) -> str:
         """Fetch URL content and extract text.
 
         Args:
@@ -23,8 +25,8 @@ class WebTools(Toolkit):
             Extracted text content from the URL.
         """
         try:
-            with httpx.Client(timeout=30, follow_redirects=True) as client:
-                response = client.get(url, headers={"User-Agent": "EmberCode/0.1.0"})
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                response = await client.get(url, headers={"User-Agent": "EmberCode/0.1.0"})
                 response.raise_for_status()
 
                 content_type = response.headers.get("content-type", "")
@@ -32,10 +34,9 @@ class WebTools(Toolkit):
                 if "json" in content_type:
                     return response.text[:max_length]
 
-                # For HTML, do basic text extraction
                 text = response.text
                 if "html" in content_type:
-                    text = self._extract_text_from_html(text)
+                    text = _extract_text_from_html(text)
 
                 return text[:max_length]
         except httpx.HTTPError as e:
@@ -43,7 +44,7 @@ class WebTools(Toolkit):
         except Exception as e:
             return f"Error: {e}"
 
-    def fetch_json(self, url: str) -> str:
+    async def fetch_json(self, url: str) -> str:
         """Fetch and return JSON from a URL.
 
         Args:
@@ -53,13 +54,10 @@ class WebTools(Toolkit):
             JSON string or error message.
         """
         try:
-            with httpx.Client(timeout=30, follow_redirects=True) as client:
-                response = client.get(
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                response = await client.get(
                     url,
-                    headers={
-                        "User-Agent": "EmberCode/0.1.0",
-                        "Accept": "application/json",
-                    },
+                    headers={"User-Agent": "EmberCode/0.1.0", "Accept": "application/json"},
                 )
                 response.raise_for_status()
                 return response.text[:20000]
@@ -68,16 +66,11 @@ class WebTools(Toolkit):
         except Exception as e:
             return f"Error: {e}"
 
-    @staticmethod
-    def _extract_text_from_html(html: str) -> str:
-        """Basic HTML to text extraction."""
-        import re
 
-        # Remove script and style tags
-        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
-        # Remove HTML tags
-        text = re.sub(r"<[^>]+>", " ", text)
-        # Clean up whitespace
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
+def _extract_text_from_html(html: str) -> str:
+    """Basic HTML to text extraction."""
+    text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text

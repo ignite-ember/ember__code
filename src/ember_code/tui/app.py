@@ -567,10 +567,13 @@ class EmberApp(App):
     # ── MCP panel ───────────────────────────────────────────────────
 
     async def _show_mcp_panel(self) -> None:
-        """Gather MCP server info and mount the panel."""
+        """Gather MCP server info and mount the panel.
+
+        Shows current state without triggering connections — the user
+        can toggle individual servers on from the panel itself.
+        """
         if not self._session:
             return
-        await self._session.ensure_mcp()
         servers = self._build_mcp_server_list()
         panel = MCPPanelWidget(servers=servers)
         self.mount(panel)

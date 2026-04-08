@@ -39,7 +39,7 @@ def _session_patches(**overrides):
         "_create_reasoning_tools": None,
         "_create_guardrails": None,
         "CompressionManager": None,
-        "Team": None,
+        "Agent": None,
         "load_prompt": "You are an assistant.",
     }
     defaults.update(overrides)
@@ -169,7 +169,7 @@ class TestSessionMessageHandling:
         with patch("ember_code.session.core.extract_response_text", return_value="Hello!"):
             result = await session.handle_message("Hi there")
             assert result == "Hello!"
-            session.main_team.arun.assert_called_once_with("Hi there")
+            session.main_team.arun.assert_called_once_with("Hi there", stream=False)
 
     @pytest.mark.asyncio
     async def test_handle_message_blocked_by_hook(self, session):
@@ -210,15 +210,12 @@ class TestSessionCompaction:
     async def test_compacts_at_80_percent(self, session):
         session.main_team.num_history_runs = None
         session.main_team.session_summary_manager = None
+        session.main_team._session = None
+        session.main_team.asave_session = AsyncMock()
         result = await session.compact_if_needed(8500, 10000)  # 85%
         assert result is True
-        assert session.main_team.num_history_runs == 4
-
-    @pytest.mark.asyncio
-    async def test_no_compaction_when_already_minimal(self, session):
-        session.main_team.num_history_runs = 2
-        result = await session.compact_if_needed(9000, 10000)
-        assert result is False
+        # After compaction: history reset for fresh accumulation
+        assert session.main_team.num_history_runs == 10000
 
 
 class TestSessionLearning:
@@ -268,9 +265,9 @@ class TestSessionLearning:
             Session(settings, project_dir=tmp_path)
 
             # Team() should have been called with learning=fake_lm
-            team_cls = mocks["Team"]
-            assert team_cls.called
-            call_kwargs = team_cls.call_args[1]
+            agent_cls = mocks["Agent"]
+            assert agent_cls.called
+            call_kwargs = agent_cls.call_args[1]
             assert call_kwargs["learning"] is fake_lm
             assert call_kwargs["add_learnings_to_context"] is True
         finally:
@@ -290,66 +287,9 @@ class TestSessionLearning:
             settings = Settings()
             Session(settings, project_dir=tmp_path)
 
-            team_cls = mocks["Team"]
-            call_kwargs = team_cls.call_args[1]
+            agent_cls = mocks["Agent"]
+            call_kwargs = agent_cls.call_args[1]
             assert call_kwargs["learning"] is None
             assert call_kwargs["add_learnings_to_context"] is False
-        finally:
-            _stop_patches(patches)
-
-    def test_learning_applied_to_member_agents(self, tmp_path):
-        fake_lm = MagicMock()
-        patches = _session_patches(create_learning_machine=fake_lm)
-        mocks = {}
-        for p in patches:
-            mock = p.start()
-            mocks[p.attribute] = mock
-        if "ModelRegistry" in mocks:
-            mocks["ModelRegistry"].return_value.get_context_window.return_value = 128_000
-
-        # Set up a mock member agent
-        from agno.agent import Agent
-
-        mock_agent = MagicMock(spec=Agent)
-        pool_mock = mocks["AgentPool"].return_value
-        pool_mock.get_member_agents.return_value = [mock_agent]
-
-        try:
-            from ember_code.session.core import Session
-
-            settings = Settings()
-            settings.learning.enabled = True
-            Session(settings, project_dir=tmp_path)
-
-            assert mock_agent.learning is fake_lm
-            assert mock_agent.add_learnings_to_context is True
-        finally:
-            _stop_patches(patches)
-
-    def test_learning_not_applied_to_members_when_disabled(self, tmp_path):
-        patches = _session_patches()
-        mocks = {}
-        for p in patches:
-            mock = p.start()
-            mocks[p.attribute] = mock
-        if "ModelRegistry" in mocks:
-            mocks["ModelRegistry"].return_value.get_context_window.return_value = 128_000
-
-        # Use a plain object to track attribute assignments
-        class FakeAgent:
-            pass
-
-        mock_agent = FakeAgent()
-        pool_mock = mocks["AgentPool"].return_value
-        pool_mock.get_member_agents.return_value = [mock_agent]
-
-        try:
-            from ember_code.session.core import Session
-
-            settings = Settings()
-            Session(settings, project_dir=tmp_path)
-
-            # learning should NOT have been set on the agent
-            assert not hasattr(mock_agent, "learning")
         finally:
             _stop_patches(patches)

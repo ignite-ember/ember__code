@@ -2,69 +2,88 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ember_code.tools.orchestrate import OrchestrateTools
+
+
+async def _mock_stream(content="agent response"):
+    from agno.run import agent as ae
+
+    event = MagicMock(spec=ae.RunContentEvent)
+    event.content = content
+    event.__class__ = ae.RunContentEvent
+    yield event
 
 
 def _mock_pool():
     pool = MagicMock()
     agent = MagicMock()
-    agent.arun = AsyncMock(return_value=MagicMock(content="agent response"))
+    agent.arun = MagicMock(return_value=_mock_stream())
+    defn = MagicMock()
+    defn.description = "Test agent"
+    defn.tools = ["Read", "Write"]
     pool.get.return_value = agent
-    pool.agent_names = ["editor", "explorer", "reviewer"]
+    pool.get_definition.return_value = defn
     return pool
 
 
-def _mock_settings():
-    settings = MagicMock()
-    settings.orchestration.max_nesting_depth = 5
-    settings.orchestration.max_total_agents = 20
-    settings.orchestration.sub_team_timeout = 120
-    settings.orchestration.max_task_iterations = 10
-    return settings
+def _settings():
+    s = MagicMock()
+    s.orchestration.max_nesting_depth = 5
+    s.orchestration.max_total_agents = 20
+    s.orchestration.sub_team_timeout = 600
+    s.orchestration.max_task_iterations = 10
+    return s
 
 
 class TestOrchestrateTools:
     def test_registers_functions(self):
-        tools = OrchestrateTools(pool=_mock_pool(), settings=_mock_settings())
-        names = set()
-        for f in tools.functions.values():
-            names.add(f.name)
-        for f in tools.async_functions.values():
-            names.add(f.name)
+        t = OrchestrateTools(pool=_mock_pool(), settings=_settings())
+        names = {f.name for f in t.functions.values()} | {
+            f.name for f in t.async_functions.values()
+        }
         assert "spawn_agent" in names
         assert "spawn_team" in names
 
-    def test_spawn_agent_success(self):
-        pool = _mock_pool()
-        tools = OrchestrateTools(pool=pool, settings=_mock_settings())
-        result = tools.spawn_agent("Fix the bug", "editor")
+    @pytest.mark.asyncio
+    async def test_spawn_agent_success(self):
+        t = OrchestrateTools(pool=_mock_pool(), settings=_settings())
+        result = await t.spawn_agent("Fix bug", "editor")
         assert "agent response" in result
-        pool.get.assert_called_once_with("editor")
 
-    def test_spawn_agent_unknown(self):
-        pool = _mock_pool()
-        pool.get.side_effect = KeyError("Agent 'nonexistent' not found in pool")
-        tools = OrchestrateTools(pool=pool, settings=_mock_settings())
-        result = tools.spawn_agent("task", "nonexistent")
-        assert "not found" in result.lower() or "nonexistent" in result
+    @pytest.mark.asyncio
+    async def test_spawn_agent_depth_limit(self):
+        t = OrchestrateTools(pool=_mock_pool(), settings=_settings(), current_depth=10)
+        result = await t.spawn_agent("task", "editor")
+        assert "depth" in result.lower()
 
-    def test_spawn_agent_depth_limit(self):
-        tools = OrchestrateTools(
-            pool=_mock_pool(),
-            settings=_mock_settings(),
-            current_depth=10,  # exceeds max_nesting_depth of 5
+    @pytest.mark.asyncio
+    async def test_spawn_agent_shows_activity(self):
+        result = await OrchestrateTools(pool=_mock_pool(), settings=_settings()).spawn_agent(
+            "Fix", "editor"
         )
-        result = tools.spawn_agent("task", "editor")
-        assert "depth" in result.lower() or "nesting" in result.lower()
+        assert "[Agent: editor]" in result
+        assert "Activity:" in result
 
-    def test_spawn_team_success(self):
-        pool = _mock_pool()
-        tools = OrchestrateTools(pool=pool, settings=_mock_settings())
+    @pytest.mark.asyncio
+    async def test_spawn_team_single_delegates(self):
+        result = await OrchestrateTools(pool=_mock_pool(), settings=_settings()).spawn_team(
+            "task", "editor"
+        )
+        assert "[Agent: editor]" in result
 
-        with patch("agno.team.team.Team") as MockTeam:
-            mock_team_instance = MagicMock()
-            mock_team_instance.arun = AsyncMock(return_value=MagicMock(content="team result"))
-            MockTeam.return_value = mock_team_instance
-
-            result = tools.spawn_team("implement feature", "editor,explorer", mode="coordinate")
-            assert isinstance(result, str)
+    @pytest.mark.asyncio
+    async def test_spawn_team_success(self):
+        t = OrchestrateTools(pool=_mock_pool(), settings=_settings())
+        with (
+            patch("agno.team.team.Team"),
+            patch("ember_code.config.models.ModelRegistry") as MockReg,
+            patch(
+                "ember_code.tools.orchestrate._run_team_streaming",
+                new=AsyncMock(return_value=("team result", [])),
+            ),
+        ):
+            MockReg.return_value.get_model.return_value = MagicMock()
+            result = await t.spawn_team("implement", "editor,explorer", mode="coordinate")
+            assert "team result" in result

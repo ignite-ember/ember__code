@@ -1,5 +1,6 @@
 """Session core — wires up subsystems and handles messages."""
 
+import asyncio
 import getpass
 import logging
 import uuid
@@ -8,7 +9,6 @@ from typing import Any
 
 from agno.agent import Agent
 from agno.compression.manager import CompressionManager
-from agno.team.team import Team
 
 from ember_code.auth.credentials import get_access_token, get_org_id, get_org_name
 from ember_code.config.models import ModelRegistry
@@ -133,8 +133,14 @@ class Session:
         self.memory_mgr = SessionMemoryManager(self.db, settings, self.user_id)
         self.knowledge_mgr = SessionKnowledgeManager(self.knowledge, settings, self.project_dir)
 
-        # ── Main Team (leader + specialist members) ──────────────────
-        self.main_team = self._build_main_team()
+        # ── Turn counter (for periodic memory extraction) ──────────
+        self._turn_count = 0
+        self._memory_interval = 10  # extract memories every N turns
+        self._recent_messages: list[str] = []  # buffer for memory extraction
+        self._memory_manager = self._create_memory_manager()
+
+        # ── Main Agent (single agent with all tools + orchestration) ──
+        self.main_team = self._build_main_agent()
 
     @property
     def cloud_connected(self) -> bool:
@@ -165,15 +171,16 @@ class Session:
         count = sum(len(hl) for hl in self.hooks_map.values())
         return count
 
-    # ── Main Team setup ─────────────────────────────────────────────
+    # ── Main Agent setup ────────────────────────────────────────────
 
-    def _build_main_team(self) -> Team:
-        """Build the main team with all Agno-native features configured.
+    def _build_main_agent(self) -> Agent:
+        """Build the main agent with all tools and orchestration capability.
 
-        All settings (persistence, memory, streaming, etc.) are passed directly
-        to the Team constructor — no intermediate AgnoFeatures layer.
+        A single agent handles everything directly. When it needs a
+        specialist, it calls spawn_agent() or spawn_team() via the
+        OrchestrateTools toolkit — Agno handles sub-team execution.
         """
-        # Leader tools
+        # Core tools
         registry = ToolRegistry(
             base_dir=str(self.project_dir),
             permissions=ToolPermissions(project_dir=self.project_dir),
@@ -182,7 +189,7 @@ class Session:
             sandbox_shell=self.settings.safety.sandbox_shell,
             sandbox_allowed_network_commands=self.settings.safety.sandbox_allowed_network_commands,
         )
-        leader_tool_names = [
+        tool_names = [
             "Read",
             "Write",
             "Edit",
@@ -195,37 +202,41 @@ class Session:
         for name in ("WebSearch", "WebFetch"):
             try:
                 registry.resolve([name])
-                leader_tool_names.append(name)
+                tool_names.append(name)
             except (ImportError, ValueError):
                 pass
-        # Add CodeIndex tools when connected to Ember Cloud
         if registry.cloud_connected:
-            leader_tool_names.append("CodeIndex")
-        leader_tools = registry.resolve(leader_tool_names)
+            tool_names.append("CodeIndex")
+        tools = registry.resolve(tool_names)
+
+        # Orchestration tools — lets the agent delegate to specialists
+        from ember_code.tools.orchestrate import OrchestrateTools
+
+        orchestrate = OrchestrateTools(
+            pool=self.pool,
+            settings=self.settings,
+            current_depth=0,
+            hook_executor=self.hook_executor,
+            session_id=self.session_id,
+        )
+        tools.append(orchestrate)
 
         # Reasoning tools (optional)
         reasoning = _create_reasoning_tools(self.settings)
         if reasoning:
-            leader_tools = [*leader_tools, reasoning]
+            tools.append(reasoning)
 
         # Custom tools from .ember/tools/
         custom_toolkits = registry.load_custom_tools(self.project_dir)
         if custom_toolkits:
-            leader_tools = [*leader_tools, *custom_toolkits]
+            tools.extend(custom_toolkits)
 
         # Tool event hooks (PreToolUse/PostToolUse/PostToolUseFailure)
         tool_event_hook = self._create_tool_event_hook()
 
-        # Members (all pool agents)
-        members = self.pool.get_member_agents()
-
-        # Apply session settings to all members
-        for member in members:
-            if isinstance(member, Agent):
-                self._apply_settings(member, tool_event_hook=tool_event_hook)
-
-        # System prompt (Agno auto-generates member descriptions in <member> XML)
+        # System prompt with substitutions
         prompt = load_prompt("main_agent")
+        prompt = prompt.replace("{{AGENT_CATALOG}}", self._build_agent_catalog() or "(no agents loaded)")
 
         # Append skill descriptions if any
         skill_descriptions = self.skill_pool.describe()
@@ -256,7 +267,6 @@ class Session:
         workspace_ctx = self.workspace.get_context_instructions()
         if workspace_ctx:
             instructions.append(workspace_ctx)
-            # Load project rules from additional directories
             for extra_dir in self.workspace.additional_dirs:
                 extra_rules = load_project_context(
                     extra_dir,
@@ -276,30 +286,31 @@ class Session:
             compress_token_limit=int(context_window * 0.8),
         )
 
-        team = Team(
+        agent = Agent(
             name="ember",
-            mode="coordinate",
             model=model,
-            members=members,
-            tools=leader_tools,
+            tools=tools,
             instructions=instructions,
             markdown=True,
             # Session persistence
             db=self.db,
             session_id=self.session_id,
             user_id=self.user_id,
-            # History — grows freely, compacted when context fills up
+            # History — keep all turns until 80% compaction triggers
             add_history_to_context=True,
-            num_history_runs=None,
-            max_tool_calls_from_history=0,
-            # Memory
-            enable_agentic_memory=self.settings.memory.enable_agentic_memory,
+            num_history_runs=10000,
+            # Memory — disabled on agent (no per-turn tools/extraction);
+            # we trigger extraction periodically (every N turns) ourselves.
+            # Memories are still loaded into context via add_memories_to_context.
+            enable_agentic_memory=False,
             add_memories_to_context=self.settings.memory.add_memories_to_context,
-            # Compression — tool results compressed at 80% context
+            # Compression
             compress_tool_results=True,
             compression_manager=compression,
-            # Session summaries — covers conversation history
-            enable_session_summaries=True,
+            # Session summaries — disabled at init to avoid per-turn LLM calls.
+            # _compact() creates the manager on demand. Existing summaries
+            # from prior compaction are still injected if present.
+            enable_session_summaries=False,
             add_session_summary_to_context=True,
             # Streaming
             stream=True,
@@ -315,7 +326,31 @@ class Session:
             # Tool event hooks
             tool_hooks=[tool_event_hook],
         )
-        return team
+        return agent
+
+    def _build_agent_catalog(self) -> str:
+        """Build a text catalog of specialist agents for the system prompt."""
+        lines = []
+        for defn in self.pool.list_agents():
+            tools_str = ", ".join(defn.tools) if defn.tools else "none"
+            lines.append(f"- **{defn.name}**: {defn.description} (tools: {tools_str})")
+        return "\n".join(lines)
+
+    def _create_memory_manager(self) -> Any | None:
+        """Create a standalone memory manager for periodic extraction."""
+        if not self.settings.memory.enable_agentic_memory or self.db is None:
+            return None
+        try:
+            from agno.memory.manager import MemoryManager
+
+            model_registry = ModelRegistry(self.settings)
+            return MemoryManager(
+                model=model_registry.get_model(),
+                db=self.db,
+            )
+        except Exception as e:
+            logger.warning("Failed to create memory manager: %s", e)
+            return None
 
     def _create_tool_event_hook(self) -> ToolEventHook:
         """Create a ToolEventHook for tool event hooks and protected path enforcement."""
@@ -324,34 +359,6 @@ class Session:
             session_id=self.session_id,
             protected_paths=self.settings.safety.protected_paths,
         )
-
-    def _apply_settings(self, agent: Agent, tool_event_hook: ToolEventHook) -> None:
-        """Apply session settings to an individual agent."""
-        if self.db is not None:
-            agent.db = self.db
-        agent.session_id = self.session_id
-        agent.user_id = self.user_id
-        agent.add_history_to_context = True
-        agent.num_history_runs = None
-        agent.enable_agentic_memory = self.settings.memory.enable_agentic_memory
-        agent.add_memories_to_context = self.settings.memory.add_memories_to_context
-        agent.compress_tool_results = True
-        agent.enable_session_summaries = True
-        agent.stream = True
-        agent.stream_events = True
-        if self.knowledge is not None:
-            agent.knowledge = self.knowledge
-            agent.search_knowledge = True
-            from ember_code.tools.knowledge import KnowledgeTools
-
-            knowledge_tools = KnowledgeTools(knowledge_mgr=self.knowledge_mgr)
-            existing_tools = agent.tools or []
-            agent.tools = [*existing_tools, knowledge_tools]
-        if self._learning is not None:
-            agent.learning = self._learning
-            agent.add_learnings_to_context = True
-        existing = agent.tool_hooks or []
-        agent.tool_hooks = [*existing, tool_event_hook]
 
     # ── MCP initialization (async, runs once) ──────────────────────
 
@@ -384,17 +391,17 @@ class Session:
 
         # Rebuild agents with MCP tools included, then rebuild main team
         self.pool.build_agents(mcp_clients=clients)
-        self.main_team = self._build_main_team()
+        self.main_team = self._build_main_agent()
 
     def rebuild_mcp(self) -> None:
-        """Rebuild agents and main team with current MCP client set.
+        """Rebuild agents and main agent with current MCP client set.
 
         Called after toggling individual MCP servers on/off.
         """
         connected = self.mcp_manager.list_connected()
         clients = {name: self.mcp_manager._clients[name] for name in connected}
         self.pool.build_agents(mcp_clients=clients if clients else None)
-        self.main_team = self._build_main_team()
+        self.main_team = self._build_main_agent()
 
     # ── MCP status ─────────────────────────────────────────────────
 
@@ -406,15 +413,55 @@ class Session:
 
     # ── Dynamic context compaction ─────────────────────────────────
 
+    async def _compact(self) -> None:
+        """Generate a summary of the conversation, then clear old messages.
+
+        1. Generate summary covering the full conversation
+        2. Delete all runs from the session (summary preserved)
+        3. Enable summary injection so the agent has context
+
+        After compaction, messages accumulate fresh until next compaction.
+        """
+        # Create summary manager on demand if not present
+        ssm = getattr(self.main_team, "session_summary_manager", None)
+        if ssm is None:
+            try:
+                from agno.session.summary import SessionSummaryManager
+
+                ssm = SessionSummaryManager(model=self.main_team.model)
+                self.main_team.session_summary_manager = ssm
+            except Exception as e:
+                logger.warning("Failed to create session summary manager: %s", e)
+
+        # Generate summary covering the full conversation
+        if ssm is not None:
+            try:
+                agno_session = getattr(self.main_team, "_session", None)
+                if agno_session is not None:
+                    await ssm.acreate_session_summary(session=agno_session)
+                    logger.info("Session summary generated")
+            except Exception as e:
+                logger.warning("Failed to generate session summary: %s", e)
+
+        # Clear runs from the session — summary stays
+        try:
+            agno_session = getattr(self.main_team, "_session", None)
+            if agno_session is not None:
+                agno_session.runs = []
+                await self.main_team.asave_session(agno_session)
+                logger.info("Session runs cleared from DB")
+        except Exception as e:
+            logger.warning("Failed to clear session runs: %s", e)
+
+        # Reset history limit to unlimited for fresh accumulation
+        self.main_team.num_history_runs = 10000
+        logger.info("Compacted: summary injected, old messages deleted")
+
     async def compact_if_needed(self, input_tokens: int, context_window: int) -> bool:
-        """Summarize conversation and trim history at 80% context usage.
+        """Auto-compact at 80% context usage.
 
-        Tool result compression is handled automatically by Agno's
-        ``CompressionManager`` (configured with ``compress_token_limit``).
-
-        This method handles *conversation history* compaction:
-        1. Generate/update the session summary (covers entire conversation)
-        2. Set ``num_history_runs`` to keep only recent turns verbatim
+        Messages accumulate freely until context fills up. At 80%,
+        a summary is generated and old turns are dropped.
 
         Returns True if compaction was applied.
         """
@@ -425,30 +472,8 @@ class Session:
         if usage < 0.8:
             return False
 
-        current = self.main_team.num_history_runs
-        if current is not None and current <= 2:
-            return False
-
-        # Generate/update conversation summary before trimming
-        ssm = self.main_team.session_summary_manager
-        if ssm is not None:
-            try:
-                session = getattr(self.main_team, "_session", None)
-                if session is not None:
-                    await ssm.acreate_session_summary(session=session)
-                    logger.info("Session summary generated before compaction")
-            except Exception as e:
-                logger.warning("Failed to generate session summary: %s", e)
-
-        # Trim history — summary covers older turns
-        new_limit = 4 if current is None else max(2, current // 2)
-
-        self.main_team.num_history_runs = new_limit
-        logger.info(
-            "Context at %.0f%% — trimmed history to %d runs (summary covers older turns)",
-            usage * 100,
-            new_limit,
-        )
+        await self._compact()
+        logger.info("Auto-compacted at %.0f%% context usage", usage * 100)
         return True
 
     async def force_compact(self) -> str:
@@ -456,22 +481,8 @@ class Session:
 
         Returns a human-readable status message.
         """
-        current = self.main_team.num_history_runs
-
-        # Generate/update conversation summary before trimming
-        ssm = self.main_team.session_summary_manager
-        if ssm is not None:
-            try:
-                session = getattr(self.main_team, "_session", None)
-                if session is not None:
-                    await ssm.acreate_session_summary(session=session)
-            except Exception as e:
-                logger.warning("Failed to generate session summary: %s", e)
-
-        new_limit = 4 if current is None else max(2, current // 2)
-        self.main_team.num_history_runs = new_limit
-        logger.info("Manual compaction: trimmed history to %d runs", new_limit)
-        return f"Context compacted. History trimmed to {new_limit} recent runs (summary covers older turns)."
+        await self._compact()
+        return "Context compacted. Conversation summarized, history cleared."
 
     # ── Debug logging ─────────────────────────────────────────────────
 
@@ -565,14 +576,9 @@ class Session:
         try:
             # ── Execute (Agno auto-persists via db) ──────────────────
             effective_message = guardrail_prefix + message if guardrail_prefix else message
-            response = await self.main_team.arun(effective_message, **media_kwargs)
+            response = await self.main_team.arun(effective_message, stream=False, **media_kwargs)
             self._log_run_messages()
             response_text = extract_response_text(response)
-
-            # ── Auto-generate session name on first turn ─────────────
-            if not self.session_named:
-                await self.persistence.auto_name(self.main_team)
-                self.session_named = True
 
             # ── Audit log ────────────────────────────────────────────
             self.audit.log(
@@ -599,7 +605,7 @@ class Session:
                     f"[SYSTEM] Your previous response was rejected by a Stop hook: "
                     f"{feedback}\nPlease revise your response to address this issue."
                 )
-                response = await self.main_team.arun(system_msg)
+                response = await self.main_team.arun(system_msg, stream=False)
                 response_text = extract_response_text(response)
 
             # ── Compact history if approaching context limit ─────────
@@ -607,6 +613,21 @@ class Session:
             if metrics:
                 input_tokens = getattr(metrics, "input_tokens", 0) or 0
                 await self.compact_if_needed(input_tokens, self._context_window)
+
+            # ── Periodic memory extraction (background, every N turns) ─
+            self._turn_count += 1
+            self._recent_messages.append(message)
+            if self._memory_manager is not None and self._turn_count % self._memory_interval == 0:
+                from agno.models.message import Message as AgnoMessage
+
+                batch = [AgnoMessage(role="user", content=m) for m in self._recent_messages]
+                self._recent_messages.clear()
+                asyncio.create_task(
+                    self._memory_manager.acreate_user_memories(
+                        messages=batch,
+                        user_id=self.user_id,
+                    )
+                )
 
             return response_text
 

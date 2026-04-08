@@ -82,12 +82,12 @@ class TestToolPermissions:
         assert perms.get_level("Read") == "allow"
         assert perms.get_level("Write") == "ask"
         assert perms.get_level("Bash") == "ask"
-        assert perms.get_level("WebSearch") == "deny"
+        assert perms.get_level("WebSearch") == "allow"
         assert perms.get_level("NotebookEdit") == "ask"
 
     def test_is_denied(self, tmp_path):
         perms = ToolPermissions(project_dir=tmp_path)
-        assert perms.is_denied("WebSearch")
+        assert not perms.is_denied("WebSearch")
         assert not perms.is_denied("Read")
 
     def test_needs_confirmation(self, tmp_path):

@@ -15,6 +15,7 @@ from ember_code.queue_hook import create_queue_hook
 from ember_code.tui.format_helpers import (
     CONTENT_EVENTS,
     MODEL_COMPLETED_EVENTS,
+    REASONING_CONTENT_EVENTS,
     REASONING_EVENTS,
     RUN_COMPLETED_EVENTS,
     RUN_ERROR_EVENTS,
@@ -171,6 +172,9 @@ class RunController:
         # Mount activity spinner
         self._spinner = AgentActivityWidget(label="Thinking")
         self._stream_widget = None
+        self._thinking_widget = None
+        self._in_thinking = False
+        self._model_uses_think_tags = False  # set True on first <think> detection
         await self._conversation.container.mount(self._spinner)
         self._auto_scroll()
 
@@ -232,11 +236,6 @@ class RunController:
         self._processing = False
         self._current_task = None
 
-        # Auto-name session on first turn
-        if not self._session.session_named:
-            self._session.session_named = True
-            asyncio.create_task(self._session.persistence.auto_name(team))
-
         # Drain queue
         await self._drain_queue()
 
@@ -251,17 +250,28 @@ class RunController:
     async def _dispatch(self, event: Any, team: Any) -> None:
         """Dispatch a single Agno event to the appropriate TUI operation."""
 
-        # ── Content streaming ──
-        if isinstance(event, CONTENT_EVENTS):
-            await self._on_content(event.content)
-            self._streamed = True
+        # ── Native reasoning content (models that separate it, e.g. OpenAI o1) ──
+        if isinstance(event, REASONING_CONTENT_EVENTS):
+            rc = getattr(event, "reasoning_content", "") or ""
+            if rc:
+                await self._append_thinking(rc)
+
+        # ── Content streaming (with <think> tag detection for models that inline it) ──
+        elif isinstance(event, CONTENT_EVENTS):
+            content = event.content or ""
+            if content:
+                await self._on_content_chunk(content)
+                self._streamed = True
 
         # ── Tool started ──
         elif isinstance(event, TOOL_STARTED_EVENTS):
             tool_exec = event.tool
             raw_name = (tool_exec.tool_name or "tool") if tool_exec else "tool"
             friendly = TOOL_NAMES.get(raw_name, raw_name)
-            args_summary = format_tool_args(tool_exec.tool_args if tool_exec else None)
+            args_summary = format_tool_args(
+                tool_exec.tool_args if tool_exec else None,
+                tool_name=raw_name,
+            )
             await self._on_tool_started(
                 friendly, raw_name, args_summary, getattr(event, "run_id", None)
             )
@@ -408,7 +418,53 @@ class RunController:
 
     # ── Content ───────────────────────────────────────────────────
 
-    async def _on_content(self, text: str) -> None:
+    async def _on_content_chunk(self, chunk: str) -> None:
+        """Route streamed content to thinking (dimmed) or response widget.
+
+        Models wrap thinking in ``<think>...</think>`` tags within the
+        content stream.  We detect the tags and split accordingly.
+        """
+        # Check for <think> open tag
+        if not self._in_thinking and "<think>" in chunk:
+            self._in_thinking = True
+            self._model_uses_think_tags = True
+            chunk = chunk.split("<think>", 1)[1]
+            if not chunk:
+                return
+
+        # Check for </think> close tag — handles both:
+        # 1. Normal: <think>..content..</think> (in_thinking=True)
+        # 2. Post-tool: content..</think> (model resumes thinking without open tag)
+        if "</think>" in chunk:
+            before, after = chunk.split("</think>", 1)
+            if before:
+                await self._append_thinking(before)
+            self._in_thinking = False
+            if self._thinking_widget is not None:
+                self._thinking_widget.finalize()
+                self._thinking_widget = None
+            after = after.lstrip("\n")
+            if after:
+                await self._append_content(after)
+            return
+
+        if self._in_thinking:
+            await self._append_thinking(chunk)
+        else:
+            await self._append_content(chunk)
+
+    async def _append_thinking(self, text: str) -> None:
+        """Stream thinking text in dimmed style."""
+        if self._thinking_widget is None:
+            if self._spinner:
+                self._spinner.set_label("Thinking")
+            self._thinking_widget = StreamingMessageWidget(css_class="thinking")
+            await self._conversation.container.mount(self._thinking_widget)
+        self._thinking_widget.append_chunk(text)
+        self._auto_scroll()
+
+    async def _append_content(self, text: str) -> None:
+        """Stream response content in normal style."""
         if self._stream_widget is None:
             if self._spinner:
                 self._spinner.set_label("Streaming")
@@ -422,10 +478,14 @@ class RunController:
     async def _on_tool_started(
         self, friendly: str, raw_name: str, args_summary: str, run_id: str | None
     ) -> None:
-        # Finalize streaming widget so tool appears after text
+        # Finalize streaming/thinking widgets so tool appears after text
         if self._stream_widget is not None:
             self._stream_widget.finalize()
             self._stream_widget = None
+        if self._thinking_widget is not None:
+            self._thinking_widget.finalize()
+            self._thinking_widget = None
+        self._in_thinking = False
 
         if self._spinner:
             self._spinner.set_label(f"Running {friendly}")
@@ -442,6 +502,25 @@ class RunController:
         await self._conversation.container.mount(widget)
         self._auto_scroll()
 
+        # Wire live progress for orchestrate tools (spawn_agent/spawn_team)
+        if raw_name in ("spawn_agent", "spawn_team"):
+            self._wire_orchestrate_progress(widget)
+
+    def _wire_orchestrate_progress(self, widget: ToolCallLiveWidget) -> None:
+        """Set up live progress updates for orchestrate tool calls."""
+        from ember_code.tools.orchestrate import OrchestrateTools
+
+        agent = self._session.main_team
+        for tool in agent.tools or []:
+            if isinstance(tool, OrchestrateTools):
+
+                def _progress(line: str, w: ToolCallLiveWidget = widget) -> None:
+                    w.update_progress(line)
+                    self._auto_scroll()
+
+                tool._on_progress = _progress
+                break
+
     def _on_tool_completed(self, summary: str, full_result: str, run_id: str | None) -> None:
         try:
             for w in reversed(list(self._conversation.container.query(ToolCallLiveWidget))):
@@ -455,6 +534,12 @@ class RunController:
             self._spinner.set_label("Thinking")
             if run_id and isinstance(self._spinner, AgentActivityWidget):
                 self._spinner.on_agent_tool_completed(run_id)
+
+        # After a tool call, models that use <think> tags typically resume
+        # thinking without an opening tag (only emitting </think> to close).
+        # Pre-enter thinking mode only if we've seen <think> tags before.
+        if self._model_uses_think_tags:
+            self._in_thinking = True
 
     def _on_tool_error(self, error: str) -> None:
         try:

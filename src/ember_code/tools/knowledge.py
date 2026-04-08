@@ -12,11 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeTools(Toolkit):
-    """Agent-facing tools for interacting with the knowledge base.
-
-    Agents can search for relevant context, store new knowledge,
-    and remove outdated entries.
-    """
+    """Agent-facing tools for interacting with the knowledge base."""
 
     def __init__(self, knowledge_mgr: "SessionKnowledgeManager"):
         super().__init__(name="ember_knowledge")
@@ -26,7 +22,7 @@ class KnowledgeTools(Toolkit):
         self.register(self.knowledge_delete)
         self.register(self.knowledge_status)
 
-    def knowledge_search(self, query: str, limit: int = 5) -> str:
+    async def knowledge_search(self, query: str, limit: int = 5) -> str:
         """Search the knowledge base for relevant information.
 
         Args:
@@ -36,16 +32,7 @@ class KnowledgeTools(Toolkit):
         Returns:
             Formatted search results, or a message if none found.
         """
-        import asyncio
-
-        async def _search():
-            return await self._mgr.search(query, limit=limit)
-
-        try:
-            response = asyncio.run(_search())
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-            response = loop.run_until_complete(_search())
+        response = await self._mgr.search(query, limit=limit)
 
         if not response.results:
             return f"No knowledge found for: {query}"
@@ -56,11 +43,7 @@ class KnowledgeTools(Toolkit):
             lines.append(f"\n{i}. [{name}]\n{r.content}")
         return "\n".join(lines)
 
-    def knowledge_add(
-        self,
-        content: str,
-        source: str = "",
-    ) -> str:
+    async def knowledge_add(self, content: str, source: str = "") -> str:
         """Store new knowledge in the knowledge base.
 
         Use this when you discover important information that should be
@@ -73,18 +56,8 @@ class KnowledgeTools(Toolkit):
         Returns:
             Confirmation message.
         """
-        import asyncio
-
         metadata = {"source": source} if source else None
-
-        async def _add():
-            return await self._mgr.add(text=content, metadata=metadata)
-
-        try:
-            result = asyncio.run(_add())
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-            result = loop.run_until_complete(_add())
+        result = await self._mgr.add(text=content, metadata=metadata)
 
         if not result.success:
             return f"Error: {result.error}"
@@ -104,29 +77,13 @@ class KnowledgeTools(Toolkit):
         Returns:
             Preview of entries or deletion confirmation.
         """
-        import asyncio
-
-        async def _search():
-            return await self._mgr.search(query, limit=10)
-
-        try:
-            response = asyncio.run(_search())
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-            response = loop.run_until_complete(_search())
-
-        if not response.results:
-            return f"No knowledge entries match: {query}"
-
+        # Delete uses sync ChromaDB API — keep sync
         if not confirm:
-            lines = [f"Found {response.total} entry/entries matching '{query}':"]
-            for i, r in enumerate(response.results, 1):
-                name = r.name or "untitled"
-                lines.append(f"  {i}. [{name}] {r.content[:100]}")
-            lines.append("\nCall knowledge_delete again with confirm=True to delete these.")
-            return "\n".join(lines)
+            return (
+                f"Preview mode: to delete entries matching '{query}', "
+                f"call knowledge_delete again with confirm=True."
+            )
 
-        # Actually delete
         if self._mgr.knowledge is None:
             return "Error: Knowledge base not available."
 
@@ -134,17 +91,12 @@ class KnowledgeTools(Toolkit):
             from ember_code.knowledge.vector_store import VectorStoreAdapter
 
             adapter = VectorStoreAdapter(self._mgr.knowledge.vector_db)
-            # Get IDs by searching ChromaDB directly
-            ids_to_delete = []
             collection = adapter._get_collection()
-            if collection is not None:
-                results = collection.query(
-                    query_texts=[query],
-                    n_results=10,
-                    include=[],
-                )
-                if results and results.get("ids"):
-                    ids_to_delete = results["ids"][0]
+            if collection is None:
+                return "No entries found to delete."
+
+            results = collection.query(query_texts=[query], n_results=10, include=[])
+            ids_to_delete = results["ids"][0] if results and results.get("ids") else []
 
             if not ids_to_delete:
                 return "No entries found to delete."

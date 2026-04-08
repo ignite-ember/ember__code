@@ -472,25 +472,20 @@ class TestQueueInjectorHook:
             on_queue_changed=on_queue_changed,
         )
 
-    def test_calls_next_func_and_returns_result(self):
+    @pytest.mark.asyncio
+    async def test_calls_next_func_and_returns_result(self):
         hook = self._make_hook()
-
-        def next_func(**kwargs):
-            return "tool_result"
-
-        result = hook(name="my_tool", func=next_func, args={})
+        result = await hook(name="my_tool", func=lambda **kw: "tool_result", args={})
         assert result == "tool_result"
 
-    def test_calls_sync_next_func(self):
+    @pytest.mark.asyncio
+    async def test_calls_sync_next_func(self):
         hook = self._make_hook()
-
-        def next_func(**kwargs):
-            return "sync_result"
-
-        result = hook(name="my_tool", func=next_func, args={})
+        result = await hook(name="my_tool", func=lambda **kw: "sync_result", args={})
         assert result == "sync_result"
 
-    def test_injects_queued_messages(self):
+    @pytest.mark.asyncio
+    async def test_injects_queued_messages(self):
         queue = ["hello from user"]
 
         class FakeAgent:
@@ -498,18 +493,15 @@ class TestQueueInjectorHook:
 
         agent = FakeAgent()
         hook = self._make_hook(queue=queue)
-
-        def next_func(**kwargs):
-            return "ok"
-
-        hook(name="tool", func=next_func, args={}, agent=agent)
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=agent)
 
         assert agent.additional_input is not None
         assert len(agent.additional_input) == 1
         assert "hello from user" in agent.additional_input[0].content
-        assert queue == []  # drained
+        assert queue == []
 
-    def test_clears_previous_injection_on_next_call(self):
+    @pytest.mark.asyncio
+    async def test_clears_previous_injection_on_next_call(self):
         queue = ["msg1"]
 
         class FakeAgent:
@@ -518,18 +510,14 @@ class TestQueueInjectorHook:
         agent = FakeAgent()
         hook = self._make_hook(queue=queue)
 
-        def next_func(**kwargs):
-            return "ok"
-
-        # First call: injects msg1
-        hook(name="tool", func=next_func, args={}, agent=agent)
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=agent)
         assert agent.additional_input is not None
 
-        # Second call (no new messages): clears previous injection
-        hook(name="tool", func=next_func, args={}, agent=agent)
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=agent)
         assert agent.additional_input is None
 
-    def test_on_inject_callback(self):
+    @pytest.mark.asyncio
+    async def test_on_inject_callback(self):
         injected = []
         queue = ["a", "b"]
         hook = self._make_hook(queue=queue, on_inject=lambda msg: injected.append(msg))
@@ -537,39 +525,28 @@ class TestQueueInjectorHook:
         class FakeAgent:
             additional_input = None
 
-        def next_func(**kwargs):
-            return "ok"
-
-        hook(name="tool", func=next_func, args={}, agent=FakeAgent())
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=FakeAgent())
         assert injected == ["a", "b"]
 
-    def test_on_queue_changed_callback(self):
+    @pytest.mark.asyncio
+    async def test_on_queue_changed_callback(self):
         changed_count = []
         queue = ["x"]
-        hook = self._make_hook(
-            queue=queue,
-            on_queue_changed=lambda: changed_count.append(1),
-        )
+        hook = self._make_hook(queue=queue, on_queue_changed=lambda: changed_count.append(1))
 
         class FakeAgent:
             additional_input = None
 
-        def next_func(**kwargs):
-            return "ok"
-
-        hook(name="tool", func=next_func, args={}, agent=FakeAgent())
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=FakeAgent())
         assert len(changed_count) == 1
 
-    def test_no_agent_skips_injection(self):
+    @pytest.mark.asyncio
+    async def test_no_agent_skips_injection(self):
         queue = ["msg"]
         hook = self._make_hook(queue=queue)
-
-        def next_func(**kwargs):
-            return "ok"
-
-        result = hook(name="tool", func=next_func, args={}, agent=None)
+        result = await hook(name="tool", func=lambda **kw: "ok", args={}, agent=None)
         assert result == "ok"
-        assert queue == ["msg"]  # not drained without agent
+        assert queue == ["msg"]
 
     def test_reset(self):
         hook = self._make_hook()

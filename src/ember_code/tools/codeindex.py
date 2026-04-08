@@ -54,12 +54,8 @@ class CodeIndexTools(Toolkit):
         server_url: str,
         access_token: str,
         project_dir: str | None = None,
-        requires_confirmation_tools: list[str] | None = None,
     ):
-        super().__init__(
-            name="codeindex",
-            requires_confirmation_tools=requires_confirmation_tools or [],
-        )
+        super().__init__(name="codeindex")
         self._server_url = server_url.rstrip("/")
         self._access_token = access_token
         self._remote_url = _get_git_remote(project_dir)

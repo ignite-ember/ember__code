@@ -94,7 +94,7 @@ class ContextConfig(BaseModel):
 class OrchestrationConfig(BaseModel):
     max_nesting_depth: int = 5
     max_total_agents: int = 20
-    sub_team_timeout: int = 120
+    sub_team_timeout: int = 600
     max_task_iterations: int = 10
     generate_ephemeral: bool = True
     max_ephemeral_per_session: int = 5

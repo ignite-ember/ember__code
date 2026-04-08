@@ -49,8 +49,8 @@ _DEFAULTS: dict[str, str] = {
     "Bash": "ask",
     "BashOutput": "ask",
     "Python": "ask",
-    "WebSearch": "deny",
-    "WebFetch": "deny",
+    "WebSearch": "allow",
+    "WebFetch": "allow",
     "NotebookEdit": "ask",
 }
 

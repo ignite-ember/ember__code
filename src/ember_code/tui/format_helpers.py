@@ -12,9 +12,10 @@ from agno.run import team as team_events
 
 logger = logging.getLogger(__name__)
 
-# ── Agno bug workaround ──────────────────────────────────────────────
-# Agno's team HITL streaming code calls `run_response.agent_id` on a
-# TeamRunOutput (which only has `team_id`). Monkeypatch the missing
+# ── Agno bug workarounds ─────────────────────────────────────────────
+
+# Workaround 1: Agno's team HITL streaming code calls `run_response.agent_id`
+# on a TeamRunOutput (which only has `team_id`). Monkeypatch the missing
 # attribute so the event creation doesn't crash.
 try:
     from agno.run.team import TeamRunOutput as _TRO
@@ -45,6 +46,10 @@ RUN_COMPLETED_EVENTS = (
 RUN_STARTED_EVENTS = (agent_events.RunStartedEvent, team_events.RunStartedEvent)
 RUN_ERROR_EVENTS = (agent_events.RunErrorEvent, team_events.RunErrorEvent)
 REASONING_EVENTS = (agent_events.ReasoningStartedEvent, team_events.ReasoningStartedEvent)
+REASONING_CONTENT_EVENTS = (
+    agent_events.ReasoningContentDeltaEvent,
+    team_events.ReasoningContentDeltaEvent,
+)
 TASK_CREATED_EVENTS = (team_events.TaskCreatedEvent,)
 TASK_UPDATED_EVENTS = (team_events.TaskUpdatedEvent,)
 TASK_ITERATION_EVENTS = (team_events.TaskIterationStartedEvent,)
@@ -70,8 +75,8 @@ TOOL_NAMES = {
     "fetch_url": "WebFetch",
     "fetch_json": "WebFetch",
     "run_python_code": "Python",
-    "spawn_agent": "Orchestrate",
-    "spawn_team": "Orchestrate",
+    "spawn_agent": "Agent",
+    "spawn_team": "Team",
     "delegate_task_to_member": "Delegate",
     "delegate_task_to_members": "Delegate",
     "search_knowledge_base": "Knowledge",
@@ -85,10 +90,23 @@ TOOL_NAMES = {
 # ── Formatting helpers ────────────────────────────────────────────────
 
 
-def format_tool_args(tool_args: dict | None) -> str:
+def format_tool_args(tool_args: dict | None, tool_name: str = "") -> str:
     """Format tool arguments into a short summary string."""
     if not tool_args or not isinstance(tool_args, dict):
         return ""
+
+    # Special formatting for orchestration tools — show full task
+    if tool_name in ("spawn_agent", "spawn_team"):
+        agent = tool_args.get("agent_name", tool_args.get("agent_names", ""))
+        task = str(tool_args.get("task", ""))
+        mode = tool_args.get("mode", "")
+        parts = [agent]
+        if mode:
+            parts.append(f"mode={mode}")
+        if task:
+            parts.append(f'"{task}"')
+        return ", ".join(parts)
+
     parts = []
     for k, v in list(tool_args.items())[:3]:
         val = str(v)

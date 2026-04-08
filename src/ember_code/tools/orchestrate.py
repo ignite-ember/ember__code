@@ -1,7 +1,9 @@
 """OrchestrateTools — allows agents to spawn sub-teams at runtime."""
 
+import contextlib
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 from agno.tools import Toolkit
@@ -13,17 +15,143 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Session-level counter for total spawned agents (shared across all OrchestrateTools instances)
 _agent_counter_lock = threading.Lock()
-_agent_counters: dict[str, int] = {}  # session_id -> count
+_agent_counters: dict[str, int] = {}
+
+
+def _format_args(tool_args: dict | None) -> str:
+    if not tool_args:
+        return ""
+    parts = []
+    for k, v in list(tool_args.items())[:2]:
+        val = str(v).replace("\n", " ")
+        if len(val) > 30:
+            val = val[:27] + "..."
+        parts.append(f"{k}={val}")
+    return ", ".join(parts)
+
+
+def _preview(result: Any, limit: int = 60) -> str:
+    if result is None:
+        return ""
+    s = str(result).replace("\n", " ").strip()
+    return s[:limit] + "..." if len(s) > limit else s
+
+
+async def _run_agent_streaming(
+    agent: Any, task: str, on_progress: Any = None
+) -> tuple[str, list[str]]:
+    """Stream an agent run, collecting activity log. Returns (response, log)."""
+    from agno.run import agent as agent_events
+
+    log: list[str] = []
+    content: list[str] = []
+    current_tool: str | None = None
+
+    def _log(line: str) -> None:
+        log.append(line)
+        if on_progress:
+            with contextlib.suppress(Exception):
+                on_progress(line)
+
+    async for event in agent.arun(task, stream=True):
+        if isinstance(event, agent_events.ToolCallStartedEvent):
+            te = event.tool
+            tn = (te.tool_name or "tool") if te else "tool"
+            ta = te.tool_args if te else {}
+            current_tool = tn
+            _log(f"  │  ├─ {tn}({_format_args(ta)})")
+        elif isinstance(event, agent_events.ToolCallCompletedEvent):
+            te = event.tool
+            r = getattr(te, "result", None) if te else None
+            if current_tool:
+                _log(f"  │  │  └─ {_preview(r)}")
+                current_tool = None
+        elif isinstance(event, agent_events.ToolCallErrorEvent):
+            err = str(getattr(event, "error", "?"))
+            _log(f"  │  │  └─ ERROR: {err[:60]}")
+            current_tool = None
+        elif isinstance(event, agent_events.RunContentEvent):
+            c = event.content or ""
+            if c:
+                clean = c.replace("<think>", "").replace("</think>", "")
+                if clean.strip():
+                    content.append(clean)
+
+    return "".join(content).strip(), log
+
+
+async def _run_team_streaming(
+    team: Any, task: str, on_progress: Any = None
+) -> tuple[str, list[str]]:
+    """Stream a team run, collecting activity log. Returns (response, log)."""
+    from agno.run import agent as agent_events
+    from agno.run import team as team_events
+
+    log: list[str] = []
+    content: list[str] = []
+    current_tool: str | None = None
+    current_agent: str = ""
+
+    def _log(line: str) -> None:
+        log.append(line)
+        if on_progress:
+            with contextlib.suppress(Exception):
+                on_progress(line)
+
+    async for event in team.arun(task, stream=True):
+        if isinstance(event, team_events.TaskCreatedEvent):
+            title = getattr(event, "title", "")
+            assignee = getattr(event, "assignee", "")
+            _log(f"  ┌─ TASK: {title}")
+            if assignee:
+                _log(f"  │  assigned to: {assignee}")
+        elif isinstance(event, team_events.TaskUpdatedEvent):
+            status = getattr(event, "status", "")
+            icon = {"completed": "✓", "failed": "✗", "running": "…"}.get(status, "·")
+            _log(f"  │  {icon} {status}")
+        elif isinstance(event, team_events.TaskIterationStartedEvent):
+            _log(f"  ╞═ Iteration {getattr(event, 'iteration', 0)}")
+        elif isinstance(event, (agent_events.RunStartedEvent, team_events.RunStartedEvent)):
+            name = getattr(event, "agent_name", None) or getattr(event, "team_name", None)
+            if name and name != current_agent:
+                current_agent = name
+                _log(f"  ├─ [{name}]")
+        elif isinstance(
+            event, (agent_events.ToolCallStartedEvent, team_events.ToolCallStartedEvent)
+        ):
+            te = event.tool
+            tn = (te.tool_name or "tool") if te else "tool"
+            ta = te.tool_args if te else {}
+            current_tool = tn
+            _log(f"  │  ├─ {tn}({_format_args(ta)})")
+        elif isinstance(
+            event, (agent_events.ToolCallCompletedEvent, team_events.ToolCallCompletedEvent)
+        ):
+            te = event.tool
+            r = getattr(te, "result", None) if te else None
+            if current_tool:
+                _log(f"  │  │  └─ {_preview(r)}")
+                current_tool = None
+        elif isinstance(event, (agent_events.ToolCallErrorEvent, team_events.ToolCallErrorEvent)):
+            err = str(getattr(event, "error", "?"))
+            _log(f"  │  │  └─ ERROR: {err[:60]}")
+            current_tool = None
+        elif isinstance(event, (agent_events.RunErrorEvent, team_events.RunErrorEvent)):
+            err = str(getattr(event, "content", "?"))
+            _log(f"  │  └─ ERROR: {err[:60]}")
+        elif isinstance(event, (agent_events.RunContentEvent, team_events.RunContentEvent)):
+            c = event.content or ""
+            if c:
+                clean = c.replace("<think>", "").replace("</think>", "")
+                if clean.strip():
+                    content.append(clean)
+
+    return "".join(content).strip(), log
 
 
 class OrchestrateTools(Toolkit):
-    """Tools for agents to spawn sub-teams from the agent pool.
-
-    Enables unlimited nesting: any agent with this toolkit can spawn
-    sub-teams or individual agents to handle subtasks.
-    """
+    """Tools for agents to spawn sub-teams from the agent pool."""
 
     def __init__(
         self,
@@ -41,41 +169,30 @@ class OrchestrateTools(Toolkit):
         self._hook_executor = hook_executor
         self._session_id = session_id
         self._max_agents = settings.orchestration.max_total_agents
+        self._on_progress: Any = None
         self.register(self.spawn_agent)
         self.register(self.spawn_team)
         if settings.orchestration.generate_ephemeral:
             self.register(self.create_agent)
 
     def _check_agent_limit(self, count: int = 1) -> str | None:
-        """Check if spawning ``count`` more agents would exceed the session limit.
-
-        Returns an error message if the limit would be exceeded, or None if OK.
-        """
         with _agent_counter_lock:
             current = _agent_counters.get(self._session_id, 0)
             if current + count > self._max_agents:
-                return (
-                    f"Error: Maximum total agents ({self._max_agents}) reached for this session. "
-                    f"Complete this task with the agents already running."
-                )
+                return f"Error: Maximum total agents ({self._max_agents}) reached."
             _agent_counters[self._session_id] = current + count
             return None
 
-    def _fire_hook(self, event: str, extra: dict[str, Any] | None = None) -> None:
-        """Fire a hook event if executor is available. Best-effort, never raises."""
+    async def _fire_hook(self, event: str, extra: dict[str, Any] | None = None) -> None:
         if not self._hook_executor:
             return
         payload = {"session_id": self._session_id}
         if extra:
             payload.update(extra)
-        try:
-            import asyncio
+        with contextlib.suppress(Exception):
+            await self._hook_executor.execute(event=event, payload=payload)
 
-            asyncio.run(self._hook_executor.execute(event=event, payload=payload))
-        except Exception:
-            logger.debug("Hook %s failed (non-fatal)", event, exc_info=True)
-
-    def spawn_agent(self, task: str, agent_name: str) -> str:
+    async def spawn_agent(self, task: str, agent_name: str) -> str:
         """Run a single agent from the pool on a subtask.
 
         Args:
@@ -83,13 +200,10 @@ class OrchestrateTools(Toolkit):
             agent_name: Name of the agent to spawn (from the pool).
 
         Returns:
-            The agent's response.
+            The agent's response with activity log.
         """
         if self.current_depth >= self.max_depth:
-            return (
-                f"Error: Maximum nesting depth ({self.max_depth}) reached. "
-                f"Complete this task without spawning sub-agents."
-            )
+            return f"Error: Maximum nesting depth ({self.max_depth}) reached."
 
         if limit_err := self._check_agent_limit(1):
             return limit_err
@@ -99,83 +213,67 @@ class OrchestrateTools(Toolkit):
         except KeyError as e:
             return str(e)
 
-        self._fire_hook("SubagentStart", {"agent_name": agent_name, "task": task[:500]})
+        defn = self.pool.get_definition(agent_name)
+        agent_desc = defn.description if defn else ""
+        agent_tools = ", ".join(defn.tools) if defn and defn.tools else "none"
+
+        await self._fire_hook("SubagentStart", {"agent_name": agent_name, "task": task[:500]})
+
+        if self._on_progress:
+            with contextlib.suppress(Exception):
+                self._on_progress(f"  ├─ [{agent_name}]")
 
         try:
-            import asyncio
+            start = time.monotonic()
+            result, activity = await _run_agent_streaming(
+                agent, task, on_progress=self._on_progress
+            )
+            elapsed = time.monotonic() - start
 
-            async def _run():
-                response = await agent.arun(task)
-                if hasattr(response, "content"):
-                    return str(response.content)
-                return str(response)
-
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(asyncio.run, _run())
-                        result = future.result(timeout=self.settings.orchestration.sub_team_timeout)
-                else:
-                    result = loop.run_until_complete(_run())
-            except RuntimeError:
-                result = asyncio.run(_run())
-
-            self._fire_hook(
+            await self._fire_hook(
                 "SubagentStop", {"agent_name": agent_name, "result_preview": result[:500]}
             )
-            return result
-        except TimeoutError:
-            error = f"Error: Sub-agent '{agent_name}' timed out after {self.settings.orchestration.sub_team_timeout}s."
-            self._fire_hook("SubagentStop", {"agent_name": agent_name, "error": error})
-            return error
+
+            activity_log = "\n".join(activity) if activity else "  (no tool calls)"
+            return (
+                f"[Agent: {agent_name}] {agent_desc}\n"
+                f"[Tools: {agent_tools}]\n"
+                f"[Task: {task}]\n"
+                f"[Time: {elapsed:.1f}s]\n\n"
+                f"Activity:\n{activity_log}\n\n"
+                f"Response:\n{result}"
+            )
         except Exception as e:
             error = f"Error running sub-agent '{agent_name}': {e}"
-            self._fire_hook("SubagentStop", {"agent_name": agent_name, "error": error})
+            await self._fire_hook("SubagentStop", {"agent_name": agent_name, "error": error})
             return error
 
-    def spawn_team(
-        self,
-        task: str,
-        agent_names: str,
-        mode: str = "coordinate",
-    ) -> str:
+    async def spawn_team(self, task: str, agent_names: str, mode: str = "coordinate") -> str:
         """Create and run a sub-team for a specific subtask.
 
         Args:
             task: The subtask description.
             agent_names: Comma-separated agent names from the pool.
-            mode: Team mode:
-                  - "coordinate" — leader delegates sequentially (default)
-                  - "route" — single best agent handles the task
-                  - "broadcast" — all agents work in parallel, leader synthesizes
-                  - "tasks" — autonomous task loop: leader decomposes into tasks,
-                    delegates, tracks progress, iterates until done
+            mode: Team mode: "coordinate", "route", "broadcast", or "tasks".
 
         Returns:
-            The team's response.
+            The team's response with activity log.
         """
         if self.current_depth >= self.max_depth:
-            return (
-                f"Error: Maximum nesting depth ({self.max_depth}) reached. "
-                f"Complete this task without spawning sub-teams."
-            )
+            return f"Error: Maximum nesting depth ({self.max_depth}) reached."
 
         names = [n.strip() for n in agent_names.split(",") if n.strip()]
-
         if limit_err := self._check_agent_limit(len(names)):
             return limit_err
         if not names:
             return "Error: No agent names provided."
-
-        # If only one agent, just spawn it directly
         if len(names) == 1:
-            return self.spawn_agent(task, names[0])
+            return await self.spawn_agent(task, names[0])
 
         try:
             from agno.team.team import Team
+
+            from ember_code.config.models import ModelRegistry
 
             members = []
             for name in names:
@@ -188,9 +286,11 @@ class OrchestrateTools(Toolkit):
             if mode not in valid_modes:
                 mode = "coordinate"
 
-            team_kwargs = {
+            team_model = ModelRegistry(self.settings).get_model()
+            team_kwargs: dict[str, Any] = {
                 "name": f"sub-team-depth-{self.current_depth + 1}",
                 "mode": mode,
+                "model": team_model,
                 "members": members,
                 "markdown": True,
             }
@@ -199,55 +299,38 @@ class OrchestrateTools(Toolkit):
 
             team = Team(**team_kwargs)
 
-            self._fire_hook(
+            member_lines = []
+            for n in names:
+                defn = self.pool.get_definition(n)
+                desc = defn.description[:60] if defn else ""
+                member_lines.append(f"  - {n}: {desc}")
+
+            await self._fire_hook(
                 "SubagentStart",
-                {
-                    "agent_name": f"team({','.join(names)})",
-                    "task": task[:500],
-                    "mode": mode,
-                },
+                {"agent_name": f"team({','.join(names)})", "task": task[:500], "mode": mode},
             )
 
-            import asyncio
+            start = time.monotonic()
+            result, activity = await _run_team_streaming(team, task, on_progress=self._on_progress)
+            elapsed = time.monotonic() - start
 
-            async def _run():
-                response = await team.arun(task)
-                if hasattr(response, "content"):
-                    return str(response.content)
-                return str(response)
-
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(asyncio.run, _run())
-                        result = future.result(timeout=self.settings.orchestration.sub_team_timeout)
-                else:
-                    result = loop.run_until_complete(_run())
-            except RuntimeError:
-                result = asyncio.run(_run())
-
-            self._fire_hook(
+            await self._fire_hook(
                 "SubagentStop",
-                {
-                    "agent_name": f"team({','.join(names)})",
-                    "result_preview": result[:500],
-                },
+                {"agent_name": f"team({','.join(names)})", "result_preview": result[:500]},
             )
-            return result
-        except TimeoutError:
-            error = (
-                f"Error: Sub-team timed out after {self.settings.orchestration.sub_team_timeout}s."
+
+            activity_log = "\n".join(activity) if activity else "  (no activity)"
+            return (
+                f"[Team: {', '.join(names)}] (mode: {mode})\n"
+                f"[Members:\n" + "\n".join(member_lines) + "]\n"
+                f"[Task: {task}]\n"
+                f"[Time: {elapsed:.1f}s]\n\n"
+                f"Activity:\n{activity_log}\n\n"
+                f"Response:\n{result}"
             )
-            self._fire_hook(
-                "SubagentStop", {"agent_name": f"team({','.join(names)})", "error": error}
-            )
-            return error
         except Exception as e:
             error = f"Error running sub-team: {e}"
-            self._fire_hook(
+            await self._fire_hook(
                 "SubagentStop", {"agent_name": f"team({','.join(names)})", "error": error}
             )
             return error
@@ -261,14 +344,11 @@ class OrchestrateTools(Toolkit):
     ) -> str:
         """Create a new ephemeral agent with a custom system prompt.
 
-        Use this when the current team lacks a specialist for the task.
-        The agent is temporary and stored in .ember/agents.tmp/.
-
         Args:
             name: Short snake_case name for the agent.
             description: One-line description of what the agent does.
             system_prompt: Full system prompt defining the agent's behavior.
-            tools: Comma-separated tool names (default: Read,Write,Edit,Bash,Grep,Glob).
+            tools: Comma-separated tool names.
 
         Returns:
             Confirmation message with the agent name.
@@ -276,20 +356,13 @@ class OrchestrateTools(Toolkit):
         tool_list = [t.strip() for t in tools.split(",") if t.strip()]
         try:
             self.pool.register_ephemeral(
-                name=name,
-                description=description,
-                system_prompt=system_prompt,
-                tools=tool_list,
+                name=name, description=description, system_prompt=system_prompt, tools=tool_list
             )
-            return (
-                f"Created ephemeral agent '{name}': {description}. "
-                f"You can now use spawn_agent(task, '{name}') to delegate work to it."
-            )
+            return f"Created ephemeral agent '{name}': {description}. Use spawn_agent(task, '{name}') to delegate."
         except (ValueError, RuntimeError) as e:
             return f"Error creating agent: {e}"
 
 
 def reset_agent_counter(session_id: str) -> None:
-    """Reset the spawned-agent counter for a session. Call on session end."""
     with _agent_counter_lock:
         _agent_counters.pop(session_id, None)

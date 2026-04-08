@@ -147,22 +147,29 @@ def initialize_project(project_dir: Path) -> bool:
     """
     home_ember = Path.home() / ".ember"
     home_ember.mkdir(parents=True, exist_ok=True)
-    marker = home_ember / MARKER_FILE
+    home_marker = home_ember / MARKER_FILE
+    project_marker = project_dir / ".ember" / MARKER_FILE
 
-    if marker.exists():
+    # Skip if both home and project are already initialized
+    if home_marker.exists() and project_marker.exists():
         return False
 
     ember_dir = project_dir / ".ember"
     ember_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_default_config(home_ember)
-    _copy_agents(project_dir)
-    _copy_skills(project_dir)
-    _provision_hooks(project_dir)
-    _write_ember_md(project_dir)
+    # Always write home config if missing (user-global)
+    if not home_marker.exists():
+        _write_default_config(home_ember)
+        home_marker.touch()
 
-    # Mark as done — never initialize again
-    marker.touch()
+    # Initialize project if its marker is missing (e.g. .ember/ was deleted)
+    if not project_marker.exists():
+        _copy_agents(project_dir)
+        _copy_skills(project_dir)
+        _provision_hooks(project_dir)
+        _write_ember_md(project_dir)
+        project_marker.touch()
+
     return True
 
 

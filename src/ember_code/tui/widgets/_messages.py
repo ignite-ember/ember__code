@@ -175,10 +175,25 @@ class StreamingMessageWidget(Widget):
         height: auto;
         padding: 0;
     }
+
+    StreamingMessageWidget.-thinking .role-label {
+        color: ansi_bright_black;
+    }
+
+    StreamingMessageWidget.-thinking .stream-content {
+        color: ansi_bright_black;
+        text-style: italic;
+    }
+
+    StreamingMessageWidget.-thinking Markdown {
+        color: ansi_bright_black;
+    }
     """
 
-    def __init__(self):
+    def __init__(self, css_class: str = ""):
         super().__init__()
+        if css_class:
+            self.add_class(f"-{css_class}")
         self._chunks: list[str] = []
 
     def compose(self) -> ComposeResult:
@@ -299,7 +314,14 @@ class ToolCallLiveWidget(Static):
         safe_args = self._args_summary.replace("[", "\\[") if self._args_summary else ""
         args = f"({safe_args})" if safe_args else ""
         if self._status == "running":
-            return f"[bold $accent]\u23f3 {self._tool_name}{args}[/bold $accent]"
+            header = f"[bold $accent]\u23f3 {self._tool_name}{args}[/bold $accent]"
+            progress = getattr(self, "_progress_lines", [])
+            if progress:
+                # Show last 8 progress lines
+                recent = progress[-8:]
+                escaped = "\n".join(line.replace("[", "\\[") for line in recent)
+                header += f"\n[dim]{escaped}[/dim]"
+            return header
         # Done
         line1 = f"[dim]\u2713 {self._tool_name}{args}[/dim]"
         if not self._full_result:
@@ -325,6 +347,15 @@ class ToolCallLiveWidget(Static):
         if self._status == "done" and self._full_result:
             self._expanded = not self._expanded
             self.update(self._format())
+
+    def update_progress(self, line: str) -> None:
+        """Append a progress line while the tool is running."""
+        if self._status != "running":
+            return
+        if not hasattr(self, "_progress_lines"):
+            self._progress_lines: list[str] = []
+        self._progress_lines.append(line)
+        self.update(self._format())
 
     def mark_done(self, result_summary: str = "", full_result: str = "") -> None:
         self._status = "done"
