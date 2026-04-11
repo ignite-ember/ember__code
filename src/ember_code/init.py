@@ -19,15 +19,53 @@ MARKER_FILE = ".initialized"
 
 # ── Built-in hook scripts ─────────────────────────────────────────────
 
-DOCS_REMIND_HOOK = """\
+SESSION_CONTEXT_HOOK = """\
 #!/bin/bash
-# .ember/hooks/docs-remind.sh
+# .ember/hooks/session-context.sh
+# Hook: SessionStart
+#
+# Reports current branch, uncommitted changes, and stale TODO on session start.
+
+branch=$(git branch --show-current 2>/dev/null || echo "unknown")
+uncommitted=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+behind=$(git rev-list HEAD..@{u} --count 2>/dev/null || echo "0")
+
+parts=()
+[[ "$branch" != "unknown" ]] && parts+=("branch: $branch")
+[[ "$uncommitted" -gt 0 ]] && parts+=("$uncommitted uncommitted change(s)")
+[[ "$behind" -gt 0 ]] && parts+=("$behind commit(s) behind remote")
+
+# Check for stale TODO.md
+if [[ -f ".ember/TODO.md" ]]; then
+  last_modified=$(stat -f %m .ember/TODO.md 2>/dev/null || stat -c %Y .ember/TODO.md 2>/dev/null || echo "0")
+  now=$(date +%s)
+  age_days=$(( (now - last_modified) / 86400 ))
+  [[ "$age_days" -gt 7 ]] && parts+=("TODO.md is ${age_days} days old")
+fi
+
+# Check if ember.md exists
+[[ ! -f "ember.md" ]] && parts+=("no ember.md found — consider creating one")
+
+if [[ ${#parts[@]} -eq 0 ]]; then
+  echo '{"continue": true}'
+  exit 0
+fi
+
+msg=$(IFS=", "; echo "${parts[*]}")
+cat << EOF
+{"continue": true, "systemMessage": "Session context: ${msg}"}
+EOF
+exit 0
+"""
+
+TEST_REMINDER_HOOK = """\
+#!/bin/bash
+# .ember/hooks/test-reminder.sh
 # Hook: Stop
 #
 # Before the agent finishes, checks if source files were modified but no
-# documentation was updated. If so, blocks and reminds to run /update-docs.
+# tests were updated or run. If so, blocks and reminds to run tests.
 
-# Get all modified files (staged + unstaged + untracked)
 changed_files=$(git diff --name-only HEAD 2>/dev/null; git diff --name-only --cached 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
 
 if [[ -z "$changed_files" ]]; then
@@ -35,14 +73,17 @@ if [[ -z "$changed_files" ]]; then
   exit 0
 fi
 
-# Check if any source files were modified
+# Check if source files were modified
 source_changed=false
-source_count=0
 while IFS= read -r file; do
   case "$file" in
-    src/*.py|agents/*.md|skills/*/SKILL.md|pyproject.toml|Makefile)
+    *.py|*.ts|*.tsx|*.js|*.jsx|*.go|*.rs|*.java|*.rb|*.c|*.cpp)
+      # Skip test files
+      case "$file" in
+        test_*|*_test.*|*.test.*|*_spec.*|*.spec.*|tests/*|__tests__/*|spec/*) continue ;;
+      esac
       source_changed=true
-      source_count=$((source_count + 1))
+      break
       ;;
   esac
 done <<< "$changed_files"
@@ -52,41 +93,160 @@ if [[ "$source_changed" != "true" ]]; then
   exit 0
 fi
 
-# Check if any docs were also modified
-docs_changed=false
+# Check if test files were also modified
+test_changed=false
 while IFS= read -r file; do
   case "$file" in
-    README.md|QUICKSTART.md|TODO.md|CHANGELOG.md|PROGRESS.md|docs/*|docs/progress/*)
-      docs_changed=true
+    test_*|*_test.*|*.test.*|*_spec.*|*.spec.*|tests/*|__tests__/*|spec/*)
+      test_changed=true
       break
       ;;
   esac
 done <<< "$changed_files"
 
-if [[ "$docs_changed" == "true" ]]; then
+if [[ "$test_changed" == "true" ]]; then
   echo '{"continue": true}'
   exit 0
 fi
 
-# Source changed, no docs updated — remind
 cat << EOF
 {
   "continue": false,
-  "systemMessage": "${source_count} source file(s) were modified but no documentation was updated. Run /update-docs to keep docs in sync, or confirm that no doc updates are needed for these changes."
+  "systemMessage": "Source files were modified but no tests were updated. Run tests to verify your changes, or confirm that no test updates are needed."
 }
 EOF
 exit 2
 """
 
+PRE_PR_REVIEW_HOOK = """\
+#!/bin/bash
+# .ember/hooks/pre-pr-review.sh
+# Hook: PreToolUse (matcher: Bash)
+#
+# Early warning: catches TODOs, debug statements, and console.log before
+# push or PR creation. This is NOT enforcement — real gates belong in CI/CD.
+
+# Read payload from stdin
+payload=$(cat)
+cmd=$(echo "$payload" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"command"[[:space:]]*:[[:space:]]*"//;s/"$//')
+
+# Only check push/PR commands
+case "$cmd" in
+  *"git push"*|*"gh pr create"*|*"gh pr"*) ;;
+  *) echo '{"continue": true}'; exit 0 ;;
+esac
+
+# Check for leftover debug/TODO in staged changes
+diff_output=$(git diff --cached 2>/dev/null || git diff HEAD 2>/dev/null)
+issues=()
+
+todo_count=$(echo "$diff_output" | grep "^+" | grep -c -i "TODO\\|FIXME\\|HACK\\|XXX" || true)
+todo_count=$(echo "$todo_count" | tr -d '[:space:]')
+[[ "$todo_count" -gt 0 ]] 2>/dev/null && issues+=("$todo_count TODO/FIXME comment(s)")
+
+debug_count=$(echo "$diff_output" | grep "^+" | grep -c "console\\.log\\|debugger\\|breakpoint()\\|import pdb\\|print(" || true)
+debug_count=$(echo "$debug_count" | tr -d '[:space:]')
+[[ "$debug_count" -gt 0 ]] 2>/dev/null && issues+=("$debug_count debug statement(s)")
+
+if [[ ${#issues[@]} -eq 0 ]]; then
+  echo '{"continue": true}'
+  exit 0
+fi
+
+msg=$(IFS=", "; echo "${issues[*]}")
+cat << EOF
+{
+  "continue": false,
+  "systemMessage": "Before pushing: found ${msg} in your changes. Address these or confirm they are intentional."
+}
+EOF
+exit 2
+"""
+
+POST_COMMIT_TODO_HOOK = """\
+#!/bin/bash
+# .ember/hooks/post-commit-todo.sh
+# Hook: PostToolUse (matcher: Bash, background: true)
+#
+# After a git commit, scan committed files for new TODOs and append them
+# to .ember/TODO.md if it exists.
+
+payload=$(cat)
+cmd=$(echo "$payload" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"command"[[:space:]]*:[[:space:]]*"//;s/"$//')
+
+# Only act on commit commands
+case "$cmd" in
+  *"git commit"*) ;;
+  *) echo '{"continue": true}'; exit 0 ;;
+esac
+
+# Only if TODO.md exists
+if [[ ! -f ".ember/TODO.md" ]]; then
+  echo '{"continue": true}'
+  exit 0
+fi
+
+# Find TODOs in last commit
+new_todos=$(git diff HEAD~1..HEAD 2>/dev/null | grep "^+" | grep -i "TODO\\|FIXME" | sed 's/^+//' | head -10)
+
+if [[ -z "$new_todos" ]]; then
+  echo '{"continue": true}'
+  exit 0
+fi
+
+# Append to TODO.md
+echo "" >> .ember/TODO.md
+echo "## New TODOs (auto-detected $(date +%Y-%m-%d))" >> .ember/TODO.md
+while IFS= read -r line; do
+  echo "- [ ] $line" >> .ember/TODO.md
+done <<< "$new_todos"
+
+echo '{"continue": true}'
+exit 0
+"""
+
 BUILT_IN_HOOKS = [
     {
-        "filename": "docs-remind.sh",
-        "content": DOCS_REMIND_HOOK,
+        "filename": "session-context.sh",
+        "content": SESSION_CONTEXT_HOOK,
+        "event": "SessionStart",
+        "definition": {
+            "type": "command",
+            "command": ".ember/hooks/session-context.sh",
+            "timeout": 10000,
+        },
+    },
+    {
+        "filename": "test-reminder.sh",
+        "content": TEST_REMINDER_HOOK,
         "event": "Stop",
         "definition": {
             "type": "command",
-            "command": ".ember/hooks/docs-remind.sh",
+            "command": ".ember/hooks/test-reminder.sh",
             "timeout": 10000,
+        },
+    },
+    {
+        "filename": "pre-pr-review.sh",
+        "content": PRE_PR_REVIEW_HOOK,
+        "event": "PreToolUse",
+        "definition": {
+            "type": "command",
+            "command": ".ember/hooks/pre-pr-review.sh",
+            "matcher": "Bash",
+            "timeout": 15000,
+        },
+    },
+    {
+        "filename": "post-commit-todo.sh",
+        "content": POST_COMMIT_TODO_HOOK,
+        "event": "PostToolUse",
+        "definition": {
+            "type": "command",
+            "command": ".ember/hooks/post-commit-todo.sh",
+            "matcher": "Bash",
+            "timeout": 15000,
+            "background": True,
         },
     },
 ]

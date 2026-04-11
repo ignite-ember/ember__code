@@ -181,7 +181,7 @@ class TestHookProvisioning:
         settings = json.loads((tmp_path / "home" / ".ember" / "settings.json").read_text())
         assert "hooks" in settings
         assert "Stop" in settings["hooks"]
-        assert any(h["command"] == ".ember/hooks/docs-remind.sh" for h in settings["hooks"]["Stop"])
+        assert any(h["command"] == ".ember/hooks/test-reminder.sh" for h in settings["hooks"]["Stop"])
 
     def test_preserves_existing_settings(self, tmp_path):
         home_ember = tmp_path / "home" / ".ember"

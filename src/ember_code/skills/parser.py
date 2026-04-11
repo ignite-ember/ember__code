@@ -13,6 +13,7 @@ class SkillDefinition(BaseModel):
     name: str
     description: str = ""
     version: str = "0.1.0"
+    category: str = "development"
     argument_hint: str = ""
     context: str = "inline"
     agent: str | None = None
@@ -74,6 +75,7 @@ class SkillParser:
             name=fm.get("name", default_name),
             description=fm.get("description", ""),
             version=fm.get("version", "0.1.0"),
+            category=fm.get("category", "development"),
             argument_hint=_as_str(fm.get("argument-hint", fm.get("argument_hint", ""))),
             context=fm.get("context", "inline"),
             agent=fm.get("agent"),

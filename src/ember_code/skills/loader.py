@@ -89,13 +89,30 @@ class SkillPool:
         """List all skill definitions."""
         return [entry.definition for entry in self._entries.values()]
 
-    def describe(self) -> str:
-        """Generate a summary of all skills for the Orchestrator."""
-        lines = []
+    def list_by_category(self) -> dict[str, list[SkillDefinition]]:
+        """Group skills by category."""
+        categories: dict[str, list[SkillDefinition]] = {}
         for entry in self._entries.values():
-            skill = entry.definition
-            hint = f" {skill.argument_hint}" if skill.argument_hint else ""
-            lines.append(f"- **/{skill.name}**{hint}: {skill.description}")
+            cat = entry.definition.category
+            categories.setdefault(cat, []).append(entry.definition)
+        return categories
+
+    def describe(self) -> str:
+        """Generate a summary of all skills for the Orchestrator, grouped by category."""
+        by_cat = self.list_by_category()
+        if not by_cat:
+            return ""
+
+        # Sort categories in a predictable order
+        order = ["development", "review", "planning", "operations"]
+        sorted_cats = sorted(by_cat.keys(), key=lambda c: (order.index(c) if c in order else 99, c))
+
+        lines = []
+        for cat in sorted_cats:
+            lines.append(f"\n### {cat.title()}")
+            for skill in sorted(by_cat[cat], key=lambda s: s.name):
+                hint = f" {skill.argument_hint}" if skill.argument_hint else ""
+                lines.append(f"- **/{skill.name}**{hint}: {skill.description}")
         return "\n".join(lines)
 
     def match_user_command(self, text: str) -> tuple[SkillDefinition, str] | None:
