@@ -56,10 +56,51 @@ class SessionManager:
     async def switch_to(self, session_id: str) -> None:
         self._session.session_id = session_id
         self._session.session_named = True
+        # Update the agent and persistence so Agno loads the correct history
+        self._session.main_team.session_id = session_id
+        self._session.persistence.session_id = session_id
         self.clear()
         self._status.reset()
         name = await self._session.persistence.get_name()
         label = f"{name} ({session_id})" if name else session_id
-        self._conversation.append_info(f"Switched to session: {label}")
+        self._conversation.append_info(f"Resumed session: {label}")
+
+        # Load and display previous messages
+        await self._load_history(session_id)
+
         self._status.update_status_bar()
         self._app.query_one("#user-input", PromptInput).focus()
+
+    async def _load_history(self, session_id: str) -> None:
+        """Load chat history from the DB and render in the conversation view."""
+        try:
+            agent = self._session.main_team
+            agno_session = await agent.aget_session(
+                session_id=session_id,
+                user_id=self._session.user_id,
+            )
+            if agno_session is None:
+                return
+
+            messages = agno_session.get_chat_history()
+            if not messages:
+                self._conversation.append_info("(no previous messages)")
+                return
+
+            for msg in messages:
+                content = msg.content if isinstance(msg.content, str) else str(msg.content or "")
+                if not content.strip():
+                    continue
+                # Strip think tags from assistant messages
+                if msg.role == "assistant":
+                    import re
+
+                    content = re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+                    if content:
+                        self._conversation.append_assistant(content, expanded=True)
+                elif msg.role == "user":
+                    self._conversation.append_user(content, expanded=True)
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).debug("Failed to load session history: %s", e)

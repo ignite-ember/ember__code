@@ -155,14 +155,12 @@ class TestCLIModes:
             )
             mock_run.assert_called_once()
 
-    def test_no_tui_uses_interactive(self):
+    def test_no_tui_disabled(self):
         runner = CliRunner()
-        with (
-            patch("ember_code.config.settings.load_settings", return_value=MagicMock()),
-            patch("ember_code.cli.asyncio.run") as mock_run,
-        ):
-            runner.invoke(cli, ["--no-tui"], catch_exceptions=False)
-            mock_run.assert_called_once()
+        with patch("ember_code.config.settings.load_settings", return_value=MagicMock()):
+            result = runner.invoke(cli, ["--no-tui"])
+            assert result.exit_code == 1
+            assert "temporarily disabled" in result.output
 
     def test_default_launches_tui(self):
         runner = CliRunner()

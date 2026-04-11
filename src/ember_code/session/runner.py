@@ -30,6 +30,15 @@ async def run_single_message(
         payload={"session_id": session.session_id},
     )
 
+    # Process @file mentions — strip @ prefix and add read hint
+    from ember_code.tui.input_handler import process_file_mentions
+
+    message, mentioned_files = process_file_mentions(message)
+    if mentioned_files:
+        from ember_code.utils.display import print_info as _print_info
+
+        _print_info(f"Referenced: {', '.join(mentioned_files)}")
+
     # Auto-detect media (images, audio, videos, documents) from message text
     from ember_code.utils.media import parse_media_from_text
 

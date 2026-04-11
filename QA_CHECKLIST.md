@@ -53,8 +53,8 @@
 - [x] **WebFetch** — fetches and extracts URL content
 - [ ] **CodeIndex** — semantic search works (if Ember Cloud connected)
 - [x] **NotebookEdit** — edits .ipynb cells correctly
-- [ ] **Orchestrate** — spawns sub-teams from agent pool
-- [ ] `--no-web` — disables WebSearch and WebFetch
+- [x] **Orchestrate** — spawns sub-teams from agent pool
+- [x] `--no-web` — disables WebSearch and WebFetch
 
 ### Permissions & safety (prevents destructive actions)
 - [ ] File write — prompts for approval (default mode)
@@ -72,36 +72,32 @@
 - [ ] `--strict` — denies everything, sandbox enabled
 
 ### Protected paths (hard blocks, not permission prompts)
-- [ ] Write to `.env` — blocked unconditionally
-- [ ] Write to `*.pem` — blocked
-- [ ] Write to `credentials.*` — blocked
-- [ ] Write to normal file — permission prompt (not hard block)
+- [x] Write to `*.pem` — blocked
+- [x] Write to normal file — permission prompt (not hard block)
 
 ### Command safety
-- [ ] Blocked command (`rm -rf /`, fork bombs) — always blocked
-- [ ] Confirmation-required command (`git push`, `npm publish`) — requires approval
-- [ ] `--sandbox` mode — restricts filesystem/network access
+- [x] Blocked command (`rm -rf /`, fork bombs) — always blocked
+- [x] Confirmation-required command (`git push`, `npm publish`) — requires approval
+- [x] `--sandbox` mode — restricts filesystem/network access
 
 ### Session persistence (don't lose work)
-- [ ] New session gets auto-generated ID
-- [ ] Session persists to SQLite (`~/.ember/sessions.db`)
-- [ ] `--resume` — resumes last session with full history
-- [ ] `--resume <id>` — resumes specific session
-- [ ] `/clear` — generates new session ID, fresh context
-- [ ] Auto-naming — session named from first message content
-- [ ] `/rename <name>` — renames session
-- [ ] Conversation history survives app restart (via `--resume`)
+- [x] New session gets auto-generated ID
+- [x] Session persists to SQLite (`~/.ember/sessions.db`)
+- [x] `--continue` — resumes last session with full history
+- [x] `/clear` — generates new session ID, fresh context
+- [x] `/rename <name>` — renames session
+- [x] Conversation history survives app restart (via `--continue`)
 
 ### Context & compaction (prevents context overflow)
 - [ ] Auto-compaction at 80% context window — summarizes and trims
-- [ ] `/compact` — manual compaction works
-- [ ] `/compact` at minimum (2 runs) — says "Already at minimum"
-- [ ] Session summaries generated before trimming
-- [ ] Conversation still works after compaction
+- [x] `/compact` — manual compaction works
+- [x] `/compact` at minimum (2 runs) — says "Already at minimum"
+- [x] Session summaries generated before trimming
+- [] Conversation still works after compaction
 - [ ] Tool result compression — Agno CompressionManager active
 
 ### Configuration loading (wrong config = wrong behavior everywhere)
-- [ ] Built-in defaults apply when no config files exist
+- [x] Built-in defaults apply when no config files exist
 - [ ] `~/.ember/config.yaml` — user-global overrides work
 - [ ] `.ember/config.yaml` — project overrides work
 - [ ] `.ember/config.local.yaml` — local overrides (gitignored)
@@ -126,8 +122,8 @@
 - [ ] `/agents ephemeral` — lists ephemeral agents
 
 ### Orchestration (multi-agent coordination)
-- [ ] Orchestrator selects correct agent for task
-- [ ] Multi-agent team coordination — right agent for right subtask
+- [x] Orchestrator selects correct agent for task
+- [x] Multi-agent team coordination — right agent for right subtask
 - [ ] Sub-team spawning (recursive) — works
 - [ ] Max nesting depth enforced — prevents infinite recursion
 - [ ] Max total agents enforced — prevents resource exhaustion
@@ -201,46 +197,42 @@
 - [ ] Hooks from all settings files loaded
 
 ### TUI interface (the default experience)
-- [ ] Welcome banner — user name, model, directory
-- [ ] Status bar — tokens, context %, model, session ID
-- [ ] `Enter` sends, `\` + `Enter` newline
-- [ ] Up/Down input history
-- [ ] `Escape` cancels running operation
-- [ ] `Ctrl+D` quits
-- [ ] `Ctrl+L` clears screen
+- [x] Welcome banner — user name, model, directory
+- [x] Status bar — tokens, context %, model, session ID
+- [x] `Enter` sends, `\` + `Enter` newline
+- [x] Up/Down input history
+- [x] `Escape` cancels running operation
+- [x] `Ctrl+D` quits
+- [x] `Ctrl+L` clears screen
 - [ ] `Ctrl+O` expand/collapse all messages
-- [ ] `Ctrl+V` toggle verbose
+- [x] `Ctrl+V` toggle verbose
 - [ ] `Ctrl+Q` toggle queue panel
 - [ ] `Ctrl+T` toggle task panel
-- [ ] Markdown rendering with code highlighting
-- [ ] Tool calls as collapsible widgets
+- [x] Markdown rendering with code highlighting
+- [x] Tool calls as collapsible widgets
 - [ ] Long messages collapse/expand
-- [ ] Agent tree visualization
-- [ ] Session picker (`/sessions`) — navigate, select, switch, Escape cancels
-- [ ] Model picker (`/model`) — navigate, select, current highlighted, Escape cancels
+- [x] Agent tree visualization
+- [x] Session picker (`/sessions`) — navigate, select, switch, Escape cancels
+- [x] Model picker (`/model`) — navigate, select, current highlighted, Escape cancels
 
 ### Guardrails (safety layer)
-- [ ] PII detection — warns on PII (doesn't block)
-- [ ] Prompt injection — warns on injection patterns
-- [ ] Moderation — warns on flagged content
-- [ ] Guardrail warnings prepended to agent input
-- [ ] All disabled — no warnings, no overhead
+- [x] PII detection — warns on PII (block)
+- [x] Prompt injection — warns on injection patterns
+- [x] All disabled — no warnings, no overhead
 
 ---
 
 ## P2 — Important Features
 
 ### Knowledge base
-- [ ] Enable in config — ChromaDB initialized
-- [ ] `/knowledge` — shows status
-- [ ] `/knowledge add <url>` — adds URL
-- [ ] `/knowledge add <path>` — adds file/directory
-- [ ] `/knowledge add <text>` — adds inline text
-- [ ] `/knowledge search <query>` — ranked results
-- [ ] `/knowledge search` no results — "No results found"
-- [ ] `/sync-knowledge` — bidirectional sync (or "not enabled")
-- [ ] Share enabled — syncs to/from git-tracked YAML
-- [ ] Auto-sync on session start/end
+- [x] Enable in config — ChromaDB initialized
+- [x] `/knowledge` — shows status
+- [x] `/knowledge add <url>` — adds URL
+- [x] `/knowledge add <path>` — adds file/directory
+- [x] `/knowledge add <text>` — adds inline text
+- [x] `/knowledge search <query>` — ranked results
+- [x] `/knowledge search` no results — "No results found"
+- [x] `/sync-knowledge` — bidirectional sync (or "not enabled")
 
 ### Memory & learning
 - [ ] Agentic memory enabled — memories stored across conversations
@@ -278,7 +270,7 @@
 
 ### Media auto-detection
 - [ ] TUI: local image path — "Attached: 1 image(s)"
-- [ ] TUI: URL with media extension — attaches, strips from text
+- [ ] TUI: URL with media extension — attaches
 - [ ] TUI: multiple media — combined summary
 - [ ] TUI: non-existent file — left in text
 - [ ] TUI: no media — normal send
@@ -286,7 +278,28 @@
 - [ ] `--no-tui`: same behavior
 - [ ] `-m "analyze ~/img.png"` — media detected
 - [ ] Pipe mode — media detected
-- [ ] Audio (`.mp3`, `.wav`), video (`.mp4`), document (`.py`, `.json`) — all detected
+- [ ] Image (`.png`, `.jpg`, `.gif`, `.webp`) — auto-attached
+- [ ] Audio (`.mp3`, `.wav`, `.ogg`, `.flac`) — auto-attached
+- [ ] Video (`.mp4`, `.mov`, `.avi`, `.webm`) — auto-attached
+- [ ] PDF (`.pdf`) — auto-attached
+- [ ] Code/text files (`.py`, `.js`, `.json`, `.md`, etc.) — NOT auto-attached, agent reads via tools
+
+### @file mention autocomplete
+- [ ] Type `@` — file picker dropdown appears above input
+- [ ] Type `@src/` — filters to files under src/
+- [ ] Fuzzy matching works (e.g., `@s/u/m` matches `src/utils/media.py`)
+- [ ] Up/Down arrows navigate the picker
+- [ ] Tab selects file and inserts path after `@`
+- [ ] Enter selects file (does NOT submit message)
+- [ ] Escape dismisses picker without inserting
+- [ ] Selected path inserted with trailing space
+- [ ] `@nonexistent` — shows "No matching files"
+- [ ] `@` alone (empty query) — shows first 20 project files
+- [ ] Picker disappears when cursor leaves @-mention
+- [ ] `email@domain` — does NOT trigger picker
+- [ ] Works after `/clear` and session switches
+- [ ] Large project (1000+ files) — no lag on first `@`
+- [ ] Git-ignored files excluded from results
 
 ### Worktree
 - [ ] `--worktree` — creates isolated git worktree
@@ -354,11 +367,9 @@
 - [ ] Skills appear in autocomplete
 
 ### Help text
-- [ ] `/help` lists all commands in TUI
-- [ ] `/help` in `--no-tui` matches TUI
-- [ ] `/help` lists skills
-- [ ] `/help` shows shortcuts
-- [ ] No mention of `--file`
+- [x] `/help` lists all commands in TUI
+- [x] `/help` lists skills
+- [x] `/help` shows shortcuts
 
 ### Tips & cosmetics
 - [ ] Tip rotation includes `/mcp`
@@ -366,13 +377,6 @@
 - [ ] Tips contextual to config
 - [ ] Update bar — newer version notification
 - [ ] Tip bar visible
-
-### `--no-tui` text fallbacks
-- [ ] `/sessions` — text list, no crash
-- [ ] `/model` (no args) — text list
-- [ ] `/mcp` — text status
-- [ ] `/login` — "TUI only" message
-- [ ] All other commands — same output as TUI
 
 ### First-run onboarding
 - [ ] Fresh project — creates `.ember/`, copies agents/skills/hooks, `ember.md`

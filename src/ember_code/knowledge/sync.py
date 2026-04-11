@@ -10,6 +10,7 @@ sync:
 Each entry has a stable ``id`` (content hash) so we can cheaply diff.
 """
 
+import asyncio
 import hashlib
 import logging
 from datetime import datetime, timezone
@@ -82,6 +83,20 @@ class KnowledgeSyncer:
         with open(self.file_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
+    def _get_synced_entry_ids(self) -> set[str]:
+        """Get entry_id values from ChromaDB metadata for dedup."""
+        if not self.store:
+            return set()
+        try:
+            entries = self.store.get_entries_metadata()
+            return {
+                m.get("entry_id", "")
+                for m in entries
+                if m.get("entry_id")
+            }
+        except Exception:
+            return set()
+
     # ── Sync ────────────────────────────────────────────────────────
 
     async def sync_file_to_db(self) -> KnowledgeSyncResult:
@@ -98,10 +113,13 @@ class KnowledgeSyncer:
                 total_entries=0,
             )
 
-        db_ids = self.store.get_entry_ids() if self.store else set()
-        new_entries = [e for e in file_entries if e.get("id") not in db_ids]
+        # Check which YAML entries are already in ChromaDB by looking at
+        # the entry_id metadata field (Agno generates its own doc IDs).
+        synced_entry_ids = self._get_synced_entry_ids() if self.store else set()
+        new_entries = [e for e in file_entries if e.get("id") not in synced_entry_ids]
         existing_count = len(file_entries) - len(new_entries)
 
+        inserted = 0
         for entry in new_entries:
             try:
                 metadata = {
@@ -109,19 +127,27 @@ class KnowledgeSyncer:
                     "added_at": entry.get("added_at", ""),
                     "synced": "true",
                 }
-                await self.knowledge.ainsert(
+                # Run in thread — SentenceTransformer embedding can trigger
+                # subprocess calls that crash inside Textual's fd environment.
+                entry_id = entry.get("id", hashlib.sha256(entry["content"].encode()).hexdigest()[:16])
+                metadata["entry_id"] = entry_id
+                # Name must be unique per entry so Agno generates distinct
+                # content hashes (otherwise it upserts/replaces the previous).
+                await asyncio.to_thread(
+                    self.knowledge.insert,
                     text_content=entry["content"],
+                    name=entry_id,
                     metadata=metadata,
-                    id=entry["id"],
                 )
-            except Exception:
-                logger.warning("Failed to insert entry %s into ChromaDB", entry.get("id"))
+                inserted += 1
+            except Exception as e:
+                logger.warning("Failed to insert entry %s into ChromaDB: %s", entry.get("id"), e)
 
         return KnowledgeSyncResult(
             direction="file_to_db",
-            new_entries=len(new_entries),
+            new_entries=inserted,
             existing_entries=existing_count,
-            total_entries=len(file_entries),
+            total_entries=existing_count + inserted,
         )
 
     def sync_db_to_file(self) -> KnowledgeSyncResult:

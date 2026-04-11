@@ -105,7 +105,7 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_compact(self):
         session = _make_session()
-        session.force_compact = AsyncMock(return_value="Context compacted.")
+        session.force_compact = AsyncMock(return_value=("Context compacted.", "Summary of conversation"))
         with patch("ember_code.session.commands.print_info"):
             result = await dispatch(session, "/compact")
         assert result is True

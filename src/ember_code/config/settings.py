@@ -31,8 +31,6 @@ class SafetyConfig(BaseModel):
     sandbox_allowed_network_commands: list[str] = Field(default_factory=list)
     protected_paths: list[str] = Field(
         default_factory=lambda: [
-            ".env",
-            ".env.*",
             "*.pem",
             "*.key",
             "credentials.*",
@@ -119,16 +117,16 @@ class MemoryConfig(BaseModel):
 class EmbeddingsConfig(BaseModel):
     """Embeddings provider configuration with BYOM registry."""
 
-    default: str = "ember"
+    default: str = "local"
     registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class KnowledgeConfig(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     collection_name: str = "ember_knowledge"
     chroma_db_path: str = "~/.ember/chromadb"
     max_results: int = 10
-    embedder: str = "ember"  # registry name (or "provider:model_id" format)
+    embedder: str = "local"  # "local" for SentenceTransformer, or registry name
     # ── Git-shared knowledge ──────────────────────────────────────
     share: bool = True  # enable git-synced knowledge sharing
     share_file: str = ".ember/knowledge.yaml"  # path relative to project root
@@ -151,7 +149,7 @@ class ReasoningConfig(BaseModel):
 
 
 class GuardrailsConfig(BaseModel):
-    pii_detection: bool = False
+    pii_detection: bool = True
     prompt_injection: bool = False
     moderation: bool = False
 

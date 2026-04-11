@@ -160,6 +160,13 @@ class RunController:
             self._app.render_command_result(result)
             return
 
+        # Process @file mentions — strip @ prefix and add read hint
+        from ember_code.tui.input_handler import process_file_mentions
+
+        message, mentioned_files = process_file_mentions(message)
+        if mentioned_files:
+            self._conversation.append_info(f"Referenced: {', '.join(mentioned_files)}")
+
         # Auto-detect media (images, audio, videos, documents) from message text
         from ember_code.utils.media import parse_media_from_text
 

@@ -10,6 +10,8 @@ class PromptInput(TextArea):
     Multiline text can also be pasted directly.
     """
 
+    suppress_submit: bool = False
+
     DEFAULT_CSS = """
     PromptInput {
         height: auto;
@@ -34,6 +36,11 @@ class PromptInput(TextArea):
 
     def _on_key(self, event) -> None:
         if event.key == "enter":
+            # When the file picker is open, don't submit — let the event
+            # bubble up to the app's on_key where picker selection happens
+            if self.suppress_submit:
+                event.prevent_default()
+                return
             row, col = self.cursor_location
             line = self.document.get_line(row)
             if col > 0 and line[col - 1] == "\\":

@@ -66,8 +66,6 @@ class StatusTracker:
         self._context_input_tokens = input_tokens
 
     def update_context_usage(self) -> None:
-        if self._context_input_tokens <= 0:
-            return
         bar = self._bar()
         if bar:
             bar.set_context_usage(self._context_input_tokens, self.max_context_tokens)

@@ -28,6 +28,8 @@ _WRITE_TOOL_FUNCTIONS = frozenset(
     }
 )
 
+_SHELL_TOOL_FUNCTIONS = frozenset({"run_shell_command"})
+
 
 def _is_protected_path(path: str, protected_patterns: list[str]) -> bool:
     filename = Path(path).name
@@ -47,12 +49,14 @@ class ToolEventHook:
         executor: HookExecutor,
         session_id: str = "",
         protected_paths: list[str] | None = None,
+        blocked_commands: list[str] | None = None,
     ):
         # Mark instance as coroutine function so Agno uses aexecute() path
         inspect.markcoroutinefunction(self)
         self._executor = executor
         self._session_id = session_id
         self._protected_paths = protected_paths or []
+        self._blocked_commands = blocked_commands or []
         self._has_pre = bool(executor.hooks.get(HookEvent.PRE_TOOL_USE.value))
         self._has_post = bool(executor.hooks.get(HookEvent.POST_TOOL_USE.value))
         self._has_fail = bool(executor.hooks.get(HookEvent.POST_TOOL_USE_FAILURE.value))
@@ -75,6 +79,16 @@ class ToolEventHook:
                 msg = f"Blocked: '{file_path}' is a protected path and cannot be written to."
                 logger.warning("Protected path blocked: %s via %s", file_path, name)
                 return msg
+
+        # Blocked commands
+        if self._blocked_commands and name in _SHELL_TOOL_FUNCTIONS:
+            cmd_args = args.get("args", [])
+            cmd_str = " ".join(str(a) for a in cmd_args) if isinstance(cmd_args, list) else str(cmd_args)
+            for blocked in self._blocked_commands:
+                if blocked in cmd_str:
+                    msg = f"Blocked: command matches blocked pattern '{blocked}'."
+                    logger.warning("Blocked command: %s", cmd_str)
+                    return msg
 
         # PreToolUse
         if self._has_pre:

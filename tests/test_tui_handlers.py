@@ -10,6 +10,8 @@ from ember_code.tui.input_handler import (
     SHORTCUT_HELP,
     AutocompleteProvider,
     InputHandler,
+    extract_at_mention,
+    process_file_mentions,
     shortcut_label,
 )
 
@@ -560,3 +562,103 @@ class TestQueueInjectorHook:
         queue = []
         hook = create_queue_hook(queue)
         assert hook._queue is queue
+
+
+# ── extract_at_mention ───────────────────────────────────────────
+
+
+class TestExtractAtMention:
+    """Tests for @file mention token extraction."""
+
+    def _line(self, text):
+        """Helper: returns a get_line callable for single-line input."""
+        return lambda row: text
+
+    def test_at_start_of_line(self):
+        assert extract_at_mention(0, 1, self._line("@")) == ""
+
+    def test_at_with_query(self):
+        assert extract_at_mention(0, 5, self._line("@src/")) == "src/"
+
+    def test_at_mid_line(self):
+        # "look at this file @src/utils" — @ is at pos 18, end at 28
+        assert extract_at_mention(0, 28, self._line("look at this file @src/utils")) == "src/utils"
+
+    def test_email_not_matched(self):
+        # No whitespace before @ — not a mention
+        assert extract_at_mention(0, 10, self._line("user@email")) is None
+
+    def test_no_at_in_text(self):
+        assert extract_at_mention(0, 5, self._line("hello")) is None
+
+    def test_at_after_space(self):
+        assert extract_at_mention(0, 8, self._line("check @f")) == "f"
+
+    def test_cursor_at_start(self):
+        assert extract_at_mention(0, 0, self._line("@test")) is None
+
+    def test_at_with_deep_path(self):
+        text = "@src/ember_code/tui/widgets/_file_picker.py"
+        assert extract_at_mention(0, len(text), self._line(text)) == "src/ember_code/tui/widgets/_file_picker.py"
+
+    def test_multiple_at_picks_nearest(self):
+        text = "@first @second"
+        # Cursor at end — should find @second
+        assert extract_at_mention(0, 14, self._line(text)) == "second"
+
+    def test_whitespace_breaks_scan(self):
+        # Cursor after a space following @mention — no active mention
+        text = "@file rest"
+        assert extract_at_mention(0, 10, self._line(text)) is None
+
+
+# ── process_file_mentions ────────────────────────────────────────
+
+
+class TestProcessFileMentions:
+    """Tests for @file mention processing before sending to LLM."""
+
+    def test_single_mention(self):
+        cleaned, paths = process_file_mentions("fix @src/main.py please")
+        assert paths == ["src/main.py"]
+        assert "@" not in cleaned
+        assert "src/main.py" in cleaned
+        assert "[Referenced files:" in cleaned
+
+    def test_multiple_mentions(self):
+        cleaned, paths = process_file_mentions("compare @a.py and @b.py")
+        assert paths == ["a.py", "b.py"]
+        assert cleaned.count("@") == 0
+        assert "a.py" in cleaned
+        assert "b.py" in cleaned
+
+    def test_no_mentions(self):
+        cleaned, paths = process_file_mentions("just a normal message")
+        assert paths == []
+        assert cleaned == "just a normal message"
+        assert "[Referenced" not in cleaned
+
+    def test_email_not_stripped(self):
+        cleaned, paths = process_file_mentions("contact user@example.com")
+        assert paths == []
+        assert "user@example.com" in cleaned
+
+    def test_at_start_of_line(self):
+        cleaned, paths = process_file_mentions("@src/utils/media.py has a bug")
+        assert paths == ["src/utils/media.py"]
+        assert "src/utils/media.py has a bug" in cleaned
+
+    def test_hint_prepended(self):
+        cleaned, paths = process_file_mentions("look at @config.yaml")
+        lines = cleaned.split("\n")
+        assert lines[0].startswith("[Referenced files:")
+        assert "read before responding" in lines[0]
+
+    def test_deep_path(self):
+        text = "review @src/ember_code/tui/widgets/_file_picker.py"
+        cleaned, paths = process_file_mentions(text)
+        assert paths == ["src/ember_code/tui/widgets/_file_picker.py"]
+
+    def test_mention_with_dots(self):
+        cleaned, paths = process_file_mentions("check @pyproject.toml")
+        assert paths == ["pyproject.toml"]

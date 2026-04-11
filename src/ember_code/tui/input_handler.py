@@ -1,12 +1,44 @@
 """Input handler — manages user input, history, and autocomplete."""
 
+from __future__ import annotations
+
+import re
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ember_code.tui.widgets import InputHistory
 
 if TYPE_CHECKING:
     from ember_code.skills.loader import SkillPool
+    from ember_code.tui.file_index import FileIndex
+
+# Matches @path tokens: @ at start of line or after whitespace, followed by
+# non-whitespace path characters.  Does NOT match email-style user@domain
+# (requires whitespace or ^ before @).
+_AT_MENTION_RE = re.compile(r"(?:^|(?<=\s))@(\S+)")
+
+
+def process_file_mentions(text: str) -> tuple[str, list[str]]:
+    """Strip @file mentions from message text and return referenced paths.
+
+    Returns (cleaned_text, referenced_paths).  The ``@`` prefix is removed
+    so the agent sees a natural file path.  A hint line is prepended when
+    files are referenced.
+    """
+    paths: list[str] = []
+
+    def _replace(m: re.Match) -> str:
+        path = m.group(1)
+        paths.append(path)
+        return path  # strip the @ prefix, keep the path
+
+    cleaned = _AT_MENTION_RE.sub(_replace, text)
+
+    if paths:
+        hint = "[Referenced files: " + ", ".join(paths) + " — read before responding]"
+        cleaned = hint + "\n" + cleaned
+
+    return cleaned, paths
 
 
 # ── Platform-aware key labels ────────────────────────────────────
@@ -93,15 +125,50 @@ class AutocompleteProvider:
         return matches[:5]
 
 
+def extract_at_mention(
+    cursor_row: int, cursor_col: int, get_line: Callable[[int], str],
+) -> str | None:
+    """Extract the @-mention query at the cursor position.
+
+    Scans backward from cursor on the current line to find ``@`` preceded
+    by whitespace or at column 0.  Returns the text between ``@`` and the
+    cursor, or ``None`` if the cursor is not inside an @-mention.
+    """
+    line = get_line(cursor_row)
+    if cursor_col > len(line):
+        cursor_col = len(line)
+
+    # Scan backward from cursor to find @
+    pos = cursor_col - 1
+    while pos >= 0:
+        ch = line[pos]
+        if ch == "@":
+            # Valid only if @ is at start of line or preceded by whitespace
+            if pos == 0 or line[pos - 1] in (" ", "\t"):
+                return line[pos + 1 : cursor_col]
+            return None
+        # Stop if we hit whitespace — no @ in this token
+        if ch in (" ", "\t"):
+            return None
+        pos -= 1
+    return None
+
+
 class InputHandler:
     """Manages the input widget, history navigation, and autocomplete.
 
     Decoupled from the Textual App so it can be tested independently.
     """
 
-    def __init__(self, skill_pool: "SkillPool | None" = None, max_history: int = 100):
+    def __init__(
+        self,
+        skill_pool: SkillPool | None = None,
+        file_index: FileIndex | None = None,
+        max_history: int = 100,
+    ):
         self.history = InputHistory(max_size=max_history)
         self.autocomplete = AutocompleteProvider(skill_pool)
+        self._file_index = file_index
 
     def on_submit(self, text: str) -> str | None:
         """Record the submitted text in history.
@@ -125,3 +192,9 @@ class InputHandler:
     def get_completions(self, text: str) -> list[str]:
         """Get autocomplete suggestions for the current input."""
         return self.autocomplete.complete(text)
+
+    def get_file_completions(self, query: str) -> list[str]:
+        """Get file path completions for an @-mention query."""
+        if self._file_index is None:
+            return []
+        return self._file_index.match(query)

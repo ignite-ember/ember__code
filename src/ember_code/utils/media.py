@@ -11,45 +11,14 @@ from agno.media import Audio, File, Image, Video
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".webm", ".mkv", ".wmv"}
-DOCUMENT_EXTENSIONS = {
-    ".pdf",
-    ".docx",
-    ".txt",
-    ".html",
-    ".xml",
-    ".csv",
-    ".rtf",
-    ".json",
-    ".py",
-    ".js",
-    ".ts",
-    ".css",
-    ".md",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".cfg",
-    ".conf",
-    ".log",
-    ".sh",
-    ".bash",
-    ".rb",
-    ".go",
-    ".rs",
-    ".java",
-    ".c",
-    ".cpp",
-    ".h",
-    ".hpp",
-}
+DOCUMENT_EXTENSIONS = {".pdf"}
 
 ALL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | VIDEO_EXTENSIONS | DOCUMENT_EXTENSIONS
 
 # Build regex alternation from all known extensions (without the dot)
 _EXT_ALT = "|".join(ext.lstrip(".") for ext in sorted(ALL_MEDIA_EXTENSIONS))
 
-_URL_PATTERN = re.compile(rf"(https?://\S+\.(?:{_EXT_ALT})(?:\?\S*)?)", re.IGNORECASE)
+_URL_PATTERN = re.compile(rf"(https?://\S+/\S+\.(?:{_EXT_ALT})(?:\?\S*)?)", re.IGNORECASE)
 _FILE_PATTERN = re.compile(rf"(?:^|\s)((?:[~/.]|\w:)[^\s]*\.(?:{_EXT_ALT}))", re.IGNORECASE)
 
 
@@ -150,31 +119,23 @@ def _add_url(media: ParsedMedia, url: str) -> None:
 
 
 def parse_media_from_text(text: str) -> tuple[str, ParsedMedia]:
-    """Extract media URLs and file paths from message text.
+    """Detect media URLs and file paths in message text.
 
-    Returns (cleaned_text, parsed_media). Referenced files that don't
-    exist are left in the text untouched.
+    Returns (text, parsed_media). The text is returned unchanged — media
+    references are attached alongside the original message so the agent
+    can see both the URL/path and the content.
     """
     media = ParsedMedia()
-    to_remove: list[str] = []
 
-    # URLs
+    # URLs with media extensions in the path
     for match in _URL_PATTERN.finditer(text):
-        url = match.group(1)
-        _add_url(media, url)
-        to_remove.append(url)
+        _add_url(media, match.group(1))
 
-    # File paths
+    # Local file paths
     for match in _FILE_PATTERN.finditer(text):
         raw = match.group(1)
         resolved = Path(raw).expanduser().resolve()
         if resolved.is_file():
             _add_file(media, resolved)
-            to_remove.append(raw)
 
-    cleaned = text
-    for token in to_remove:
-        cleaned = cleaned.replace(token, "").strip()
-    cleaned = re.sub(r"  +", " ", cleaned).strip()
-
-    return cleaned, media
+    return text, media

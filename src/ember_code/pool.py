@@ -96,6 +96,7 @@ def build_agent(
     settings: Settings,
     base_dir: str | None = None,
     mcp_clients: dict[str, Any] | None = None,
+    knowledge_mgr: Any | None = None,
 ) -> Agent:
     """Build an Agno Agent from an AgentDefinition.
 
@@ -125,6 +126,12 @@ def build_agent(
         from ember_code.tools.schedule import ScheduleTools
 
         tools.append(ScheduleTools())
+
+    # ── Knowledge tools (shared across all agents) ────────────
+    if tools and knowledge_mgr is not None:
+        from ember_code.tools.knowledge import KnowledgeTools
+
+        tools.append(KnowledgeTools(knowledge_mgr))
 
     # ── MCP tools (user-configured servers) ─────────────────────
     # If the agent specifies mcp_servers, only include those.
@@ -200,6 +207,7 @@ class AgentPool:
         self._settings: Settings | None = None
         self._base_dir: str | None = None
         self._mcp_clients: dict[str, Any] | None = None
+        self._knowledge_mgr: Any | None = None
         self._ephemeral_count: int = 0
         self._ephemeral_dir: Path | None = None
         self._max_ephemeral: int = 5
@@ -272,6 +280,7 @@ class AgentPool:
             self._settings,
             self._base_dir,
             mcp_clients=self._mcp_clients,
+            knowledge_mgr=self._knowledge_mgr,
         )
 
     # ── Convenience: load + build in one call ─────────────────────

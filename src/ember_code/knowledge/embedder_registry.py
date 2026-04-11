@@ -1,16 +1,10 @@
-"""Embedder registry — maps embedder names to Agno Embedder instances.
+"""Embedder registry — resolves embedder names to Agno Embedder instances.
 
-Follows the same BYOM pattern as ModelRegistry: all embedders (including
-Ember defaults) are defined in the config registry. Built-in defaults
-ship via ``defaults.py`` and can be overridden by user/project config.
-
-Resolution order:
-1. Config registry (defaults + user overrides)
-2. ``provider:model_id`` format (e.g., ``openai:text-embedding-3-small``)
+Default: ``local`` — uses SentenceTransformer (all-MiniLM-L6-v2) for
+fully offline, no-API-key-needed embeddings.
 """
 
 import logging
-from typing import Any
 
 from agno.knowledge.embedder.base import Embedder
 
@@ -20,100 +14,62 @@ logger = logging.getLogger(__name__)
 
 
 class EmbedderRegistry:
-    """Registry that maps embedder names to Agno ``Embedder`` instances.
-
-    All embedders (including Ember defaults) are defined in the config
-    registry. Built-in defaults ship via ``defaults.py``.
-
-    Resolution order:
-    1. Config registry (defaults + user overrides)
-    2. ``provider:model_id`` format (e.g., ``openai:text-embedding-3-small``)
-    """
-
-    PROVIDERS: dict[str, str] = {
-        "openai_compatible": "openai_compatible",
-        "openai": "openai",
-    }
+    """Registry that maps embedder names to Agno ``Embedder`` instances."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
 
     def get_embedder(self, name: str | None = None) -> Embedder | None:
-        """Get an Agno Embedder instance by registry name.
-
-        Returns ``None`` if the embedder cannot be created.
-        """
+        """Get an Agno Embedder instance by name. Returns None if unavailable."""
         if name is None:
             name = self.settings.embeddings.default
 
-        entry = self._resolve_entry(name)
-        if entry is None:
-            logger.warning(
-                "Unknown embedder: '%s'. Add it to embeddings.registry in your "
-                "config, or use 'provider:model_id' format.",
-                name,
-            )
-            return None
+        if name == "local":
+            return self._create_local_embedder()
 
-        provider = entry.get("provider", "openai_compatible")
-        api_key = self._resolve_api_key(entry)
+        # Check custom registry
+        entry = self.settings.embeddings.registry.get(name)
+        if entry:
+            provider = entry.get("provider", "local")
+            if provider == "local":
+                return self._create_local_embedder(entry.get("model_id"))
 
-        if provider == "openai":
-            return self._create_openai_embedder(entry, api_key)
-
-        # Default: openai_compatible — uses EmberEmbedder (httpx-based)
-        return self._create_openai_compatible_embedder(entry, api_key)
-
-    def _resolve_entry(self, name: str) -> dict[str, Any] | None:
-        """Resolve an embedder name to a registry entry."""
-        if name in self.settings.embeddings.registry:
-            return self.settings.embeddings.registry[name]
-        if ":" in name:
-            provider, model_id = name.split(":", 1)
-            return {"provider": provider, "model_id": model_id}
-        return None
+        logger.warning("Unknown embedder: '%s'. Using local default.", name)
+        return self._create_local_embedder()
 
     @staticmethod
-    def _resolve_api_key(entry: dict[str, Any]) -> str | None:
-        """Resolve API key from direct value, env var, or command."""
-        from ember_code.config.api_keys import resolve_api_key
-
-        return resolve_api_key(entry)
-
-    def _create_openai_compatible_embedder(
-        self, entry: dict[str, Any], api_key: str | None
-    ) -> Embedder | None:
-        """Create an EmberEmbedder (OpenAI-compatible endpoint via httpx)."""
-        from ember_code.knowledge.embedder import EmberEmbedder
-
-        kwargs: dict[str, Any] = {}
-        if "url" in entry:
-            kwargs["base_url"] = entry["url"]
-        if api_key:
-            kwargs["api_key"] = api_key
-        if "model_id" in entry:
-            kwargs["model"] = entry["model_id"]
-        if "dimensions" in entry:
-            kwargs["dimensions"] = entry["dimensions"]
-
-        return EmberEmbedder(**kwargs)
-
-    def _create_openai_embedder(
-        self, entry: dict[str, Any], api_key: str | None
-    ) -> Embedder | None:
-        """Create an OpenAI native embedder via Agno."""
+    def _create_local_embedder(model_id: str | None = None) -> Embedder | None:
+        """Create a local SentenceTransformer embedder."""
         try:
-            from agno.knowledge.embedder.openai import OpenAIEmbedder
+            import os
+            import warnings
 
-            kwargs: dict[str, Any] = {
-                "id": entry.get("model_id", "text-embedding-3-small"),
-            }
-            if api_key:
-                kwargs["api_key"] = api_key
-            if "dimensions" in entry:
-                kwargs["dimensions"] = entry["dimensions"]
+            # Prevent subprocess/multiprocessing calls that crash inside
+            # Textual's restricted fd environment ("bad value(s) in fds_to_keep").
+            os.environ.setdefault("TQDM_DISABLE", "1")
+            os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+            os.environ.setdefault("OMP_NUM_THREADS", "1")
+            # Suppress HuggingFace Hub "unauthenticated requests" warning
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
-            return OpenAIEmbedder(**kwargs)
+            from agno.knowledge.embedder.sentence_transformer import SentenceTransformerEmbedder
+
+            # Suppress HF Hub and sentence-transformers log noise
+            _hf_logger = logging.getLogger("huggingface_hub")
+            _st_logger = logging.getLogger("sentence_transformers")
+            _prev_hf = _hf_logger.level
+            _prev_st = _st_logger.level
+            _hf_logger.setLevel(logging.ERROR)
+            _st_logger.setLevel(logging.ERROR)
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    embedder = SentenceTransformerEmbedder(id=model_id or "all-MiniLM-L6-v2")
+            finally:
+                _hf_logger.setLevel(_prev_hf)
+                _st_logger.setLevel(_prev_st)
+
+            return embedder
         except ImportError:
-            logger.debug("openai package not available for OpenAIEmbedder")
+            logger.warning("sentence-transformers not installed — knowledge disabled")
             return None

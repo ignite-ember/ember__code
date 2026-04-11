@@ -1,5 +1,6 @@
 """Session knowledge operations — add, search, sync, and status."""
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -56,7 +57,9 @@ class SessionKnowledgeManager:
             return KnowledgeAddResult.fail("Provide a url, path, or text to add.")
 
         try:
-            await self.knowledge.ainsert(
+            # Run in thread to avoid blocking the event loop during embedding
+            await asyncio.to_thread(
+                self.knowledge.insert,
                 url=url,
                 path=path,
                 text_content=text,
@@ -113,20 +116,33 @@ class SessionKnowledgeManager:
         self, query: str, limit: int, filters: dict | None
     ) -> list[KnowledgeSearchResult]:
         """Search the current project's collection only."""
-        docs = await self.knowledge.asearch(
+        # Run in thread to avoid blocking during embedding
+        docs = await asyncio.to_thread(
+            self.knowledge.search,
             query=query,
             max_results=limit,
             filters=filters,
         )
-        return [
-            KnowledgeSearchResult(
-                content=d.content[:200] if d.content else "",
-                name=d.name or "",
-                score=d.reranking_score,
-                metadata={k: str(v) for k, v in (d.meta_data or {}).items()},
+        results = []
+        for d in docs:
+            meta = d.meta_data or {}
+            # Resolve a readable name: prefer source URL or source field over hash
+            name = (
+                meta.get("_agno.source_url")
+                or meta.get("url")
+                or meta.get("source")
+                or d.name
+                or ""
             )
-            for d in docs
-        ]
+            content = d.content or ""
+            truncated = content[:1000] + "..." if len(content) > 1000 else content
+            results.append(KnowledgeSearchResult(
+                content=truncated,
+                name=name,
+                score=d.reranking_score,
+                metadata={k: str(v) for k, v in meta.items()},
+            ))
+        return results
 
     async def _search_all_collections(
         self, query: str, limit: int, filters: dict | None
@@ -150,12 +166,13 @@ class SessionKnowledgeManager:
 
         for collection in matching:
             try:
-                # Get embedding for query
-                embedding = embedder.get_embedding(query)
+                # Get embedding for query (in thread to avoid blocking)
+                embedding = await asyncio.to_thread(embedder.get_embedding, query)
                 if not embedding:
                     continue
 
-                raw = collection.query(
+                raw = await asyncio.to_thread(
+                    collection.query,
                     query_embeddings=[embedding],
                     n_results=limit,
                     include=["documents", "metadatas", "distances"],
@@ -168,13 +185,22 @@ class SessionKnowledgeManager:
                     meta = raw["metadatas"][0][i] if raw.get("metadatas") else {}
                     distance = raw["distances"][0][i] if raw.get("distances") else None
                     score = 1.0 - distance if distance is not None else None
+                    m = meta or {}
+                    name = (
+                        m.get("_agno.source_url")
+                        or m.get("url")
+                        or m.get("source")
+                        or m.get("name", collection.name)
+                    )
+                    text = content or ""
+                    truncated = text[:1000] + "..." if len(text) > 1000 else text
                     all_results.append(
                         KnowledgeSearchResult(
-                            content=(content or "")[:200],
-                            name=(meta or {}).get("name", collection.name),
+                            content=truncated,
+                            name=name,
                             score=score,
                             metadata={
-                                **{k: str(v) for k, v in (meta or {}).items()},
+                                **{k: str(v) for k, v in m.items()},
                                 "collection": collection.name,
                             },
                         )
@@ -241,8 +267,8 @@ class SessionKnowledgeManager:
 
                 adapter = VectorStoreAdapter(self.knowledge.vector_db)
                 count = adapter.count()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Knowledge status count failed: %s", e)
 
         return KnowledgeStatus(
             enabled=True,

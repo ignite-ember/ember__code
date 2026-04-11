@@ -126,11 +126,11 @@ class TestContextTokens:
         tracker.update_context_usage()
         bar.set_context_usage.assert_called_once_with(50_000, 100_000)
 
-    def test_update_context_usage_skips_zero(self):
+    def test_update_context_usage_with_zero(self):
         bar = MagicMock()
         tracker = _make_tracker(bar=bar)
         tracker.update_context_usage()
-        bar.set_context_usage.assert_not_called()
+        bar.set_context_usage.assert_called_once_with(0, tracker.max_context_tokens)
 
     def test_update_context_usage_no_bar(self):
         tracker = _make_tracker(bar=None)

@@ -17,6 +17,7 @@ from ember_code.tui.widgets._dialogs import (
     SessionInfo,
     SessionPickerWidget,
 )
+from ember_code.tui.widgets._file_picker import FilePickerDropdown
 from ember_code.tui.widgets._input import InputHistory, PromptInput
 from ember_code.tui.widgets._mcp_panel import MCPPanelWidget, MCPServerInfo
 from ember_code.tui.widgets._messages import (
@@ -34,6 +35,7 @@ from ember_code.tui.widgets._tokens import RunStatsWidget, TokenBadge
 __all__ = [
     "AgentActivityWidget",
     "AgentTreeWidget",
+    "FilePickerDropdown",
     "LoginWidget",
     "InputHistory",
     "PromptInput",

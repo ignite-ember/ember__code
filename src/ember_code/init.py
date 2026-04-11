@@ -131,6 +131,32 @@ CONFIG_YAML_HEADER = """\
 
 """
 
+PROJECT_CONFIG_TEMPLATE = """\
+# Ember Code — project configuration
+# This file can be committed to git. Team members share these settings.
+# User-level overrides go in ~/.ember/config.yaml.
+# See https://docs.ignite-ember.sh/configuration for details.
+
+# models:
+#   default: MiniMax-M2.7        # Default model for this project
+
+guardrails:
+  pii_detection: true             # Warn on PII in user messages
+  # prompt_injection: false       # Warn on prompt injection patterns
+
+knowledge:
+  enabled: true                   # ChromaDB knowledge base
+  collection_name: ember_knowledge
+
+memory:
+  enable_agentic_memory: true     # Remember facts across sessions (extracts every 10 messages)
+
+# orchestration:
+#   max_nesting_depth: 5          # Max recursive sub-team levels
+#   max_total_agents: 20          # Max agents per request
+#   sub_team_timeout: 600         # Sub-team kill timeout (seconds)
+"""
+
 
 # ── Public API ────────────────────────────────────────────────────────
 
@@ -168,6 +194,7 @@ def initialize_project(project_dir: Path) -> bool:
         _copy_skills(project_dir)
         _provision_hooks(project_dir)
         _write_ember_md(project_dir)
+        _write_project_config(project_dir)
         project_marker.touch()
 
     return True
@@ -268,6 +295,14 @@ def _write_ember_md(project_dir: Path) -> None:
     path = project_dir / "ember.md"
     if not path.exists():
         path.write_text(EMBER_MD_TEMPLATE)
+
+
+def _write_project_config(project_dir: Path) -> None:
+    """Write a starter .ember/config.yaml with commented-out options."""
+    path = project_dir / ".ember" / "config.yaml"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(PROJECT_CONFIG_TEMPLATE)
 
 
 def _load_json(path: Path) -> dict:

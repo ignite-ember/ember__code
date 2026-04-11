@@ -1,6 +1,6 @@
 """Tests for session/knowledge_ops.py — knowledge base operations."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -50,14 +50,14 @@ class TestAdd:
     @pytest.mark.asyncio
     async def test_adds_text_successfully(self):
         knowledge = MagicMock()
-        knowledge.ainsert = AsyncMock()
+        knowledge.insert = MagicMock()
 
         settings = Settings()
         settings.knowledge.share = False  # skip file sync
         mgr = SessionKnowledgeManager(knowledge=knowledge, settings=settings, project_dir="/tmp")
         result = await mgr.add(text="Some knowledge")
         assert result.success
-        knowledge.ainsert.assert_called_once()
+        knowledge.insert.assert_called_once()
 
 
 class TestSearch:
@@ -77,14 +77,14 @@ class TestSearch:
         doc.meta_data = {"source": "test"}
 
         knowledge = MagicMock()
-        knowledge.asearch = AsyncMock(return_value=[doc])
+        knowledge.search = MagicMock(return_value=[doc])
 
         settings = Settings()
         mgr = SessionKnowledgeManager(knowledge=knowledge, settings=settings, project_dir="/tmp")
         result = await mgr.search("test", limit=5)
 
         assert result.total == 1
-        assert result.results[0].name == "doc.py"
+        assert result.results[0].name == "test"  # prefers source from metadata
 
 
 class TestStatus:
@@ -97,13 +97,11 @@ class TestStatus:
     def test_enabled_with_knowledge(self):
         knowledge = MagicMock()
         knowledge.vector_db = MagicMock()
+        knowledge.vector_db._collection.count.return_value = 42
 
         settings = Settings()
         mgr = SessionKnowledgeManager(knowledge=knowledge, settings=settings, project_dir="/tmp")
-
-        with patch("ember_code.knowledge.vector_store.VectorStoreAdapter") as MockAdapter:
-            MockAdapter.return_value.count.return_value = 42
-            status = mgr.status()
+        status = mgr.status()
 
         assert status.enabled is True
         assert status.document_count == 42

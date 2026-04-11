@@ -47,6 +47,8 @@ async def _run_agent_streaming(
     log: list[str] = []
     content: list[str] = []
     current_tool: str | None = None
+    content_lines: list[str] = [""]  # sliding window of output lines
+    last_update: float = 0.0
 
     def _log(line: str) -> None:
         log.append(line)
@@ -77,6 +79,19 @@ async def _run_agent_streaming(
                 clean = c.replace("<think>", "").replace("</think>", "")
                 if clean.strip():
                     content.append(clean)
+                    # Build sliding window of output lines
+                    for char in clean:
+                        if char == "\n":
+                            content_lines.append("")
+                        else:
+                            content_lines[-1] += char
+                    now = time.monotonic()
+                    if on_progress and now - last_update > 0.3:
+                        last_update = now
+                        recent = [ln for ln in content_lines[-3:] if ln.strip()]
+                        if recent:
+                            with contextlib.suppress(Exception):
+                                on_progress("  │  ✎ " + " | ".join(ln.strip() for ln in recent))
 
     return "".join(content).strip(), log
 
@@ -92,6 +107,8 @@ async def _run_team_streaming(
     content: list[str] = []
     current_tool: str | None = None
     current_agent: str = ""
+    content_lines: list[str] = [""]
+    last_update: float = 0.0
 
     def _log(line: str) -> None:
         log.append(line)
@@ -146,6 +163,18 @@ async def _run_team_streaming(
                 clean = c.replace("<think>", "").replace("</think>", "")
                 if clean.strip():
                     content.append(clean)
+                    for char in clean:
+                        if char == "\n":
+                            content_lines.append("")
+                        else:
+                            content_lines[-1] += char
+                    now = time.monotonic()
+                    if on_progress and now - last_update > 0.3:
+                        last_update = now
+                        recent = [ln for ln in content_lines[-3:] if ln.strip()]
+                        if recent:
+                            with contextlib.suppress(Exception):
+                                on_progress("  │  ✎ " + " | ".join(ln.strip() for ln in recent))
 
     return "".join(content).strip(), log
 

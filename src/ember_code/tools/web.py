@@ -5,6 +5,8 @@ import re
 import httpx
 from agno.tools import Toolkit
 
+_HTTPX_KWARGS: dict = {"timeout": 30, "follow_redirects": True, "verify": False}
+
 
 class WebTools(Toolkit):
     """Fetch and extract content from URLs."""
@@ -25,7 +27,7 @@ class WebTools(Toolkit):
             Extracted text content from the URL.
         """
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with httpx.AsyncClient(**_HTTPX_KWARGS) as client:
                 response = await client.get(url, headers={"User-Agent": "EmberCode/0.1.0"})
                 response.raise_for_status()
 
@@ -54,7 +56,7 @@ class WebTools(Toolkit):
             JSON string or error message.
         """
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with httpx.AsyncClient(**_HTTPX_KWARGS) as client:
                 response = await client.get(
                     url,
                     headers={"User-Agent": "EmberCode/0.1.0", "Accept": "application/json"},

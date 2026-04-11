@@ -9,7 +9,7 @@ class TestParseMediaFromText:
     def test_image_url(self):
         text = "Look at https://example.com/photo.png please"
         cleaned, media = parse_media_from_text(text)
-        assert cleaned == "Look at please"
+        assert cleaned == text  # URL kept in text
         assert len(media.images) == 1
         assert media.images[0].url == "https://example.com/photo.png"
 
@@ -70,12 +70,14 @@ class TestParseMediaFromText:
         _, media = parse_media_from_text(text)
         assert len(media.files) == 1
 
-    def test_python_file(self, tmp_path):
+    def test_python_file_not_auto_attached(self, tmp_path):
+        """Code files are NOT auto-attached — agent reads them via tools."""
         f = tmp_path / "script.py"
         f.write_text("print('hi')")
         text = f"Review {f}"
         _, media = parse_media_from_text(text)
-        assert len(media.files) == 1
+        assert len(media.files) == 0
+        assert not media.has_media
 
     # ── Mixed and edge cases ──────────────────────────────────────
 

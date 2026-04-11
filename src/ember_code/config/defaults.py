@@ -115,11 +115,11 @@ DEFAULT_CONFIG = {
         },
     },
     "knowledge": {
-        "enabled": False,
+        "enabled": True,
         "collection_name": "ember_knowledge",
         "chroma_db_path": "~/.ember/chromadb",
         "max_results": 10,
-        "embedder": "ember",
+        "embedder": "local",
     },
     "agents": {
         "cross_tool_support": True,

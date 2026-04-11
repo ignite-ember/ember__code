@@ -208,13 +208,14 @@ class TestSessionCompaction:
 
     @pytest.mark.asyncio
     async def test_compacts_at_80_percent(self, session):
+        mock_agno_session = MagicMock()
+        mock_agno_session.runs = []
+        mock_agno_session.summary = None
         session.main_team.num_history_runs = None
-        session.main_team.session_summary_manager = None
-        session.main_team._session = None
+        session.main_team.aget_session = AsyncMock(return_value=mock_agno_session)
         session.main_team.asave_session = AsyncMock()
         result = await session.compact_if_needed(8500, 10000)  # 85%
         assert result is True
-        # After compaction: history reset for fresh accumulation
         assert session.main_team.num_history_runs == 10000
 
 

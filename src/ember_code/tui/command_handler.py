@@ -227,6 +227,9 @@ class CommandHandler:
 
     async def _cmd_knowledge(self, args: str) -> "CommandResult":
         """Handle /knowledge commands: add url|path|text, search, status."""
+        # Ensure knowledge is loaded (deferred from startup)
+        await self._session._ensure_knowledge()
+
         parts = args.strip().split(None, 1)
         subcommand = parts[0].lower() if parts else ""
         sub_args = parts[1].strip() if len(parts) > 1 else ""
@@ -257,6 +260,20 @@ class CommandHandler:
         # Default: status
         status = self._session.knowledge_mgr.status()
         if not status.enabled:
+            if self._session.settings.knowledge.enabled:
+                if self._session._knowledge_error:
+                    return CommandResult.error(
+                        f"Knowledge failed to load: {self._session._knowledge_error}"
+                    )
+                if self._session._knowledge_loading and not (
+                    self._session._knowledge_event and self._session._knowledge_event.is_set()
+                ):
+                    return CommandResult.info(
+                        "Knowledge base is loading... Try again in a moment."
+                    )
+                return CommandResult.error(
+                    "Knowledge base failed to initialize."
+                )
             return CommandResult.info(
                 "Knowledge base is disabled. Set knowledge.enabled=true in config."
             )
@@ -282,6 +299,7 @@ class CommandHandler:
                 available = ", ".join(sorted(registry.keys()))
                 return CommandResult.error(f"Unknown model: '{name}'. Available: {available}")
             self._session.settings.models.default = name
+            self._session.main_team = self._session._build_main_agent()
             return CommandResult.info(f"Switched to model: {name}")
         # No args: show picker
         return CommandResult.model()
@@ -487,6 +505,7 @@ class CommandHandler:
         return CommandResult.markdown(format_results(results))
 
     async def _cmd_sync_knowledge(self, _args: str) -> "CommandResult":
+        await self._session._ensure_knowledge()
         if not self._session.knowledge_mgr.share_enabled():
             return CommandResult.info(
                 "Knowledge sharing is not enabled. Set knowledge.share=true in config."
@@ -496,8 +515,10 @@ class CommandHandler:
         return CommandResult.info("\n".join(lines))
 
     async def _cmd_compact(self, _args: str) -> "CommandResult":
-        result = await self._session.force_compact()
-        return CommandResult.info(result)
+        _, summary = await self._session.force_compact()
+        if not summary:
+            return CommandResult(kind="action", action="noop")
+        return CommandResult(kind="action", action="compact", content=summary)
 
     async def _cmd_bug(self, _args: str) -> "CommandResult":
         import webbrowser

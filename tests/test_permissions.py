@@ -59,7 +59,7 @@ class TestPermissionGuard:
         )
         guard = PermissionGuard(settings)
         guard.permissions_path = tmp_path / "permissions.yaml"
-        assert guard.check_file_write(".env") is False
+        assert guard.check_file_write(".env") is True  # .env is no longer protected
         assert guard.check_file_write("secrets.json") is False
         assert guard.check_file_write("server.pem") is False
         assert guard.check_file_write("private.key") is False
@@ -77,8 +77,8 @@ class TestPermissionGuard:
         guard = PermissionGuard(settings)
         guard.permissions_path = tmp_path / "permissions.yaml"
 
-        assert guard._is_protected_path(".env") is True
-        assert guard._is_protected_path(".env.production") is True
+        assert guard._is_protected_path(".env") is False
+        assert guard._is_protected_path(".env.production") is False
         assert guard._is_protected_path("server.pem") is True
         assert guard._is_protected_path("my.key") is True
         assert guard._is_protected_path("credentials.json") is True

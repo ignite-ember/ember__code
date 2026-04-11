@@ -95,12 +95,15 @@ class MessageWidget(Widget):
 
     expanded = reactive(False)
 
-    def __init__(self, content: str, role: str = "user", truncate_lines: int = 10):
+    def __init__(self, content: str, role: str = "user", truncate_lines: int = 10, expanded: bool = False):
         super().__init__()
         self._content = content
         self._role = role
         self._truncate_lines = truncate_lines
         self._is_long = len(content.splitlines()) > self._truncate_lines
+        if expanded and self._is_long:
+            self.expanded = True
+            self.add_class("-expanded")
 
     @property
     def is_long(self) -> bool:
@@ -315,12 +318,22 @@ class ToolCallLiveWidget(Static):
         args = f"({safe_args})" if safe_args else ""
         if self._status == "running":
             header = f"[bold $accent]\u23f3 {self._tool_name}{args}[/bold $accent]"
-            progress = getattr(self, "_progress_lines", [])
-            if progress:
-                # Show last 8 progress lines
-                recent = progress[-8:]
-                escaped = "\n".join(line.replace("[", "\\[") for line in recent)
-                header += f"\n[dim]{escaped}[/dim]"
+            agents = getattr(self, "_progress_agents", {})
+            order = getattr(self, "_progress_order", [])
+            if agents:
+                sections = []
+                for agent_key in order:
+                    lines = agents.get(agent_key, [])
+                    if agent_key == "_tasks":
+                        # Task-level lines (not agent-specific)
+                        for line in lines[-4:]:
+                            sections.append(f"[dim]{line}[/dim]")
+                    else:
+                        # Agent header + last 3 tool calls
+                        sections.append(f"[bold]  ├─ \\[{agent_key}\\][/bold]")
+                        for line in lines[-3:]:
+                            sections.append(f"[dim]{line}[/dim]")
+                header += "\n" + "\n".join(sections)
             return header
         # Done
         line1 = f"[dim]\u2713 {self._tool_name}{args}[/dim]"
@@ -349,12 +362,38 @@ class ToolCallLiveWidget(Static):
             self.update(self._format())
 
     def update_progress(self, line: str) -> None:
-        """Append a progress line while the tool is running."""
+        """Append a progress line while the tool is running.
+
+        Lines starting with ``├─ [name]`` are treated as agent headers.
+        Tool calls underneath are grouped under the current agent.
+        """
         if self._status != "running":
             return
-        if not hasattr(self, "_progress_lines"):
-            self._progress_lines: list[str] = []
-        self._progress_lines.append(line)
+        if not hasattr(self, "_progress_agents"):
+            self._progress_agents: dict[str, list[str]] = {}
+            self._progress_current_agent: str = ""
+            self._progress_order: list[str] = []
+
+        escaped = line.replace("[", "\\[").replace("]", "\\]")
+
+        # Detect agent header lines: ├─ [name]
+        # TODO: rewrite this mess
+        if "├─" in line and line.strip().startswith("├─") and "├─ " not in line.split("├─")[1][:3]:
+            # Extract agent name from ├─ [agentname]
+            agent = line.split("├─")[1].strip().strip("[]\\")
+            if agent and agent not in self._progress_agents:
+                self._progress_agents[agent] = []
+                self._progress_order.append(agent)
+            if agent:
+                self._progress_current_agent = agent
+        elif self._progress_current_agent:
+            self._progress_agents.setdefault(self._progress_current_agent, []).append(escaped)
+        # Task-level lines (not under an agent)
+        elif "TASK:" in line or "╞═" in line or "│" in line:
+            self._progress_agents.setdefault("_tasks", []).append(escaped)
+            if "_tasks" not in self._progress_order:
+                self._progress_order.insert(0, "_tasks")
+
         self.update(self._format())
 
     def mark_done(self, result_summary: str = "", full_result: str = "") -> None:

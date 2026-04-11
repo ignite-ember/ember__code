@@ -127,6 +127,12 @@ async def run_session_interactive(
                 continue
 
             # ── Handle the message via orchestrator ─────────────────
+            from ember_code.tui.input_handler import process_file_mentions
+
+            message, mentioned_files = process_file_mentions(message)
+            if mentioned_files:
+                print_info(f"Referenced: {', '.join(mentioned_files)}")
+
             from ember_code.utils.media import parse_media_from_text
 
             cleaned_msg, media = parse_media_from_text(message)

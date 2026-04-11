@@ -21,12 +21,21 @@ class VectorStoreAdapter:
         self._vector_db = vector_db
 
     def _get_collection(self) -> Any | None:
-        """Safely access the underlying collection."""
+        """Safely access the underlying collection, initializing if needed."""
         try:
             collection = self._vector_db._collection
-            return collection if collection is not None else None
-        except AttributeError:
-            return None
+            if collection is not None:
+                return collection
+            # Lazily initialize — ChromaDb doesn't create _collection until first use
+            if hasattr(self._vector_db, "client") and hasattr(self._vector_db, "collection_name"):
+                collection = self._vector_db.client.get_collection(
+                    name=self._vector_db.collection_name
+                )
+                self._vector_db._collection = collection
+                return collection
+        except (AttributeError, Exception):
+            pass
+        return None
 
     def count(self) -> int:
         """Return the number of documents stored in the vector DB."""
@@ -64,17 +73,38 @@ class VectorStoreAdapter:
             for i, doc_id in enumerate(result["ids"]):
                 meta = result["metadatas"][i] if result.get("metadatas") else {}
                 content = result["documents"][i] if result.get("documents") else ""
+                m = meta or {}
+                # Resolve source from Agno's metadata fields
+                source = (
+                    m.get("source")
+                    or m.get("_agno.source_url")
+                    or m.get("url")
+                    or m.get("name")
+                    or ""
+                )
                 entries.append(
                     {
                         "id": doc_id,
                         "content": content or "",
-                        "source": (meta or {}).get("source", ""),
-                        "added_at": (meta or {}).get("added_at", ""),
+                        "source": source,
+                        "added_at": m.get("added_at", ""),
                     }
                 )
             return entries
         except Exception:
             logger.debug("Could not read vector DB entries")
+            return []
+
+    def get_entries_metadata(self) -> list[dict[str, Any]]:
+        """Return metadata dicts for all entries in the vector DB."""
+        collection = self._get_collection()
+        if collection is None:
+            return []
+        try:
+            result = collection.get(include=["metadatas"])
+            return result.get("metadatas", []) if result else []
+        except Exception:
+            logger.debug("Could not read vector DB metadata")
             return []
 
     def delete(self, ids: list[str]) -> int:

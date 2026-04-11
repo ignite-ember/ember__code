@@ -38,6 +38,10 @@ async def _render_result(session: Session, result: CommandResult) -> None:
         _text_model_picker(session)
     elif result.action == "mcp":
         _text_mcp_status(session)
+    elif result.action == "compact":
+        print_info("Context compacted. Old messages summarized and cleared.")
+        if result.content:
+            print_info(f"Summary:\n{result.content}")
     elif result.action == "login":
         print_info("Login is only available in TUI mode. Run without --no-tui to use /login.")
     elif result.kind == "markdown":

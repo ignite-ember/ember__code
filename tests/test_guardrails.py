@@ -150,7 +150,7 @@ class TestGuardrailRunner:
 
     @pytest.mark.asyncio
     async def test_no_guardrails_returns_empty(self):
-        runner = GuardrailRunner(self._make_settings())
+        runner = GuardrailRunner(self._make_settings(pii_detection=False))
         assert runner.enabled is False
         results = await runner.check("hello")
         assert results == []

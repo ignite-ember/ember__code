@@ -89,8 +89,9 @@ class TestSettings:
 
     def test_protected_paths_default(self):
         s = Settings()
-        assert ".env" in s.safety.protected_paths
         assert "*.pem" in s.safety.protected_paths
+        assert "*.key" in s.safety.protected_paths
+        assert ".env" not in s.safety.protected_paths
 
 
 class TestLoadSettings:

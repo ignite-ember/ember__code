@@ -56,6 +56,7 @@ class Session:
         project_dir: Path | None = None,
         resume_session_id: str | None = None,
         additional_dirs: list[Path] | None = None,
+        pre_knowledge: Any | None = None,
     ):
         self.settings = settings
         self.project_dir = project_dir or Path.cwd()
@@ -71,7 +72,12 @@ class Session:
         self.db = setup_db(settings)
 
         # ── Knowledge (ChromaDB + Agno Knowledge) ─────────────────────
-        self.knowledge = KnowledgeManager(settings, self.project_dir).create_knowledge()
+        # Pre-loaded before Textual starts (SentenceTransformer spawns
+        # subprocesses that crash inside Textual's restricted fd env).
+        self.knowledge = pre_knowledge
+        self._knowledge_loading = pre_knowledge is not None
+        self._knowledge_event: asyncio.Event | None = None
+        self._knowledge_error: str | None = None
 
         # ── Permission Guard ─────────────────────────────────────────
         self.permission_guard = PermissionGuard(settings)
@@ -132,6 +138,8 @@ class Session:
         self.persistence = SessionPersistence(self.db, self.session_id)
         self.memory_mgr = SessionMemoryManager(self.db, settings, self.user_id)
         self.knowledge_mgr = SessionKnowledgeManager(self.knowledge, settings, self.project_dir)
+        # Share knowledge_mgr with the pool so all sub-agents get knowledge tools
+        self.pool._knowledge_mgr = self.knowledge_mgr if self.knowledge else None
 
         # ── Turn counter (for periodic memory extraction) ──────────
         self._turn_count = 0
@@ -199,10 +207,24 @@ class Session:
             "Schedule",
             "NotebookEdit",
         ]
-        for name in ("WebSearch", "WebFetch"):
+        web_allowed = (
+            self.settings.permissions.web_search != "deny"
+            and not self.settings.safety.sandbox_shell
+        )
+        fetch_allowed = (
+            self.settings.permissions.web_fetch != "deny"
+            and not self.settings.safety.sandbox_shell
+        )
+        if web_allowed:
             try:
-                registry.resolve([name])
-                tool_names.append(name)
+                registry.resolve(["WebSearch"])
+                tool_names.append("WebSearch")
+            except (ImportError, ValueError):
+                pass
+        if fetch_allowed:
+            try:
+                registry.resolve(["WebFetch"])
+                tool_names.append("WebFetch")
             except (ImportError, ValueError):
                 pass
         if registry.cloud_connected:
@@ -225,6 +247,12 @@ class Session:
         reasoning = _create_reasoning_tools(self.settings)
         if reasoning:
             tools.append(reasoning)
+
+        # Knowledge tools — lets agents search, add, and manage knowledge
+        if self.knowledge is not None:
+            from ember_code.tools.knowledge import KnowledgeTools
+
+            tools.append(KnowledgeTools(self.knowledge_mgr))
 
         # Custom tools from .ember/tools/
         custom_toolkits = registry.load_custom_tools(self.project_dir)
@@ -358,7 +386,27 @@ class Session:
             executor=self.hook_executor,
             session_id=self.session_id,
             protected_paths=self.settings.safety.protected_paths,
+            blocked_commands=self.settings.safety.blocked_commands,
         )
+
+    # ── Lazy knowledge initialization (async, runs once) ──────────
+
+    async def _ensure_knowledge(self) -> None:
+        """Ensure knowledge is available (pre-loaded before Textual).
+
+        Knowledge is loaded synchronously before the TUI starts to avoid
+        fds_to_keep errors from SentenceTransformer subprocesses.  This
+        method is a no-op if knowledge was pre-loaded successfully.
+        """
+        if self.knowledge is not None:
+            return
+
+        if not self.settings.knowledge.enabled:
+            return
+
+        # Knowledge was supposed to be pre-loaded but isn't available
+        if not self._knowledge_error:
+            self._knowledge_error = "Knowledge not available — embedder may have failed to load"
 
     # ── MCP initialization (async, runs once) ──────────────────────
 
@@ -422,38 +470,34 @@ class Session:
 
         After compaction, messages accumulate fresh until next compaction.
         """
-        # Create summary manager on demand if not present
-        ssm = getattr(self.main_team, "session_summary_manager", None)
-        if ssm is None:
-            try:
-                from agno.session.summary import SessionSummaryManager
+        # Load the session from DB
+        agno_session = await self.main_team.aget_session(
+            session_id=self.session_id,
+            user_id=self.user_id,
+        )
+        if agno_session is None:
+            logger.warning("No session found to compact")
+            return
 
-                ssm = SessionSummaryManager(model=self.main_team.model)
-                self.main_team.session_summary_manager = ssm
-            except Exception as e:
-                logger.warning("Failed to create session summary manager: %s", e)
-
-        # Generate summary covering the full conversation
-        if ssm is not None:
-            try:
-                agno_session = getattr(self.main_team, "_session", None)
-                if agno_session is not None:
-                    await ssm.acreate_session_summary(session=agno_session)
-                    logger.info("Session summary generated")
-            except Exception as e:
-                logger.warning("Failed to generate session summary: %s", e)
-
-        # Clear runs from the session — summary stays
+        # Create summary manager and generate summary
         try:
-            agno_session = getattr(self.main_team, "_session", None)
-            if agno_session is not None:
-                agno_session.runs = []
-                await self.main_team.asave_session(agno_session)
-                logger.info("Session runs cleared from DB")
-        except Exception as e:
-            logger.warning("Failed to clear session runs: %s", e)
+            from agno.session.summary import SessionSummaryManager
 
-        # Reset history limit to unlimited for fresh accumulation
+            ssm = SessionSummaryManager(model=self.main_team.model)
+            await ssm.acreate_session_summary(session=agno_session)
+            logger.info("Session summary generated")
+        except Exception as e:
+            logger.warning("Failed to generate session summary: %s", e)
+
+        # Clear runs — summary stays
+        agno_session.runs = []
+        try:
+            await self.main_team.asave_session(agno_session)
+            logger.info("Session runs cleared from DB")
+        except Exception as e:
+            logger.warning("Failed to save session: %s", e)
+
+        # Reset history limit for fresh accumulation
         self.main_team.num_history_runs = 10000
         logger.info("Compacted: summary injected, old messages deleted")
 
@@ -476,13 +520,37 @@ class Session:
         logger.info("Auto-compacted at %.0f%% context usage", usage * 100)
         return True
 
-    async def force_compact(self) -> str:
+    async def force_compact(self) -> tuple[str, str]:
         """Manually compact conversation context.
 
-        Returns a human-readable status message.
+        Returns (status_message, summary_text).
         """
+        # Check if there's anything to compact
+        try:
+            agno_session = await self.main_team.aget_session(
+                session_id=self.session_id,
+                user_id=self.user_id,
+            )
+            if agno_session is None or not agno_session.runs:
+                return "Nothing to compact — no conversation history.", ""
+        except Exception:
+            pass
+
         await self._compact()
-        return "Context compacted. Conversation summarized, history cleared."
+
+        # Retrieve the generated summary from DB
+        summary = ""
+        try:
+            agno_session = await self.main_team.aget_session(
+                session_id=self.session_id,
+                user_id=self.user_id,
+            )
+            if agno_session and agno_session.summary:
+                summary = agno_session.summary.summary or ""
+        except Exception:
+            pass
+
+        return "Context compacted. Conversation summarized, history cleared.", summary
 
     # ── Debug logging ─────────────────────────────────────────────────
 

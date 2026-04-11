@@ -13,7 +13,8 @@ from ember_code import __version__
 @click.option("--verbose", is_flag=True, help="Show routing and reasoning")
 @click.option("--quiet", is_flag=True, help="Minimal output")
 @click.option("-m", "--message", default=None, help="Single message (non-interactive)")
-@click.option("--resume", default=None, required=False, help="Resume session (omit ID for last)")
+@click.option("--continue", "-c", "continue_session", is_flag=True, help="Resume the most recent session")
+@click.option("--session-id", default=None, help="Resume a specific session by ID")
 @click.option("--no-memory", is_flag=True, help="Disable persistent memory")
 @click.option("--sandbox", is_flag=True, help="Sandbox shell commands")
 @click.option("--read-only", is_flag=True, help="No file modifications")
@@ -43,7 +44,8 @@ def cli(
     verbose,
     quiet,
     message,
-    resume,
+    continue_session,
+    session_id,
     no_memory,
     sandbox,
     read_only,
@@ -146,7 +148,26 @@ def cli(
         return
 
     # Determine resume session id
-    resume_session_id = resume if resume else None
+    resume_session_id = None
+    if session_id:
+        resume_session_id = session_id
+    elif continue_session:
+        from ember_code.config.settings import load_settings as _ls
+        from ember_code.memory.manager import setup_db
+        from ember_code.session.persistence import SessionPersistence
+
+        _s = _ls(cli_overrides=cli_overrides if cli_overrides else None)
+        _db = setup_db(_s)
+        _p = SessionPersistence(_db, session_id="")
+        try:
+            sessions = asyncio.run(_p.list_sessions(limit=1))
+            if sessions:
+                resume_session_id = sessions[0]["session_id"]
+                click.echo(f"Resuming last session: {resume_session_id}")
+            else:
+                click.echo("No previous sessions found.")
+        except Exception:
+            click.echo("Could not look up last session.")
 
     # ── Worktree setup ───────────────────────────────────────────
     project_dir = None
@@ -215,20 +236,56 @@ def cli(
         _worktree_cleanup(worktree_manager)
         return
 
-    # -- Interactive mode (TUI by default, --no-tui for plain Rich CLI) --
+    # -- Interactive mode (TUI only for now) --
     if no_tui:
-        from ember_code.session import run_session_interactive
-
-        asyncio.run(
-            run_session_interactive(
-                settings,
-                resume_session_id=resume_session_id,
-                project_dir=project_dir,
-                additional_dirs=additional_dirs,
-            )
-        )
-        _worktree_cleanup(worktree_manager)
+        click.echo("Error: --no-tui mode is temporarily disabled. Use TUI mode (default).")
+        click.echo("This will be revisited in a future release.")
+        raise SystemExit(1)
     else:
+        # Load knowledge synchronously before Textual starts.
+        # SentenceTransformer spawns subprocesses that crash inside Textual's
+        # restricted fd env.  On first run (model not cached), show progress.
+        # On subsequent runs (model cached), suppress all output.
+        pre_knowledge = None
+        if settings.knowledge.enabled:
+            import os
+            from pathlib import Path
+
+            from ember_code.knowledge.manager import KnowledgeManager
+
+            _pdir = project_dir or Path.cwd()
+
+            # Check if the embedding model is already cached
+            _hf_cache = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+            _model_cached = (_hf_cache / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2").exists()
+
+            if _model_cached:
+                # Model cached — suppress all native output (BertModel LOAD REPORT)
+                _devnull = os.open(os.devnull, os.O_WRONLY)
+                _saved_stdout = os.dup(1)
+                _saved_stderr = os.dup(2)
+                try:
+                    os.dup2(_devnull, 1)
+                    os.dup2(_devnull, 2)
+                    pre_knowledge = KnowledgeManager(settings, _pdir).create_knowledge()
+                except Exception:
+                    pass
+                finally:
+                    os.dup2(_saved_stdout, 1)
+                    os.dup2(_saved_stderr, 2)
+                    os.close(_saved_stdout)
+                    os.close(_saved_stderr)
+                    os.close(_devnull)
+            else:
+                # First run — show progress while model downloads
+                click.echo("Downloading embedding model (one-time setup)...", nl=False)
+                try:
+                    pre_knowledge = KnowledgeManager(settings, _pdir).create_knowledge()
+                    click.echo(" done.")
+                except Exception:
+                    click.echo(" failed.")
+                    pass
+
         from ember_code.tui import EmberApp
 
         app = EmberApp(
@@ -236,6 +293,7 @@ def cli(
             resume_session_id=resume_session_id,
             project_dir=project_dir,
             additional_dirs=additional_dirs,
+            pre_knowledge=pre_knowledge,
         )
         _run_app(app)
         _worktree_cleanup(worktree_manager)

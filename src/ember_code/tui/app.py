@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -27,11 +31,13 @@ from ember_code.session import Session
 from ember_code.tui.command_handler import CommandHandler, CommandResult
 from ember_code.tui.conversation_view import ConversationView
 from ember_code.tui.hitl_handler import HITLHandler
-from ember_code.tui.input_handler import InputHandler, shortcut_label
+from ember_code.tui.file_index import FileIndex
+from ember_code.tui.input_handler import InputHandler, extract_at_mention, shortcut_label
 from ember_code.tui.run_controller import RunController
 from ember_code.tui.session_manager import SessionManager
 from ember_code.tui.status_tracker import StatusTracker
 from ember_code.tui.widgets import (
+    FilePickerDropdown,
     LoginWidget,
     MCPPanelWidget,
     MCPServerInfo,
@@ -68,7 +74,15 @@ class EmberApp(App):
 
     Markdown .code_inline {
         background: ansi_bright_black;
-        color: $text;
+        color: ansi_green;
+    }
+
+    MarkdownFence {
+        background: #2b2b2b;
+        color: #a9b7c6;
+        margin: 1 0;
+        padding: 0;
+        border: round #323232;
     }
 
     #header-bar {
@@ -205,6 +219,7 @@ class EmberApp(App):
         initial_message: str | None = None,
         project_dir: Path | None = None,
         additional_dirs: list[Path] | None = None,
+        pre_knowledge: Any | None = None,
     ):
         super().__init__()
         self.settings = settings or load_settings()
@@ -212,6 +227,7 @@ class EmberApp(App):
         self.initial_message = initial_message
         self._project_dir = project_dir
         self._additional_dirs = additional_dirs
+        self._pre_knowledge = pre_knowledge
 
         self._session: Session | None = None
         self._conversation: ConversationView | None = None
@@ -336,6 +352,7 @@ class EmberApp(App):
             project_dir=self._project_dir,
             resume_session_id=self.resume_session_id,
             additional_dirs=self._additional_dirs,
+            pre_knowledge=self._pre_knowledge,
         )
 
         container = self.query_one("#conversation", ScrollableContainer)
@@ -345,7 +362,8 @@ class EmberApp(App):
         await container.mount(Static(self._build_welcome_content(), id="welcome-box"))
         await container.mount(Static(self._build_capabilities_text(), id="capabilities"))
 
-        self._input_handler = InputHandler(self._session.skill_pool)
+        self._file_index = FileIndex(self._project_dir)
+        self._input_handler = InputHandler(self._session.skill_pool, file_index=self._file_index)
         self._command_handler = CommandHandler(self._session)
 
         # Initialise managers
@@ -378,6 +396,10 @@ class EmberApp(App):
 
         self._status.update_status_bar()
 
+        # Load previous messages if resuming a session
+        if self.resume_session_id:
+            await self._sessions._load_history(self.resume_session_id)
+
         # Show a random tip
         self._start_tip_rotation()
 
@@ -389,12 +411,33 @@ class EmberApp(App):
         # ── Non-blocking background init ──────────────────────────────
         asyncio.create_task(self._check_for_update())
         asyncio.create_task(self._init_mcp_background())
+        asyncio.create_task(self._file_index.ensure_loaded())
+        asyncio.create_task(self._auto_sync_knowledge())
 
         if self.initial_message:
             task = asyncio.create_task(
                 self._controller.process_message(self.initial_message),
             )
             self._controller.set_current_task(task)
+
+    async def _auto_sync_knowledge(self) -> None:
+        """Auto-sync knowledge file → DB on startup if enabled."""
+        if not self._session:
+            return
+        settings = self._session.settings
+        if not settings.knowledge.enabled or not settings.knowledge.share or not settings.knowledge.auto_sync:
+            return
+        if self._session.knowledge is None:
+            return
+        try:
+            result = await self._session.knowledge_mgr.sync_from_file()
+            if result.new_entries > 0:
+                self._conversation.append_info(
+                    f"Knowledge sync: loaded {result.new_entries} entries from git"
+                )
+        except Exception as e:
+            logger.warning("Auto knowledge sync failed: %s", e)
+            self._conversation.append_info(f"Knowledge sync failed: {e}")
 
     async def on_unmount(self) -> None:
         """Clean up scheduler, ephemeral agents, and MCP connections on app exit."""
@@ -424,7 +467,24 @@ class EmberApp(App):
 
     @on(PromptInput.Changed, "#user-input")
     def _on_input_changed(self, event: PromptInput.Changed) -> None:
-        text = event.text_area.text
+        text_area = event.text_area
+        text = text_area.text
+
+        # ── @file mention detection ──────────────────────────────
+        row, col = text_area.cursor_location
+        mention_query = extract_at_mention(row, col, text_area.document.get_line)
+        if mention_query is not None and self._input_handler:
+            matches = self._input_handler.get_file_completions(mention_query)
+            self._show_file_picker(matches)
+            # Hide slash autocomplete if visible
+            with contextlib.suppress(NoMatches):
+                self.query_one("#autocomplete", Static).display = False
+            return
+
+        # Hide file picker when not in @-mention
+        self._hide_file_picker()
+
+        # ── Slash command autocomplete ───────────────────────────
         try:
             widget = self.query_one("#autocomplete", Static)
         except NoMatches:
@@ -451,6 +511,65 @@ class EmberApp(App):
         except Exception:
             pass
 
+    # ── File picker helpers ────────────────────────────────────
+
+    def _show_file_picker(self, matches: list[str]) -> None:
+        """Show or update the file picker dropdown."""
+        input_widget = self.query_one("#user-input", PromptInput)
+        input_widget.suppress_submit = True
+        try:
+            picker = self.query_one(FilePickerDropdown)
+            picker.update_matches(matches)
+        except NoMatches:
+            picker = FilePickerDropdown(matches)
+            try:
+                footer = self.query_one("#footer", Vertical)
+                prompt_row = self.query_one("#prompt-row")
+                footer.mount(picker, before=prompt_row)
+            except Exception:
+                pass
+
+    def _hide_file_picker(self) -> None:
+        """Remove the file picker dropdown if present."""
+        try:
+            self.query_one(FilePickerDropdown).remove()
+        except NoMatches:
+            pass
+        try:
+            self.query_one("#user-input", PromptInput).suppress_submit = False
+        except NoMatches:
+            pass
+
+    def _insert_file_mention(self, path: str) -> None:
+        """Replace the @query with the selected file path."""
+        input_widget = self.query_one("#user-input", PromptInput)
+        row, col = input_widget.cursor_location
+        line = input_widget.document.get_line(row)
+
+        # Find the @ position by scanning backward
+        at_pos = col - 1
+        while at_pos >= 0 and line[at_pos] != "@":
+            at_pos -= 1
+
+        if at_pos < 0:
+            return
+
+        # Rebuild the full text with the replacement
+        full_text = input_widget.text
+        lines = full_text.split("\n")
+        old_line = lines[row]
+        # Replace from after @ to cursor position with the full path
+        new_line = old_line[: at_pos + 1] + path + " " + old_line[col:]
+        lines[row] = new_line
+        new_text = "\n".join(lines)
+
+        # Calculate new cursor position (after path + space)
+        new_col = at_pos + 1 + len(path) + 1
+
+        input_widget.clear()
+        input_widget.insert(new_text)
+        input_widget.move_cursor((row, new_col))
+
     @on(PromptInput.Submitted)
     async def _on_input_submitted(self, event: PromptInput.Submitted) -> None:
         """Handle Enter — PromptInput posts Submitted with the text."""
@@ -475,6 +594,38 @@ class EmberApp(App):
         if not input_widget.has_focus:
             return
 
+        # ── File picker navigation (takes priority) ─────────────
+        try:
+            picker = self.query_one(FilePickerDropdown)
+        except NoMatches:
+            picker = None
+
+        if picker and picker.has_matches:
+            if event.key == "up":
+                event.prevent_default()
+                event.stop()
+                picker.move_up()
+                return
+            if event.key == "down":
+                event.prevent_default()
+                event.stop()
+                picker.move_down()
+                return
+            if event.key in ("tab", "enter"):
+                event.prevent_default()
+                event.stop()
+                selected = picker.get_selected()
+                if selected:
+                    self._insert_file_mention(selected)
+                self._hide_file_picker()
+                return
+            if event.key == "escape":
+                event.prevent_default()
+                event.stop()
+                self._hide_file_picker()
+                return
+
+        # ── Input history navigation ─────────────────────────────
         if event.key == "up" and self._input_handler and input_widget.cursor_location[0] == 0:
             entry = self._input_handler.on_up(input_widget.text)
             if entry is not None:
@@ -510,6 +661,16 @@ class EmberApp(App):
             self._show_login()
         elif result.action == "mcp":
             asyncio.create_task(self._show_mcp_panel())
+        elif result.action == "compact":
+            self._sessions.clear()
+            self._status.reset()
+            self._status.update_context_usage()
+            self._status.update_status_bar()
+            self.refresh()
+            if result.content:
+                self._conversation.append_info(f"Context compacted. Summary of previous conversation:\n\n{result.content}")
+            else:
+                self._conversation.append_info("Context compacted.")
         elif result.kind == "markdown":
             self._conversation.append_markdown(result.content)
         elif result.kind == "info":
@@ -530,7 +691,15 @@ class EmberApp(App):
     # ── Model picker ────────────────────────────────────────────────
 
     def _show_model_picker(self) -> None:
-        models = sorted(self.settings.models.registry.keys())
+        # Only show models that have an API key configured
+        models = sorted(
+            name
+            for name, cfg in self.settings.models.registry.items()
+            if cfg.get("api_key") or cfg.get("api_key_env") or cfg.get("api_key_cmd")
+        )
+        if not models:
+            self._conversation.append_error("No models configured with API keys.")
+            return
         current = self.settings.models.default
         picker = ModelPickerWidget(models=models, current_model=current)
         self.mount(picker)
@@ -539,6 +708,8 @@ class EmberApp(App):
     @on(ModelPickerWidget.Selected)
     def _on_model_selected(self, event: ModelPickerWidget.Selected) -> None:
         self.settings.models.default = event.model_name
+        # Rebuild agent with the new model
+        self._session.main_team = self._session._build_main_agent()
         self._status.update_status_bar()
         self._conversation.append_info(f"Switched to model: {event.model_name}")
         self.query_one("#user-input", PromptInput).focus()
