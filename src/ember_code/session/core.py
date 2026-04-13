@@ -227,8 +227,9 @@ class Session:
                 tool_names.append("WebFetch")
             except (ImportError, ValueError):
                 pass
-        if registry.cloud_connected:
-            tool_names.append("CodeIndex")
+        # TODO: Enable CodeIndex when the service is online
+        # if registry.cloud_connected:
+        #     tool_names.append("CodeIndex")
         tools = registry.resolve(tool_names)
 
         # Orchestration tools — lets the agent delegate to specialists
@@ -643,7 +644,12 @@ class Session:
 
         try:
             # ── Execute (Agno auto-persists via db) ──────────────────
-            effective_message = guardrail_prefix + message if guardrail_prefix else message
+            from datetime import datetime
+
+            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+            effective_message = f"<system-context>Current datetime: {timestamp}</system-context>\n{message}"
+            if guardrail_prefix:
+                effective_message = guardrail_prefix + effective_message
             response = await self.main_team.arun(effective_message, stream=False, **media_kwargs)
             self._log_run_messages()
             response_text = extract_response_text(response)

@@ -1,20 +1,26 @@
-"""Project initializer — one-time setup of .ember directory for new users.
+"""Project initializer and updater for .ember directory.
 
-Runs once per project on first session start. Copies built-in agents, skills,
-and hooks into the user's `.ember/` directory and creates a starter `ember.md`.
-A marker file (`.ember/.initialized`) ensures this never runs again — if the
-user deletes anything, it stays deleted.
+Two responsibilities:
+1. **First-run init** — copies built-in agents, skills, hooks into `.ember/`
+   and creates a starter `ember.md`.  Marker file ensures this runs once.
+2. **Update on every start** — compares package files against local copies
+   using checksums.  Overwrites untouched files, warns about modified ones.
 """
 
+import hashlib
 import json
+import logging
 import shutil
 import stat
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────
 
 PACKAGE_ROOT = Path(__file__).parent.parent.parent  # repo root
 MARKER_FILE = ".initialized"
+CHECKSUMS_FILE = ".checksums.json"
 
 
 # ── Built-in hook scripts ─────────────────────────────────────────────
@@ -322,42 +328,156 @@ memory:
 
 
 def initialize_project(project_dir: Path) -> bool:
-    """Run one-time project initialization.
+    """Initialize and update the project's .ember directory.
 
-    Copies built-in agents, skills, and hooks into the project's `.ember/`
-    directory and creates a starter `ember.md`. Settings and the marker
-    file live in `~/.ember/` (user home, outside any repo).
-
-    This function is idempotent — once `~/.ember/.initialized` exists,
-    this is a no-op forever.
+    First run: copies built-in agents, skills, hooks, creates ember.md.
+    Subsequent runs: updates built-in files using checksum-based merge:
+      - Untouched files → overwritten with new package version
+      - User-modified files → kept, warning logged
+      - New package files → copied
+      - User's custom files → never deleted
     """
     home_ember = Path.home() / ".ember"
     home_ember.mkdir(parents=True, exist_ok=True)
     home_marker = home_ember / MARKER_FILE
     project_marker = project_dir / ".ember" / MARKER_FILE
 
-    # Skip if both home and project are already initialized
-    if home_marker.exists() and project_marker.exists():
-        return False
-
     ember_dir = project_dir / ".ember"
     ember_dir.mkdir(parents=True, exist_ok=True)
 
-    # Always write home config if missing (user-global)
+    # Write home config if missing (user-global, first-ever run)
     if not home_marker.exists():
         _write_default_config(home_ember)
         home_marker.touch()
 
-    # Initialize project if its marker is missing (e.g. .ember/ was deleted)
-    if not project_marker.exists():
-        _copy_agents(project_dir)
-        _copy_skills(project_dir)
-        _provision_hooks(project_dir)
+    # First-time project init: copy everything + create starter files
+    first_run = not project_marker.exists()
+    if first_run:
         _write_ember_md(project_dir)
         _write_project_config(project_dir)
         project_marker.touch()
 
-    return True
+    # Always run update — handles both first-run copy and subsequent updates
+    warnings = _update_built_in_files(project_dir)
+    _provision_hooks(project_dir)
+
+    for msg in warnings:
+        logger.info(msg)
+
+    return first_run
+
+
+# ── Checksum-based update ────────────────────────────────────────────
+
+
+def _file_hash(path: Path) -> str:
+    """Compute SHA-256 hash of a file's content."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+def _load_checksums(project_dir: Path) -> dict[str, str]:
+    """Load .ember/.checksums.json — maps relative paths to original hashes."""
+    path = project_dir / ".ember" / CHECKSUMS_FILE
+    return _load_json(path)
+
+
+def _save_checksums(project_dir: Path, checksums: dict[str, str]) -> None:
+    """Save .ember/.checksums.json."""
+    path = project_dir / ".ember" / CHECKSUMS_FILE
+    _save_json(path, checksums)
+
+
+def _update_built_in_files(project_dir: Path) -> list[str]:
+    """Sync built-in agents and skills using checksum-based merge.
+
+    Returns a list of warning messages for files that were modified by the
+    user and could not be auto-updated.
+    """
+    checksums = _load_checksums(project_dir)
+    warnings: list[str] = []
+
+    # Update agents
+    agents_src = PACKAGE_ROOT / "agents"
+    agents_dst = project_dir / ".ember" / "agents"
+    if agents_src.exists():
+        agents_dst.mkdir(parents=True, exist_ok=True)
+        for src_file in agents_src.glob("*.md"):
+            key = f"agents/{src_file.name}"
+            dst_file = agents_dst / src_file.name
+            warn = _sync_file(src_file, dst_file, key, checksums)
+            if warn:
+                warnings.append(warn)
+
+    # Update skills
+    skills_src = PACKAGE_ROOT / "skills"
+    skills_dst = project_dir / ".ember" / "skills"
+    if skills_src.exists():
+        for skill_dir in skills_src.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            src_file = skill_dir / "SKILL.md"
+            if not src_file.exists():
+                continue
+            key = f"skills/{skill_dir.name}/SKILL.md"
+            dst_dir = skills_dst / skill_dir.name
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst_file = dst_dir / "SKILL.md"
+            warn = _sync_file(src_file, dst_file, key, checksums)
+            if warn:
+                warnings.append(warn)
+
+    _save_checksums(project_dir, checksums)
+    return warnings
+
+
+def _sync_file(
+    src: Path, dst: Path, key: str, checksums: dict[str, str]
+) -> str | None:
+    """Sync a single built-in file. Returns a warning string or None.
+
+    Logic:
+      - dst doesn't exist → copy, record checksum
+      - no stored checksum (legacy) → record current package hash, skip update
+      - package unchanged → skip
+      - package changed + user didn't modify → overwrite, update checksum
+      - package changed + user modified → skip, return warning
+    """
+    pkg_hash = _file_hash(src)
+    stored_hash = checksums.get(key)
+
+    if not dst.exists():
+        # New file — copy and record
+        shutil.copy2(src, dst)
+        checksums[key] = pkg_hash
+        return None
+
+    if stored_hash is None:
+        # Legacy: file exists but no checksum recorded.
+        # Record current package hash so future updates work.
+        checksums[key] = pkg_hash
+        return None
+
+    if pkg_hash == stored_hash:
+        # Package hasn't changed — nothing to do
+        return None
+
+    # Package has changed — check if user modified their copy
+    local_hash = _file_hash(dst)
+
+    if local_hash == stored_hash:
+        # User hasn't touched it — safe to overwrite
+        shutil.copy2(src, dst)
+        checksums[key] = pkg_hash
+        return None
+
+    # User modified AND package updated — write new version alongside
+    new_path = dst.with_suffix(dst.suffix + ".new")
+    shutil.copy2(src, new_path)
+    checksums[key] = pkg_hash
+    return (
+        f"Built-in {key} was updated but you have local modifications. "
+        f"New version saved as .ember/{key}.new — diff and merge at your convenience."
+    )
 
 
 # ── Internal helpers ──────────────────────────────────────────────────
@@ -381,52 +501,14 @@ def _write_default_config(home_ember: Path) -> None:
         )
 
 
-def _copy_agents(project_dir: Path) -> None:
-    """Copy built-in agent definitions to .ember/agents/."""
-    src = PACKAGE_ROOT / "agents"
-    dst = project_dir / ".ember" / "agents"
-
-    if not src.exists():
-        return
-
-    dst.mkdir(parents=True, exist_ok=True)
-
-    for md_file in src.glob("*.md"):
-        target = dst / md_file.name
-        if not target.exists():
-            shutil.copy2(md_file, target)
-
-
-def _copy_skills(project_dir: Path) -> None:
-    """Copy built-in skill definitions to .ember/skills/."""
-    src = PACKAGE_ROOT / "skills"
-    dst = project_dir / ".ember" / "skills"
-
-    if not src.exists():
-        return
-
-    for skill_dir in src.iterdir():
-        if not skill_dir.is_dir():
-            continue
-        skill_file = skill_dir / "SKILL.md"
-        if not skill_file.exists():
-            continue
-
-        target_dir = dst / skill_dir.name
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / "SKILL.md"
-        if not target.exists():
-            shutil.copy2(skill_file, target)
-
-
 def _provision_hooks(project_dir: Path) -> None:
     """Write built-in hook scripts and register them in settings.
 
-    Hook scripts go in the project's `.ember/hooks/` directory.
-    Hook registrations go in `~/.ember/settings.json` (user global).
+    Hook scripts are always overwritten (they are not user-customizable
+    in the same way agents/skills are — users configure hooks via
+    settings.json, not by editing the scripts).
     """
-    ember_dir = project_dir / ".ember"
-    hooks_dir = ember_dir / "hooks"
+    hooks_dir = project_dir / ".ember" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     home_ember = Path.home() / ".ember"
@@ -435,12 +517,12 @@ def _provision_hooks(project_dir: Path) -> None:
     settings = _load_json(settings_path)
 
     for hook in BUILT_IN_HOOKS:
-        # Write the hook script
+        # Write the hook script (always overwrite — hooks are code, not config)
         script_path = hooks_dir / hook["filename"]
         script_path.write_text(hook["content"])
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-        # Register in settings
+        # Register in settings (skip if already registered)
         event = hook["event"]
         definition = hook["definition"]
         event_hooks = settings.setdefault("hooks", {}).setdefault(event, [])

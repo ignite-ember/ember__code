@@ -169,7 +169,10 @@ class TestSessionMessageHandling:
         with patch("ember_code.session.core.extract_response_text", return_value="Hello!"):
             result = await session.handle_message("Hi there")
             assert result == "Hello!"
-            session.main_team.arun.assert_called_once_with("Hi there", stream=False)
+            # Message includes a UTC timestamp prefix
+            call_args = session.main_team.arun.call_args
+            assert call_args[1]["stream"] is False
+            assert "Hi there" in call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_handle_message_blocked_by_hook(self, session):

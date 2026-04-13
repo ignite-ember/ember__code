@@ -33,19 +33,20 @@ class TestInitializeProject:
             initialize_project(tmp_path)
             assert initialize_project(tmp_path) is False
 
-    def test_never_runs_again_after_marker(self, tmp_path):
+    def test_updates_run_on_second_call(self, tmp_path):
+        """Second run still updates built-in files (agents, skills, hooks)."""
         with _patch_home(tmp_path):
             initialize_project(tmp_path)
-            # Delete project hooks but keep marker in ~/.ember/
+            # Delete project hooks
             hooks = tmp_path / ".ember" / "hooks"
             if hooks.exists():
                 import shutil
 
                 shutil.rmtree(hooks)
 
-            # Second run should not recreate anything
+            # Second run should recreate hooks (update always runs)
             initialize_project(tmp_path)
-            assert not (tmp_path / ".ember" / "hooks").exists()
+            assert (tmp_path / ".ember" / "hooks").exists()
 
     def test_creates_ember_directory(self, tmp_path):
         with _patch_home(tmp_path):
@@ -208,3 +209,126 @@ class TestEmberMd:
         with _patch_home(tmp_path):
             initialize_project(tmp_path)
         assert (tmp_path / "ember.md").read_text() == "my custom context"
+
+
+class TestChecksumUpdate:
+    """Tests for checksum-based update of built-in agents/skills."""
+
+    def _setup_fake_root(self, tmp_path, agent_content="v1 content"):
+        import ember_code.init as init_mod
+
+        fake_root = tmp_path / "fake_root"
+        (fake_root / "agents").mkdir(parents=True)
+        (fake_root / "agents" / "editor.md").write_text(agent_content)
+        (fake_root / "skills").mkdir()
+        return fake_root, init_mod
+
+    def test_untouched_file_gets_updated(self, tmp_path):
+        """Package updated + user didn't modify → overwrite."""
+        fake_root, init_mod = self._setup_fake_root(tmp_path, "v1 content")
+        original = init_mod.PACKAGE_ROOT
+        init_mod.PACKAGE_ROOT = fake_root
+        try:
+            project = tmp_path / "project"
+            project.mkdir()
+
+            # First init — copies v1
+            with _patch_home(tmp_path):
+                initialize_project(project)
+            assert (project / ".ember" / "agents" / "editor.md").read_text() == "v1 content"
+
+            # Simulate package update — change the source file
+            (fake_root / "agents" / "editor.md").write_text("v2 content")
+
+            # Second run — should overwrite since user didn't modify
+            with _patch_home(tmp_path):
+                initialize_project(project)
+            assert (project / ".ember" / "agents" / "editor.md").read_text() == "v2 content"
+        finally:
+            init_mod.PACKAGE_ROOT = original
+
+    def test_user_modified_file_kept_with_new(self, tmp_path):
+        """Package updated + user modified → keep user version, write .new file."""
+        fake_root, init_mod = self._setup_fake_root(tmp_path, "v1 content")
+        original = init_mod.PACKAGE_ROOT
+        init_mod.PACKAGE_ROOT = fake_root
+        try:
+            project = tmp_path / "project"
+            project.mkdir()
+
+            # First init
+            with _patch_home(tmp_path):
+                initialize_project(project)
+
+            # User modifies the file
+            (project / ".ember" / "agents" / "editor.md").write_text("my custom agent")
+
+            # Package updates
+            (fake_root / "agents" / "editor.md").write_text("v2 content")
+
+            # Second run — should keep user version and write .new
+            with _patch_home(tmp_path):
+                initialize_project(project)
+            assert (project / ".ember" / "agents" / "editor.md").read_text() == "my custom agent"
+            assert (project / ".ember" / "agents" / "editor.md.new").read_text() == "v2 content"
+        finally:
+            init_mod.PACKAGE_ROOT = original
+
+    def test_new_package_file_copied(self, tmp_path):
+        """New file in package → copied to project."""
+        fake_root, init_mod = self._setup_fake_root(tmp_path, "editor v1")
+        original = init_mod.PACKAGE_ROOT
+        init_mod.PACKAGE_ROOT = fake_root
+        try:
+            project = tmp_path / "project"
+            project.mkdir()
+
+            # First init
+            with _patch_home(tmp_path):
+                initialize_project(project)
+
+            # Add new agent to package
+            (fake_root / "agents" / "new-agent.md").write_text("new agent content")
+
+            # Second run — should copy the new file
+            with _patch_home(tmp_path):
+                initialize_project(project)
+            assert (project / ".ember" / "agents" / "new-agent.md").read_text() == "new agent content"
+        finally:
+            init_mod.PACKAGE_ROOT = original
+
+    def test_user_custom_files_not_deleted(self, tmp_path):
+        """User's custom agents not in package → never touched."""
+        fake_root, init_mod = self._setup_fake_root(tmp_path, "editor v1")
+        original = init_mod.PACKAGE_ROOT
+        init_mod.PACKAGE_ROOT = fake_root
+        try:
+            project = tmp_path / "project"
+            project.mkdir()
+
+            with _patch_home(tmp_path):
+                initialize_project(project)
+
+            # User creates their own custom agent
+            (project / ".ember" / "agents" / "my-custom.md").write_text("custom agent")
+
+            # Second run — custom file should survive
+            with _patch_home(tmp_path):
+                initialize_project(project)
+            assert (project / ".ember" / "agents" / "my-custom.md").read_text() == "custom agent"
+        finally:
+            init_mod.PACKAGE_ROOT = original
+
+    def test_checksums_file_created(self, tmp_path):
+        """Checksums file is created after init."""
+        fake_root, init_mod = self._setup_fake_root(tmp_path, "content")
+        original = init_mod.PACKAGE_ROOT
+        init_mod.PACKAGE_ROOT = fake_root
+        try:
+            project = tmp_path / "project"
+            project.mkdir()
+            with _patch_home(tmp_path):
+                initialize_project(project)
+            assert (project / ".ember" / ".checksums.json").exists()
+        finally:
+            init_mod.PACKAGE_ROOT = original

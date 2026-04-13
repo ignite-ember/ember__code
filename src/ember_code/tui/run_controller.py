@@ -201,6 +201,12 @@ class RunController:
         existing_hooks = team.tool_hooks or []
         team.tool_hooks = [*existing_hooks, hook]
 
+        # Add system context with timestamp so the agent knows the current time
+        from datetime import datetime
+
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        message = f"<system-context>Current datetime: {timestamp}</system-context>\n{message}"
+
         try:
             async for event in team.arun(message, stream=True, **media_kwargs):
                 await self._dispatch(event, team)

@@ -209,6 +209,10 @@ class Settings(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
 
+    # TODO: Add telemetry config so users can wire their own Agno server or
+    #       compatible telemetry endpoint (e.g. telemetry.enabled, telemetry.endpoint).
+    #       Ember Cloud does not collect CLI telemetry — usage is tracked server-side.
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Deep merge override into base, returning new dict."""
