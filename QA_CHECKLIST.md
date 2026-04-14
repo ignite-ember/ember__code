@@ -166,34 +166,34 @@
 - [ ] Toggle server that fails — error shown, no crash
 - [x] Disconnect then reconnect — clean, no stale error
 - [x] Enter expands tool list, Enter again collapses
-- [ ] Up/Down navigate, bounds respected
+- [x] Up/Down navigate, bounds respected
 - [x] Escape closes, focus returns to input
-- [ ] Rapid toggle — no crash
+- [x] Rapid toggle — no crash
 
 ### MCP approval & policy
 - [x] First-time project server — auto-approved (project .mcp.json trusted by default)
-- [ ] User-global server — auto-approved
-- [ ] Denied server — not connected, logged
-- [ ] Admin-denied server — blocked, lock icon in panel
+- [x] User-global server — auto-approved
+- [x] Denied server — not connected, logged (code verified)
+- [x] Admin-denied server — blocked, lock icon in panel (code verified)
 
 ### Hooks (workflow automation)
-- [ ] **PreToolUse** — fires before tool, can block execution
-- [ ] **PostToolUse** — fires after tool success
-- [ ] **PostToolUseFailure** — fires after tool error
-- [ ] **UserPromptSubmit** — fires on message send, can block
-- [ ] **SessionStart** — fires on session begin
-- [ ] **SessionEnd** — fires on session end
-- [ ] **Stop** — fires when agent finishes, can block (up to 3 retries)
-- [ ] **SubagentStart** — fires when sub-team spawns
-- [ ] **SubagentStop** — fires when sub-team finishes
-- [ ] Command hook — shell script, JSON on stdin
-- [ ] HTTP hook — POSTs to URL
-- [ ] Matcher — regex filtering works
-- [ ] Timeout — hook killed if exceeds limit
-- [ ] Background hook — fire-and-forget, doesn't block
-- [ ] `/hooks` — lists loaded hooks
-- [ ] `/hooks reload` — reloads from settings
-- [ ] Hooks from all settings files loaded
+- [x] **PreToolUse** — fires before tool, can block execution
+- [x] **PostToolUse** — fires after tool success
+- [x] **PostToolUseFailure** — fires after tool error (unit tested)
+- [x] **UserPromptSubmit** — fires on message send, can block
+- [x] **SessionStart** — fires on session begin
+- [x] **SessionEnd** — fires on session end
+- [x] **Stop** — fires when agent finishes, can block (up to 3 retries, unit tested)
+- [x] **SubagentStart** — fires when sub-team spawns
+- [x] **SubagentStop** — fires when sub-team finishes
+- [x] Command hook — shell script, JSON on stdin
+- [x] HTTP hook — POSTs to URL
+- [x] Matcher — regex filtering works (unit tested)
+- [x] Timeout — hook killed if exceeds limit (unit tested)
+- [x] Background hook — fire-and-forget, doesn't block (unit tested)
+- [x] `/hooks` — lists loaded hooks
+- [x] `/hooks reload` — reloads from settings
+- [x] Hooks from all settings files loaded (unit tested)
 
 ### TUI interface (the default experience)
 - [x] Welcome banner — user name, model, directory

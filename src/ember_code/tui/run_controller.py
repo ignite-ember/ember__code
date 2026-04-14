@@ -154,6 +154,19 @@ class RunController:
     async def _run(self, message: str) -> None:
         self._conversation.append_user(message)
 
+        # Fire UserPromptSubmit hook (can block)
+        from ember_code.hooks.events import HookEvent
+
+        hook_result = await self._session.hook_executor.execute(
+            event=HookEvent.USER_PROMPT_SUBMIT.value,
+            payload={"message": message, "session_id": self._session.session_id},
+        )
+        if not hook_result.should_continue:
+            self._conversation.append_info(
+                hook_result.message or "Message blocked by hook."
+            )
+            return
+
         # Slash commands bypass the team
         if message.startswith("/"):
             result = await self._app.command_handler.handle(message)
@@ -241,6 +254,14 @@ class RunController:
         await self._session.compact_if_needed(
             self._run_input_tokens, self._status.max_context_tokens
         )
+
+        # Fire Stop hook
+        stop_result = await self._session.hook_executor.execute(
+            event=HookEvent.STOP.value,
+            payload={"session_id": self._session.session_id},
+        )
+        if not stop_result.should_continue and stop_result.message:
+            self._conversation.append_info(stop_result.message)
 
         # Clean up hook
         team.tool_hooks = [h for h in (team.tool_hooks or []) if h is not hook]

@@ -408,6 +408,16 @@ class EmberApp(App):
         # ── Scheduler ──────────────────────────────────────────────────
         self._start_scheduler()
 
+        # ── Fire SessionStart hook ────────────────────────────────────
+        from ember_code.hooks.events import HookEvent
+
+        asyncio.create_task(
+            self._session.hook_executor.execute(
+                event=HookEvent.SESSION_START.value,
+                payload={"session_id": self._session.session_id},
+            )
+        )
+
         # ── Non-blocking background init ──────────────────────────────
         asyncio.create_task(self._check_for_update())
         asyncio.create_task(self._init_mcp_background())
@@ -457,23 +467,32 @@ class EmberApp(App):
         import os
         import sys
 
+        # Fire SessionEnd hook
+        if self._session:
+            from ember_code.hooks.events import HookEvent
+
+            with contextlib.suppress(Exception):
+                await self._session.hook_executor.execute(
+                    event=HookEvent.SESSION_END.value,
+                    payload={"session_id": self._session.session_id},
+                )
+
         if self._scheduler_runner:
             self._scheduler_runner.stop()
 
         if self._session:
             if self._session.settings.orchestration.auto_cleanup:
                 self._session.pool.cleanup_ephemeral()
-            if self._session.mcp_manager.list_connected():
-                # Redirect fd 2 → /dev/null BEFORE disconnecting MCP.
-                # MCP stdio cleanup triggers anyio cancel scope errors
-                # when the session was created in a different event loop.
-                try:
-                    sys.stderr.flush()
-                    devnull_fd = os.open(os.devnull, os.O_WRONLY)
-                    os.dup2(devnull_fd, 2)
-                    os.close(devnull_fd)
-                except OSError:
-                    pass
+            # Redirect fd 2 → /dev/null BEFORE disconnecting MCP.
+            # MCP stdio cleanup triggers anyio cancel scope errors that
+            # print after the TUI exits.  Keep stderr redirected permanently.
+            try:
+                sys.stderr.flush()
+                devnull_fd = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull_fd, 2)
+                os.close(devnull_fd)
+            except OSError:
+                pass
             await self._session.mcp_manager.disconnect_all()
 
     # ── Input events ──────────────────────────────────────────────
