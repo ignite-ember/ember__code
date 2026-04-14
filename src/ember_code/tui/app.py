@@ -773,6 +773,7 @@ class EmberApp(App):
                     connected=connected,
                     transport=config.type if config else "unknown",
                     tool_names=mgr.get_tools(name),
+                    tool_descriptions=mgr.get_tool_descriptions(name),
                     error=mgr.get_error(name),
                     policy_blocked=mgr._policy.is_denied(name),
                 )

@@ -22,6 +22,7 @@ class MCPServerInfo(BaseModel):
     connected: bool
     transport: MCPTransport = MCPTransport.stdio
     tool_names: list[str] = Field(default_factory=list)
+    tool_descriptions: dict[str, str] = Field(default_factory=dict)
     error: str = ""
     policy_blocked: bool = False
 
@@ -147,8 +148,14 @@ class MCPPanelWidget(Widget):
         base = self._render_entry(server)
         if not server.connected or not server.tool_names:
             return base
-        tools = ", ".join(server.tool_names)
-        return f"{base}\n      [dim]{tools}[/dim]"
+        lines = [base]
+        for tname in server.tool_names:
+            desc = server.tool_descriptions.get(tname, "")
+            if desc:
+                lines.append(f"      [dim]{tname}[/dim] — {desc}")
+            else:
+                lines.append(f"      [dim]{tname}[/dim]")
+        return "\n".join(lines)
 
     def refresh_servers(self, servers: list[MCPServerInfo]) -> None:
         """Update the panel with fresh server data."""
@@ -260,13 +267,16 @@ class MCPPanelWidget(Widget):
         if not (0 <= self.selected_index < len(self._servers)):
             return
         server = self._servers[self.selected_index]
+        if not hasattr(self, "_expanded_indices"):
+            self._expanded_indices: set[int] = set()
         try:
             widget = self.query_one(f"#mcp-{self.selected_index}", Static)
-            current = str(widget.renderable)
-            if "\n" in current:
+            if self.selected_index in self._expanded_indices:
                 widget.update(self._render_entry(server))
+                self._expanded_indices.discard(self.selected_index)
             else:
                 widget.update(self._render_entry_expanded(server))
+                self._expanded_indices.add(self.selected_index)
         except Exception:
             pass
 

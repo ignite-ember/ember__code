@@ -198,6 +198,18 @@ class MCPClientManager:
         functions = getattr(client, "functions", None) or {}
         return list(functions.keys())
 
+    def get_tool_descriptions(self, name: str) -> dict[str, str]:
+        """Return {tool_name: description} for a connected MCP server."""
+        client = self._clients.get(name)
+        if client is None:
+            return {}
+        functions = getattr(client, "functions", None) or {}
+        return {
+            fname: func.description or ""
+            for fname, func in functions.items()
+            if hasattr(func, "description")
+        }
+
     def list_servers(self) -> list[str]:
         """List available MCP server names."""
         return list(self.configs.keys())

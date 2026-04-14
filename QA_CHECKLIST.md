@@ -165,7 +165,7 @@
 - [x] After toggle, agents rebuild (verify MCP tool works)
 - [ ] Toggle server that fails — error shown, no crash
 - [x] Disconnect then reconnect — clean, no stale error
-- [ ] Enter expands tool list, Enter again collapses
+- [x] Enter expands tool list, Enter again collapses
 - [ ] Up/Down navigate, bounds respected
 - [x] Escape closes, focus returns to input
 - [ ] Rapid toggle — no crash
