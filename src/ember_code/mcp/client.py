@@ -1,8 +1,15 @@
-"""MCP client — connects to external MCP servers."""
+"""MCP client — connects to external MCP servers.
 
-import contextlib
+For stdio transport, we bypass Agno's default ``MCPTools.__aenter__``
+and connect manually using the MCP SDK's ``stdio_client`` with
+``errlog`` redirected to a file.  This avoids Textual rendering
+corruption caused by subprocess stderr mixing with Textual's output.
+"""
+
 import logging
 import os
+import tempfile
+from datetime import timedelta
 from typing import Any
 
 from ember_code.mcp.approval import MCPApprovalManager
@@ -10,24 +17,7 @@ from ember_code.mcp.config import MCPConfigLoader, MCPPolicy
 
 logger = logging.getLogger(__name__)
 
-
-@contextlib.contextmanager
-def _suppress_subprocess_output():
-    """Suppress stderr to prevent MCP subprocess messages from corrupting the TUI.
-
-    MCP servers (e.g. vscode-mcp-server) print startup banners to stderr,
-    which bleeds into the Textual terminal display. Redirects stderr to
-    /dev/null during connection. Stdout is left alone since Textual uses it.
-    """
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    old_stderr = os.dup(2)
-    try:
-        os.dup2(devnull, 2)
-        yield
-    finally:
-        os.dup2(old_stderr, 2)
-        os.close(old_stderr)
-        os.close(devnull)
+_MCP_ERRLOG_PATH = os.path.join(tempfile.gettempdir(), "ember_mcp_stderr.log")
 
 
 class MCPClientManager:
@@ -80,23 +70,14 @@ class MCPClientManager:
                     self._errors[name] = "SSE transport requires a 'url' field"
                     return None
                 mcp_tools = MCPTools(url=config.url, transport="sse")
+                await mcp_tools.__aenter__()
             elif config.type == "stdio":
-                command = " ".join([config.command, *config.args])
-                mcp_tools = MCPTools(
-                    command=command,
-                    env=config.env if config.env else None,
-                    transport="stdio",
-                )
+                mcp_tools = await self._connect_stdio(name, config)
             else:
                 self._errors[name] = f"Unsupported MCP type: {config.type}"
                 return None
 
-            with _suppress_subprocess_output():
-                await mcp_tools.__aenter__()
-
-            # Verify the MCP server actually provides tools — an empty
-            # toolset means the IDE plugin isn't active or the endpoint
-            # is unreachable (e.g. JetBrains MCP proxy found no IDE).
+            # Verify the MCP server actually provides tools
             functions = getattr(mcp_tools, "functions", None) or {}
             if not functions:
                 self._errors[name] = (
@@ -117,6 +98,52 @@ class MCPClientManager:
             self._errors[name] = str(exc)
             logger.warning("MCP connect '%s' failed: %s", name, exc)
             return None
+
+    async def _connect_stdio(self, name: str, config: Any) -> Any:
+        """Connect to an MCP stdio server with errlog redirected.
+
+        Bypasses Agno's ``MCPTools.__aenter__`` and connects manually
+        using the MCP SDK's ``stdio_client`` with ``errlog`` sent to a
+        log file instead of ``sys.stderr`` (which Textual uses for
+        TUI rendering).
+        """
+        from agno.tools.mcp import MCPTools
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        errlog = open(_MCP_ERRLOG_PATH, "a")  # noqa: SIM115 — must stay open for MCP session lifetime
+        params = StdioServerParameters(
+            command=config.command,
+            args=config.args or [],
+            env=config.env if config.env else None,
+        )
+
+        mcp_tools = MCPTools(
+            server_params=params,
+            transport="stdio",
+            tool_name_prefix=f"mcp_{name}",
+        )
+
+        # Connect using MCP SDK directly with errlog redirected
+        mcp_tools._context = stdio_client(params, errlog=errlog)
+        session_params = await mcp_tools._context.__aenter__()
+        mcp_tools._active_contexts = [mcp_tools._context]
+        read, write = session_params[0:2]
+
+        timeout = getattr(mcp_tools, "timeout_seconds", 30) or 30
+        mcp_tools._session_context = ClientSession(
+            read, write, read_timeout_seconds=timedelta(seconds=timeout)
+        )
+        mcp_tools.session = await mcp_tools._session_context.__aenter__()
+        mcp_tools._active_contexts.append(mcp_tools._session_context)
+
+        # Initialize Agno tool functions from MCP session.
+        # tool_name_prefix ensures MCP tools don't collide with built-in tools
+        # (e.g. read_file → mcp_filesystem_read_file)
+        await mcp_tools.initialize()
+        mcp_tools._errlog = errlog
+
+        return mcp_tools
 
     def get_error(self, name: str) -> str:
         """Return the last connection error for a server, or empty string."""
@@ -154,10 +181,13 @@ class MCPClientManager:
         if transport == "sse":
             logger.debug("MCP '%s' (SSE) — abandoning connection", name)
             return True
+        # stdio: __aexit__ may fail with "cancel scope in different task"
+        # if the connection was established in a different event loop
+        # (e.g., pre-connected before Textual started). Abandon instead.
         try:
             await client.__aexit__(None, None, None)
-        except BaseException as exc:
-            logger.debug("MCP '%s' disconnect error: %s", name, exc)
+        except (RuntimeError, BaseException) as exc:
+            logger.debug("MCP '%s' — abandoning connection: %s", name, exc)
         return True
 
     def get_tools(self, name: str) -> list[str]:

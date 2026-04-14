@@ -5,6 +5,7 @@ fully offline, no-API-key-needed embeddings.
 """
 
 import logging
+from pathlib import Path
 
 from agno.knowledge.embedder.base import Embedder
 
@@ -51,6 +52,15 @@ class EmbedderRegistry:
             os.environ.setdefault("OMP_NUM_THREADS", "1")
             # Suppress HuggingFace Hub "unauthenticated requests" warning
             os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+            # Skip network check when model is cached — cuts load from 60s to <2s
+            _hf_cache = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+            _model_cached = (
+                _hf_cache
+                / "hub"
+                / f"models--sentence-transformers--{model_id or 'all-MiniLM-L6-v2'}"
+            ).exists()
+            if _model_cached:
+                os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
             from agno.knowledge.embedder.sentence_transformer import SentenceTransformerEmbedder
 

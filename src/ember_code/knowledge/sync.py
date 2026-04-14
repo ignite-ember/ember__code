@@ -89,11 +89,7 @@ class KnowledgeSyncer:
             return set()
         try:
             entries = self.store.get_entries_metadata()
-            return {
-                m.get("entry_id", "")
-                for m in entries
-                if m.get("entry_id")
-            }
+            return {m.get("entry_id", "") for m in entries if m.get("entry_id")}
         except Exception:
             return set()
 
@@ -129,7 +125,9 @@ class KnowledgeSyncer:
                 }
                 # Run in thread — SentenceTransformer embedding can trigger
                 # subprocess calls that crash inside Textual's fd environment.
-                entry_id = entry.get("id", hashlib.sha256(entry["content"].encode()).hexdigest()[:16])
+                entry_id = entry.get(
+                    "id", hashlib.sha256(entry["content"].encode()).hexdigest()[:16]
+                )
                 metadata["entry_id"] = entry_id
                 # Name must be unique per entry so Agno generates distinct
                 # content hashes (otherwise it upserts/replaces the previous).

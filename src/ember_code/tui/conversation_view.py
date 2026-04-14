@@ -44,10 +44,16 @@ class ConversationView:
         return self._display.message_truncate_lines if self._display else 10
 
     def append_user(self, text: str, expanded: bool = False) -> None:
-        self.append(MessageWidget(text, role="user", truncate_lines=self._truncate_lines, expanded=expanded))
+        self.append(
+            MessageWidget(text, role="user", truncate_lines=self._truncate_lines, expanded=expanded)
+        )
 
     def append_assistant(self, text: str, expanded: bool = False) -> None:
-        self.append(MessageWidget(text, role="assistant", truncate_lines=self._truncate_lines, expanded=expanded))
+        self.append(
+            MessageWidget(
+                text, role="assistant", truncate_lines=self._truncate_lines, expanded=expanded
+            )
+        )
 
     def append_markdown(self, text: str) -> None:
         self.append(Markdown(text, classes="assistant-message"))

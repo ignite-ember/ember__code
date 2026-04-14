@@ -430,9 +430,7 @@ def _update_built_in_files(project_dir: Path) -> list[str]:
     return warnings
 
 
-def _sync_file(
-    src: Path, dst: Path, key: str, checksums: dict[str, str]
-) -> str | None:
+def _sync_file(src: Path, dst: Path, key: str, checksums: dict[str, str]) -> str | None:
     """Sync a single built-in file. Returns a warning string or None.
 
     Logic:

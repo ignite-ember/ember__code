@@ -15,8 +15,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -30,8 +28,8 @@ from ember_code.config.settings import Settings, load_settings
 from ember_code.session import Session
 from ember_code.tui.command_handler import CommandHandler, CommandResult
 from ember_code.tui.conversation_view import ConversationView
-from ember_code.tui.hitl_handler import HITLHandler
 from ember_code.tui.file_index import FileIndex
+from ember_code.tui.hitl_handler import HITLHandler
 from ember_code.tui.input_handler import InputHandler, extract_at_mention, shortcut_label
 from ember_code.tui.run_controller import RunController
 from ember_code.tui.session_manager import SessionManager
@@ -51,6 +49,8 @@ from ember_code.tui.widgets import (
     TipBar,
     UpdateBar,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class EmberApp(App):
@@ -420,12 +420,25 @@ class EmberApp(App):
             )
             self._controller.set_current_task(task)
 
+    async def _init_mcp_background(self) -> None:
+        """Connect user-configured MCP servers in the background."""
+        try:
+            await self._session.ensure_mcp()
+            for name, connected in self._session.get_mcp_status():
+                self._status.set_ide_status(name, connected)
+        except Exception as exc:
+            logger.debug("MCP background init failed: %s", exc)
+
     async def _auto_sync_knowledge(self) -> None:
         """Auto-sync knowledge file → DB on startup if enabled."""
         if not self._session:
             return
         settings = self._session.settings
-        if not settings.knowledge.enabled or not settings.knowledge.share or not settings.knowledge.auto_sync:
+        if (
+            not settings.knowledge.enabled
+            or not settings.knowledge.share
+            or not settings.knowledge.auto_sync
+        ):
             return
         if self._session.knowledge is None:
             return
@@ -450,10 +463,10 @@ class EmberApp(App):
         if self._session:
             if self._session.settings.orchestration.auto_cleanup:
                 self._session.pool.cleanup_ephemeral()
-            has_sse = any(c.type == "sse" for c in self._session.mcp_manager.configs.values())
-            if has_sse and self._session.mcp_manager.list_connected():
-                # Redirect fd 2 → /dev/null BEFORE abandoning SSE clients.
-                # This silences asyncio's async generator finalization errors.
+            if self._session.mcp_manager.list_connected():
+                # Redirect fd 2 → /dev/null BEFORE disconnecting MCP.
+                # MCP stdio cleanup triggers anyio cancel scope errors
+                # when the session was created in a different event loop.
                 try:
                     sys.stderr.flush()
                     devnull_fd = os.open(os.devnull, os.O_WRONLY)
@@ -531,14 +544,10 @@ class EmberApp(App):
 
     def _hide_file_picker(self) -> None:
         """Remove the file picker dropdown if present."""
-        try:
+        with contextlib.suppress(NoMatches):
             self.query_one(FilePickerDropdown).remove()
-        except NoMatches:
-            pass
-        try:
+        with contextlib.suppress(NoMatches):
             self.query_one("#user-input", PromptInput).suppress_submit = False
-        except NoMatches:
-            pass
 
     def _insert_file_mention(self, path: str) -> None:
         """Replace the @query with the selected file path."""
@@ -668,7 +677,9 @@ class EmberApp(App):
             self._status.update_status_bar()
             self.refresh()
             if result.content:
-                self._conversation.append_info(f"Context compacted. Summary of previous conversation:\n\n{result.content}")
+                self._conversation.append_info(
+                    f"Context compacted. Summary of previous conversation:\n\n{result.content}"
+                )
             else:
                 self._conversation.append_info("Context compacted.")
         elif result.kind == "markdown":
@@ -770,26 +781,48 @@ class EmberApp(App):
 
     @on(MCPPanelWidget.ServerToggleRequested)
     async def _on_mcp_toggle(self, event: MCPPanelWidget.ServerToggleRequested) -> None:
-        mgr = self._session.mcp_manager
         if event.enable:
-            client = await mgr.connect(event.name)
-            if client:
-                status = "connected"
-            else:
-                status = f"failed: {mgr.get_error(event.name) or 'unknown error'}"
+            self._conversation.append_info(f"MCP '{event.name}': connecting...")
+            # Connect on Textual's event loop — MCP session must stay on
+            # the same loop for tool calls to work.
+            asyncio.create_task(self._mcp_connect_async(event.name))
         else:
-            await mgr.disconnect_one(event.name)
-            status = "disconnected"
+            try:
+                await self._session.mcp_manager.disconnect_one(event.name)
+            except Exception as exc:
+                logger.debug("MCP disconnect error (non-fatal): %s", exc)
+            self._session.rebuild_mcp()
+            for name, connected in self._session.get_mcp_status():
+                self._status.set_ide_status(name, connected)
+            self._conversation.append_info(f"MCP '{event.name}': disconnected")
+            try:
+                panel = self.query_one(MCPPanelWidget)
+                panel.refresh_servers(self._build_mcp_server_list())
+            except NoMatches:
+                pass
 
+    async def _mcp_connect_async(self, name: str) -> None:
+        """Connect MCP server on Textual's event loop.
+
+        The MCP session must stay on the same event loop as tool calls.
+        Our _connect_stdio bypasses anyio.open_process (which deadlocks
+        in Textual) by using the MCP SDK's stdio_client directly with
+        errlog redirected.
+        """
+        mgr = self._session.mcp_manager
+        try:
+            client = await mgr.connect(name)
+            status = "connected" if client else f"failed: {mgr.get_error(name) or 'unknown error'}"
+        except Exception as exc:
+            status = f"failed: {exc}"
+        self._mcp_connect_done(name, status)
+
+    def _mcp_connect_done(self, name: str, status: str) -> None:
+        """Update UI after MCP connection completes (runs on main thread)."""
         self._session.rebuild_mcp()
-
-        # Update status bar
-        for name, connected in self._session.get_mcp_status():
-            self._status.set_ide_status(name, connected)
-
-        self._conversation.append_info(f"MCP '{event.name}': {status}")
-
-        # Refresh panel with updated data
+        for sname, connected in self._session.get_mcp_status():
+            self._status.set_ide_status(sname, connected)
+        self._conversation.append_info(f"MCP '{name}': {status}")
         try:
             panel = self.query_one(MCPPanelWidget)
             panel.refresh_servers(self._build_mcp_server_list())

@@ -10,6 +10,7 @@ from ember_code.session.commands import dispatch
 def _make_session():
     """Create a mock Session with enough attributes for CommandHandler."""
     session = MagicMock()
+    session._ensure_knowledge = AsyncMock()
     session.pool.list_agents.return_value = []
     session.pool.list_ephemeral.return_value = []
     session.skill_pool.list_skills.return_value = []
@@ -105,7 +106,9 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_compact(self):
         session = _make_session()
-        session.force_compact = AsyncMock(return_value=("Context compacted.", "Summary of conversation"))
+        session.force_compact = AsyncMock(
+            return_value=("Context compacted.", "Summary of conversation")
+        )
         with patch("ember_code.session.commands.print_info"):
             result = await dispatch(session, "/compact")
         assert result is True

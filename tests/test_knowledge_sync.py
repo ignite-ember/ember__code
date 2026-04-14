@@ -254,10 +254,12 @@ class TestSyncFileToDb:
         syncer = _syncer(
             tmp_path,
             knowledge=knowledge,
-            vector_db=FakeVectorDb(FakeCollection(
-                ids=["agno-uuid-1"],
-                metadatas=[{"entry_id": e1["id"]}],
-            )),
+            vector_db=FakeVectorDb(
+                FakeCollection(
+                    ids=["agno-uuid-1"],
+                    metadatas=[{"entry_id": e1["id"]}],
+                )
+            ),
         )
         syncer.save_file([e1, e2])
 
@@ -273,10 +275,12 @@ class TestSyncFileToDb:
         syncer = _syncer(
             tmp_path,
             knowledge=knowledge,
-            vector_db=FakeVectorDb(FakeCollection(
-                ids=["agno-uuid-1"],
-                metadatas=[{"entry_id": e1["id"]}],
-            )),
+            vector_db=FakeVectorDb(
+                FakeCollection(
+                    ids=["agno-uuid-1"],
+                    metadatas=[{"entry_id": e1["id"]}],
+                )
+            ),
         )
         syncer.save_file([e1])
 

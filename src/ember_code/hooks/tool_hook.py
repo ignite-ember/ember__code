@@ -83,7 +83,9 @@ class ToolEventHook:
         # Blocked commands
         if self._blocked_commands and name in _SHELL_TOOL_FUNCTIONS:
             cmd_args = args.get("args", [])
-            cmd_str = " ".join(str(a) for a in cmd_args) if isinstance(cmd_args, list) else str(cmd_args)
+            cmd_str = (
+                " ".join(str(a) for a in cmd_args) if isinstance(cmd_args, list) else str(cmd_args)
+            )
             for blocked in self._blocked_commands:
                 if blocked in cmd_str:
                     msg = f"Blocked: command matches blocked pattern '{blocked}'."

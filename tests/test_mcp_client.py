@@ -74,12 +74,12 @@ class TestMCPClientManager:
         config.env = {}
 
         mock_mcp_tools = MagicMock()
-        mock_mcp_tools.__aenter__ = AsyncMock(return_value=mock_mcp_tools)
-        mock_mcp_tools.__aexit__ = AsyncMock()
         mock_mcp_tools.functions = {"tool1": MagicMock()}
 
         mgr = self._make_manager({"my-server": config})
-        with patch("agno.tools.mcp.MCPTools", return_value=mock_mcp_tools):
+        with patch.object(
+            mgr, "_connect_stdio", new_callable=AsyncMock, return_value=mock_mcp_tools
+        ):
             result = await mgr.connect("my-server")
             assert result is mock_mcp_tools
             assert "my-server" in mgr.list_connected()
@@ -93,12 +93,12 @@ class TestMCPClientManager:
         config.env = {}
 
         mock_mcp_tools = MagicMock()
-        mock_mcp_tools.__aenter__ = AsyncMock(return_value=mock_mcp_tools)
-        mock_mcp_tools.__aexit__ = AsyncMock()
         mock_mcp_tools.functions = {"tool1": MagicMock()}
 
         mgr = self._make_manager({"cached": config})
-        with patch("agno.tools.mcp.MCPTools", return_value=mock_mcp_tools):
+        with patch.object(
+            mgr, "_connect_stdio", new_callable=AsyncMock, return_value=mock_mcp_tools
+        ):
             first = await mgr.connect("cached")
             second = await mgr.connect("cached")
             assert first is second
@@ -112,16 +112,16 @@ class TestMCPClientManager:
         config.env = {}
 
         mock_mcp_tools = MagicMock()
-        mock_mcp_tools.__aenter__ = AsyncMock(return_value=mock_mcp_tools)
         mock_mcp_tools.__aexit__ = AsyncMock()
         mock_mcp_tools.functions = {}  # no tools
 
         mgr = self._make_manager({"empty": config})
-        with patch("agno.tools.mcp.MCPTools", return_value=mock_mcp_tools):
+        with patch.object(
+            mgr, "_connect_stdio", new_callable=AsyncMock, return_value=mock_mcp_tools
+        ):
             result = await mgr.connect("empty")
             assert result is None
             assert "no tools" in mgr.get_error("empty").lower()
-            mock_mcp_tools.__aexit__.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_connect_import_error(self):

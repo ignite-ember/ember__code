@@ -16,7 +16,6 @@ def _session_patches(**overrides):
     defaults = {
         "initialize_project": None,
         "setup_db": None,
-        "KnowledgeManager": None,
         "PermissionGuard": None,
         "AuditLogger": None,
         "HookLoader": None,

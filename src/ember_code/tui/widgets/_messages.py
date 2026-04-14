@@ -95,7 +95,9 @@ class MessageWidget(Widget):
 
     expanded = reactive(False)
 
-    def __init__(self, content: str, role: str = "user", truncate_lines: int = 10, expanded: bool = False):
+    def __init__(
+        self, content: str, role: str = "user", truncate_lines: int = 10, expanded: bool = False
+    ):
         super().__init__()
         self._content = content
         self._role = role
@@ -209,7 +211,16 @@ class StreamingMessageWidget(Widget):
         return "".join(self._chunks)
 
     def append_chunk(self, chunk: str) -> None:
-        """Append a text chunk and re-render."""
+        """Append a text chunk and re-render.
+
+        Handles both delta-based streaming (chunk = new text only) and
+        cumulative streaming (chunk = all previous text + new text) by
+        detecting if the chunk starts with the current accumulated text.
+        """
+        current = self.text
+        if current and chunk.startswith(current) and len(chunk) > len(current):
+            # Cumulative chunk — extract only the new part
+            chunk = chunk[len(current) :]
         self._chunks.append(chunk)
         try:
             md = self.query_one(".stream-content", Markdown)
@@ -387,7 +398,12 @@ class ToolCallLiveWidget(Static):
             if agent:
                 self._progress_current_agent = agent
         elif self._progress_current_agent:
-            self._progress_agents.setdefault(self._progress_current_agent, []).append(escaped)
+            agent_lines = self._progress_agents.setdefault(self._progress_current_agent, [])
+            # Streaming content previews (✎): replace last one instead of appending
+            if "✎" in line and agent_lines and "✎" in agent_lines[-1]:
+                agent_lines[-1] = escaped
+            else:
+                agent_lines.append(escaped)
         # Task-level lines (not under an agent)
         elif "TASK:" in line or "╞═" in line or "│" in line:
             self._progress_agents.setdefault("_tasks", []).append(escaped)

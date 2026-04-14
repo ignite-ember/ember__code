@@ -389,6 +389,61 @@ class AgentPool:
 
         tools = tools or ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 
+        # Map Agno function names to our registry names (the LLM sees
+        # function names like read_file but our registry uses Read)
+        _fn_to_registry = {
+            "read_file": "Read",
+            "read_file_chunk": "Read",
+            "list_files": "Read",
+            "save_file": "Write",
+            "edit_file": "Edit",
+            "edit_file_replace_all": "Edit",
+            "create_file": "Edit",
+            "run_shell_command": "Bash",
+            "grep": "Grep",
+            "grep_files": "Grep",
+            "grep_count": "Grep",
+            "glob_files": "Glob",
+            "web_search": "WebSearch",
+            "search_news": "WebSearch",
+            "fetch_url": "WebFetch",
+            "fetch_json": "WebFetch",
+            "schedule_task": "Schedule",
+            "list_scheduled_tasks": "Schedule",
+            "cancel_scheduled_task": "Schedule",
+            "notebook_read": "NotebookEdit",
+            "notebook_read_cell": "NotebookEdit",
+            "notebook_edit_cell": "NotebookEdit",
+            "notebook_add_cell": "NotebookEdit",
+            "notebook_remove_cell": "NotebookEdit",
+        }
+        tools = [_fn_to_registry.get(t, t) for t in tools]
+        # Deduplicate while preserving order
+        tools = list(dict.fromkeys(tools))
+
+        # Validate
+        valid_tools = {
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "BashOutput",
+            "Grep",
+            "Glob",
+            "LS",
+            "WebSearch",
+            "WebFetch",
+            "Python",
+            "Schedule",
+            "NotebookEdit",
+        }
+        invalid = [t for t in tools if t not in valid_tools and not t.startswith("MCP:")]
+        if invalid:
+            raise ValueError(
+                f"Unknown tool(s): {', '.join(invalid)}. "
+                f"Available: {', '.join(sorted(valid_tools))}"
+            )
+
         # Write .md file
         tools_str = ", ".join(tools)
         md_content = f"---\nname: {name}\ndescription: {description}\ntools: {tools_str}\n"

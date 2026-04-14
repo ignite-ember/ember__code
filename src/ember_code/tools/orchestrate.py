@@ -49,6 +49,7 @@ async def _run_agent_streaming(
     current_tool: str | None = None
     content_lines: list[str] = [""]  # sliding window of output lines
     last_update: float = 0.0
+    last_preview: str = ""  # dedup: skip if same as last displayed
 
     def _log(line: str) -> None:
         log.append(line)
@@ -78,6 +79,10 @@ async def _run_agent_streaming(
             if c:
                 clean = c.replace("<think>", "").replace("</think>", "")
                 if clean.strip():
+                    # Detect cumulative vs delta content
+                    accumulated = "".join(content)
+                    if clean.startswith(accumulated) and len(clean) > len(accumulated):
+                        clean = clean[len(accumulated) :]
                     content.append(clean)
                     # Build sliding window of output lines
                     for char in clean:
@@ -86,12 +91,18 @@ async def _run_agent_streaming(
                         else:
                             content_lines[-1] += char
                     now = time.monotonic()
-                    if on_progress and now - last_update > 0.3:
+                    if on_progress and now - last_update > 0.5:
                         last_update = now
-                        recent = [ln for ln in content_lines[-3:] if ln.strip()]
-                        if recent:
+                        current_line = content_lines[-1].strip() if content_lines else ""
+                        if current_line and current_line != last_preview:
+                            last_preview = current_line
+                            preview = (
+                                current_line[:120] + "..."
+                                if len(current_line) > 120
+                                else current_line
+                            )
                             with contextlib.suppress(Exception):
-                                on_progress("  │  ✎ " + " | ".join(ln.strip() for ln in recent))
+                                on_progress(f"  │  ✎ {preview}")
 
     return "".join(content).strip(), log
 
@@ -109,6 +120,7 @@ async def _run_team_streaming(
     current_agent: str = ""
     content_lines: list[str] = [""]
     last_update: float = 0.0
+    last_preview: str = ""
 
     def _log(line: str) -> None:
         log.append(line)
@@ -162,6 +174,10 @@ async def _run_team_streaming(
             if c:
                 clean = c.replace("<think>", "").replace("</think>", "")
                 if clean.strip():
+                    # Detect cumulative vs delta content
+                    accumulated = "".join(content)
+                    if clean.startswith(accumulated) and len(clean) > len(accumulated):
+                        clean = clean[len(accumulated) :]
                     content.append(clean)
                     for char in clean:
                         if char == "\n":
@@ -169,12 +185,18 @@ async def _run_team_streaming(
                         else:
                             content_lines[-1] += char
                     now = time.monotonic()
-                    if on_progress and now - last_update > 0.3:
+                    if on_progress and now - last_update > 0.5:
                         last_update = now
-                        recent = [ln for ln in content_lines[-3:] if ln.strip()]
-                        if recent:
+                        current_line = content_lines[-1].strip() if content_lines else ""
+                        if current_line and current_line != last_preview:
+                            last_preview = current_line
+                            preview = (
+                                current_line[:120] + "..."
+                                if len(current_line) > 120
+                                else current_line
+                            )
                             with contextlib.suppress(Exception):
-                                on_progress("  │  ✎ " + " | ".join(ln.strip() for ln in recent))
+                                on_progress(f"  │  ✎ {preview}")
 
     return "".join(content).strip(), log
 
@@ -377,7 +399,9 @@ class OrchestrateTools(Toolkit):
             name: Short snake_case name for the agent.
             description: One-line description of what the agent does.
             system_prompt: Full system prompt defining the agent's behavior.
-            tools: Comma-separated tool names.
+            tools: Comma-separated tool names (e.g. "Read,Write,Edit,Bash,Grep,Glob").
+                Valid: Read, Write, Edit, Bash, Grep, Glob, LS, WebSearch, WebFetch,
+                Python, Schedule, NotebookEdit.
 
         Returns:
             Confirmation message with the agent name.

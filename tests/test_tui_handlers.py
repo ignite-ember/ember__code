@@ -599,7 +599,10 @@ class TestExtractAtMention:
 
     def test_at_with_deep_path(self):
         text = "@src/ember_code/tui/widgets/_file_picker.py"
-        assert extract_at_mention(0, len(text), self._line(text)) == "src/ember_code/tui/widgets/_file_picker.py"
+        assert (
+            extract_at_mention(0, len(text), self._line(text))
+            == "src/ember_code/tui/widgets/_file_picker.py"
+        )
 
     def test_multiple_at_picks_nearest(self):
         text = "@first @second"

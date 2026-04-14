@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ember_code.tui.widgets import InputHistory
 
@@ -100,7 +101,7 @@ class AutocompleteProvider:
         "/sync-knowledge",
     )
 
-    def __init__(self, skill_pool: "SkillPool | None" = None):
+    def __init__(self, skill_pool: SkillPool | None = None):
         self._skill_pool = skill_pool
 
     def complete(self, text: str) -> list[str]:
@@ -126,7 +127,9 @@ class AutocompleteProvider:
 
 
 def extract_at_mention(
-    cursor_row: int, cursor_col: int, get_line: Callable[[int], str],
+    cursor_row: int,
+    cursor_col: int,
+    get_line: Callable[[int], str],
 ) -> str | None:
     """Extract the @-mention query at the cursor position.
 

@@ -136,12 +136,14 @@ class SessionKnowledgeManager:
             )
             content = d.content or ""
             truncated = content[:1000] + "..." if len(content) > 1000 else content
-            results.append(KnowledgeSearchResult(
-                content=truncated,
-                name=name,
-                score=d.reranking_score,
-                metadata={k: str(v) for k, v in meta.items()},
-            ))
+            results.append(
+                KnowledgeSearchResult(
+                    content=truncated,
+                    name=name,
+                    score=d.reranking_score,
+                    metadata={k: str(v) for k, v in meta.items()},
+                )
+            )
         return results
 
     async def _search_all_collections(

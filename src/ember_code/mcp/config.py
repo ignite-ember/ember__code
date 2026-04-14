@@ -2,11 +2,14 @@
 
 import fnmatch
 import json
+import logging
 import platform
 from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class MCPTransport(str, Enum):
@@ -111,9 +114,13 @@ class MCPConfigLoader:
         try:
             with open(path) as f:
                 data = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("Failed to parse MCP config %s: %s", path, exc)
+            return
 
-            mcp_servers = data.get("mcpServers", {})
-            for name, config in mcp_servers.items():
+        mcp_servers = data.get("mcpServers", {})
+        for name, config in mcp_servers.items():
+            try:
                 servers[name] = MCPServerConfig(
                     name=name,
                     type=config.get("type", "stdio"),
@@ -123,5 +130,5 @@ class MCPConfigLoader:
                     url=config.get("url", ""),
                     source_path=str(path),
                 )
-        except (json.JSONDecodeError, OSError):
-            pass
+            except Exception as exc:
+                logger.warning("MCP server '%s' in %s has invalid config: %s", name, path, exc)

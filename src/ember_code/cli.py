@@ -13,7 +13,9 @@ from ember_code import __version__
 @click.option("--verbose", is_flag=True, help="Show routing and reasoning")
 @click.option("--quiet", is_flag=True, help="Minimal output")
 @click.option("-m", "--message", default=None, help="Single message (non-interactive)")
-@click.option("--continue", "-c", "continue_session", is_flag=True, help="Resume the most recent session")
+@click.option(
+    "--continue", "-c", "continue_session", is_flag=True, help="Resume the most recent session"
+)
 @click.option("--session-id", default=None, help="Resume a specific session by ID")
 @click.option("--no-memory", is_flag=True, help="Disable persistent memory")
 @click.option("--sandbox", is_flag=True, help="Sandbox shell commands")
@@ -257,7 +259,9 @@ def cli(
 
             # Check if the embedding model is already cached
             _hf_cache = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-            _model_cached = (_hf_cache / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2").exists()
+            _model_cached = (
+                _hf_cache / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2"
+            ).exists()
 
             if _model_cached:
                 # Model cached — suppress all native output (BertModel LOAD REPORT)

@@ -1,6 +1,6 @@
 """Tests for session/knowledge_ops.py — knowledge base operations."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

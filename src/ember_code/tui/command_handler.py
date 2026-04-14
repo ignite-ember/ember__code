@@ -154,7 +154,7 @@ class CommandHandler:
             for defn in agents:
                 tools = ", ".join(defn.tools) if defn.tools else "none"
                 lines += f"- **{defn.name}** — {defn.description}\n  tools: {tools}\n"
-            lines += "\n[dim]Use `/agents promote <name>` to make permanent.[/dim]\n"
+            lines += "\n*Use `/agents promote <name>` to make permanent.*\n"
             return CommandResult.markdown(lines)
 
         # Default: list all agents
@@ -221,8 +221,8 @@ class CommandHandler:
         for i, m in enumerate(memories, 1):
             lines += f"{i}. {m['memory']}\n"
             if m["topics"]:
-                lines += f"   [dim]topics: {m['topics']}[/dim]\n"
-        lines += "\n[dim]Use `/memory optimize` to consolidate memories.[/dim]\n"
+                lines += f"   *topics: {m['topics']}*\n"
+        lines += "\n*Use `/memory optimize` to consolidate memories.*\n"
         return CommandResult.markdown(lines)
 
     async def _cmd_knowledge(self, args: str) -> "CommandResult":
@@ -268,12 +268,8 @@ class CommandHandler:
                 if self._session._knowledge_loading and not (
                     self._session._knowledge_event and self._session._knowledge_event.is_set()
                 ):
-                    return CommandResult.info(
-                        "Knowledge base is loading... Try again in a moment."
-                    )
-                return CommandResult.error(
-                    "Knowledge base failed to initialize."
-                )
+                    return CommandResult.info("Knowledge base is loading... Try again in a moment.")
+                return CommandResult.error("Knowledge base failed to initialize.")
             return CommandResult.info(
                 "Knowledge base is disabled. Set knowledge.enabled=true in config."
             )
@@ -421,15 +417,15 @@ class CommandHandler:
         for t in tasks:
             time_str = t.scheduled_at.strftime("%Y-%m-%d %H:%M")
             status_icon = {
-                "pending": "[dim]pending[/dim]",
-                "running": "[bold]running[/bold]",
-                "completed": "[green]done[/green]",
-                "failed": "[red]failed[/red]",
-                "cancelled": "[dim]cancelled[/dim]",
+                "pending": "pending",
+                "running": "**running**",
+                "completed": "done",
+                "failed": "FAILED",
+                "cancelled": "cancelled",
             }.get(t.status.value, t.status.value)
             desc = t.description[:60] + ("..." if len(t.description) > 60 else "")
             lines += f"- `{t.id}` {status_icon} {time_str} — {desc}\n"
-        lines += "\n[dim]Use `/schedule show <id>` for details, `/schedule cancel <id>` to cancel.[/dim]\n"
+        lines += "\n*Use `/schedule show <id>` for details, `/schedule cancel <id>` to cancel.*\n"
         return CommandResult.markdown(lines)
 
     @staticmethod

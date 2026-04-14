@@ -21,7 +21,6 @@ from ember_code.hooks.executor import HookExecutor
 from ember_code.hooks.loader import HookLoader
 from ember_code.hooks.tool_hook import ToolEventHook
 from ember_code.init import initialize_project
-from ember_code.knowledge.manager import KnowledgeManager
 from ember_code.learn import create_learning_machine
 from ember_code.mcp.client import MCPClientManager
 from ember_code.memory.manager import setup_db
@@ -212,8 +211,7 @@ class Session:
             and not self.settings.safety.sandbox_shell
         )
         fetch_allowed = (
-            self.settings.permissions.web_fetch != "deny"
-            and not self.settings.safety.sandbox_shell
+            self.settings.permissions.web_fetch != "deny" and not self.settings.safety.sandbox_shell
         )
         if web_allowed:
             try:
@@ -255,6 +253,13 @@ class Session:
 
             tools.append(KnowledgeTools(self.knowledge_mgr))
 
+        # MCP tools — connected MCP server clients
+        connected_mcp = self.mcp_manager.list_connected()
+        for mcp_name in connected_mcp:
+            client = self.mcp_manager._clients.get(mcp_name)
+            if client and client not in tools:
+                tools.append(client)
+
         # Custom tools from .ember/tools/
         custom_toolkits = registry.load_custom_tools(self.project_dir)
         if custom_toolkits:
@@ -265,7 +270,9 @@ class Session:
 
         # System prompt with substitutions
         prompt = load_prompt("main_agent")
-        prompt = prompt.replace("{{AGENT_CATALOG}}", self._build_agent_catalog() or "(no agents loaded)")
+        prompt = prompt.replace(
+            "{{AGENT_CATALOG}}", self._build_agent_catalog() or "(no agents loaded)"
+        )
 
         # Append skill descriptions if any
         skill_descriptions = self.skill_pool.describe()
@@ -647,7 +654,9 @@ class Session:
             from datetime import datetime
 
             timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
-            effective_message = f"<system-context>Current datetime: {timestamp}</system-context>\n{message}"
+            effective_message = (
+                f"<system-context>Current datetime: {timestamp}</system-context>\n{message}"
+            )
             if guardrail_prefix:
                 effective_message = guardrail_prefix + effective_message
             response = await self.main_team.arun(effective_message, stream=False, **media_kwargs)

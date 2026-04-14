@@ -162,8 +162,11 @@ class MCPPanelWidget(Widget):
             container = self.query_one(".mcp-list", Vertical)
         except Exception:
             return
-        container.remove_children()
+        # Update existing entries in place instead of remove+mount (avoids DuplicateIds)
         if not self._servers:
+            # Remove all entries and show empty message
+            for child in list(container.children):
+                child.remove()
             container.mount(
                 Static(
                     "No MCP servers configured. Add servers to .mcp.json",
@@ -171,17 +174,32 @@ class MCPPanelWidget(Widget):
                 )
             )
             return
+        # Update or create entries
+        existing = {child.id: child for child in container.children if child.id}
         for i, server in enumerate(self._servers):
-            classes = ["mcp-entry"]
-            if i == self.selected_index:
-                classes.append("-selected")
-            container.mount(
-                Static(
-                    self._render_entry(server),
-                    id=f"mcp-{i}",
-                    classes=" ".join(classes),
-                )
-            )
+            widget_id = f"mcp-{i}"
+            content = self._render_entry(server)
+            if widget_id in existing:
+                # Update in place
+                existing[widget_id].update(content)
+                if i == self.selected_index:
+                    existing[widget_id].add_class("-selected")
+                else:
+                    existing[widget_id].remove_class("-selected")
+            else:
+                classes = ["mcp-entry"]
+                if i == self.selected_index:
+                    classes.append("-selected")
+                container.mount(Static(content, id=widget_id, classes=" ".join(classes)))
+        # Remove excess entries
+        for widget_id, child in existing.items():
+            if widget_id and widget_id.startswith("mcp-"):
+                try:
+                    idx = int(widget_id.split("-")[1])
+                    if idx >= len(self._servers):
+                        child.remove()
+                except (ValueError, IndexError):
+                    pass
         # Update title
         connected = sum(1 for s in self._servers if s.connected)
         total = len(self._servers)

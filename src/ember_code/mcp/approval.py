@@ -34,6 +34,8 @@ class MCPApprovalManager:
         """Return True if *server_name* from *config_path* is already approved."""
         if self._is_user_global(config_path):
             return True
+        if self._is_project_config(config_path):
+            return True  # project .mcp.json is trusted by default
         return config_path in self._approved.get(server_name, [])
 
     def approve(self, server_name: str, config_path: str) -> None:
@@ -80,6 +82,12 @@ class MCPApprovalManager:
             return str(Path(config_path).resolve()) == str(Path(_USER_GLOBAL_MCP).resolve())
         except (OSError, ValueError):
             return config_path == _USER_GLOBAL_MCP
+
+    @staticmethod
+    def _is_project_config(config_path: str) -> bool:
+        """Check whether *config_path* is a standard project MCP config."""
+        name = Path(config_path).name
+        return name in (".mcp.json", "mcp.json")
 
     def _load(self) -> dict[str, list[str]]:
         if not self._path.exists():

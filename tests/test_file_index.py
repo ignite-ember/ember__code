@@ -2,12 +2,10 @@
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from ember_code.tui.file_index import FileIndex, _fallback_list, _git_ls_files, _score_match
-
 
 # ── _score_match ─────────────────────────────────────────────────
 
@@ -143,11 +141,13 @@ class TestFileIndex:
         assert fi.match("anything") == []
 
     def test_match_deep_paths(self):
-        fi = self._make_index([
-            "src/ember_code/tui/widgets/_file_picker.py",
-            "src/ember_code/tui/app.py",
-            "src/ember_code/tools/registry.py",
-        ])
+        fi = self._make_index(
+            [
+                "src/ember_code/tui/widgets/_file_picker.py",
+                "src/ember_code/tui/app.py",
+                "src/ember_code/tools/registry.py",
+            ]
+        )
         result = fi.match("picker")
         assert "src/ember_code/tui/widgets/_file_picker.py" in result
 

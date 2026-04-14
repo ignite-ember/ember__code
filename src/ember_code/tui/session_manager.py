@@ -99,7 +99,14 @@ class SessionManager:
                     if content:
                         self._conversation.append_assistant(content, expanded=True)
                 elif msg.role == "user":
-                    self._conversation.append_user(content, expanded=True)
+                    # Strip system-context tags injected at send time
+                    import re
+
+                    content = re.sub(
+                        r"<system-context>.*?</system-context>\s*", "", content, flags=re.DOTALL
+                    ).strip()
+                    if content:
+                        self._conversation.append_user(content, expanded=True)
         except Exception as e:
             import logging
 

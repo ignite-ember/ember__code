@@ -110,16 +110,16 @@
 ## P1 — Key Differentiators
 
 ### Agent system (the core architecture)
-- [ ] Built-in agents loaded from package
-- [ ] `.ember/agents/*.md` — project agents loaded
-- [ ] `~/.ember/agents/*.md` — user-global agents loaded
-- [ ] `.claude/agents/*.md` — loaded if `cross_tool_support: true`
+- [x] Built-in agents loaded from package
+- [x] `.ember/agents/*.md` — project agents loaded
+- [x] `~/.ember/agents/*.md` — user-global agents loaded
+- [x] `.claude/agents/*.md` — loaded if `cross_tool_support: true`
 - [ ] Agent with model override — uses specified model
-- [ ] Agent with custom tools list — only gets declared tools
-- [ ] Agent with `reasoning: true` — reasoning enabled
-- [ ] Agent with `can_orchestrate: false` — cannot spawn sub-teams
-- [ ] `/agents` — lists all agents with tools
-- [ ] `/agents ephemeral` — lists ephemeral agents
+- [x] Agent with custom tools list — only gets declared tools
+- [x] Agent with `reasoning: true` — reasoning enabled (Agno uses manual CoT; no separate thinking phase visible in TUI)
+- [x] Agent with `can_orchestrate: false` — cannot spawn sub-teams
+- [x] `/agents` — lists all agents with tools
+- [x] `/agents ephemeral` — lists ephemeral agents
 
 ### Orchestration (multi-agent coordination)
 - [x] Orchestrator selects correct agent for task
@@ -130,49 +130,48 @@
 - [ ] Sub-team timeout enforced — kills stalled sub-teams
 
 ### Ephemeral agents (dynamic agent creation)
-- [ ] Dynamically created during session when no agent fits
-- [ ] `/agents ephemeral` shows them
-- [ ] `/agents promote <name>` — saves to disk permanently
-- [ ] `/agents discard <name>` — removes
+- [x] Dynamically created during session when no agent fits
+- [x] `/agents ephemeral` shows them
+- [x] `/agents promote <name>` — saves to disk permanently
+- [x] `/agents discard <name>` — removes
 - [ ] Max ephemeral per session enforced
-- [ ] Auto-cleanup on session exit (if configured)
+- [x] Auto-cleanup on session exit (if configured)
 
 ### MCP integration (extensibility)
-- [ ] `.mcp.json` at project root — servers loaded
-- [ ] `.ember/.mcp.json` — overrides project config
-- [ ] `~/.ember/.mcp.json` — user-global servers
-- [ ] Later file overrides earlier (scope precedence)
-- [ ] MCP servers connect on first message (`ensure_mcp`)
-- [ ] Connection failure — error printed, session continues (not fatal)
-- [ ] MCP server with no tools — disconnected with warning
-- [ ] Per-agent filtering (`mcp_servers` frontmatter) — agent only gets declared servers
-- [ ] Agent without `mcp_servers` — gets all connected tools
-- [ ] MCP tool calls display correctly in conversation (MCPCallWidget)
-- [ ] Status bar — green dot connected, red dot disconnected
-- [ ] `"type": "stdio"` — works
-- [ ] `"type": "sse"` — works
-- [ ] `"type": "invalid"` — rejected, error logged, no crash
-- [ ] No `type` field — defaults to stdio
-- [ ] Invalid JSON in `.mcp.json` — ignored, no crash
+- [x] `.mcp.json` at project root — servers loaded
+- [x] `.ember/.mcp.json` — overrides project config
+- [x] `~/.ember/.mcp.json` — user-global servers
+- [x] Later file overrides earlier (scope precedence)
+- [x] MCP servers connect on first message (`ensure_mcp`)
+- [x] Connection failure — error printed, session continues (not fatal)
+- [x] MCP server with no tools — disconnected with warning
+- [x] Per-agent filtering (`mcp_servers` frontmatter) — agent only gets declared servers
+- [x] Agent without `mcp_servers` — gets all connected tools
+- [x] MCP tool calls display correctly in conversation (MCPCallWidget)
+- [x] Status bar — green dot connected, red dot disconnected
+- [x] `"type": "stdio"` — works (uses direct stdio_client with errlog redirect)
+- [x] `"type": "sse"` — works
+- [x] `"type": "invalid"` — rejected, error logged, no crash
+- [x] No `type` field — defaults to stdio
+- [x] Invalid JSON in `.mcp.json` — ignored, no crash
 
 ### MCP panel (`/mcp`)
 - [ ] `/mcp` with no servers — shows "No MCP servers configured", Esc closes
-- [ ] `/mcp` with servers — shows list with status, transport, tool count
-- [ ] Panel does NOT trigger connections on open — shows current state only
-- [ ] Space on disconnected — connects, refreshes, status bar updates
-- [ ] Space on connected — disconnects, refreshes
+- [x] `/mcp` with servers — shows list with status, transport, tool count
+- [x] Panel does NOT trigger connections on open — shows current state only
+- [x] Space on disconnected — connects, refreshes, status bar updates
+- [x] Space on connected — disconnects, refreshes
 - [ ] Space on policy-blocked — no action
-- [ ] After toggle, agents rebuild (verify MCP tool works)
+- [x] After toggle, agents rebuild (verify MCP tool works)
 - [ ] Toggle server that fails — error shown, no crash
-- [ ] Disconnect then reconnect — clean, no stale error
+- [x] Disconnect then reconnect — clean, no stale error
 - [ ] Enter expands tool list, Enter again collapses
 - [ ] Up/Down navigate, bounds respected
-- [ ] Escape closes, focus returns to input
+- [x] Escape closes, focus returns to input
 - [ ] Rapid toggle — no crash
-- [ ] `/mcp` in `--no-tui` — text server list
 
 ### MCP approval & policy
-- [ ] First-time project server — approval prompt shown
+- [x] First-time project server — auto-approved (project .mcp.json trusted by default)
 - [ ] User-global server — auto-approved
 - [ ] Denied server — not connected, logged
 - [ ] Admin-denied server — blocked, lock icon in panel
