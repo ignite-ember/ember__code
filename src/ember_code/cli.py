@@ -17,7 +17,6 @@ from ember_code import __version__
     "--continue", "-c", "continue_session", is_flag=True, help="Resume the most recent session"
 )
 @click.option("--session-id", default=None, help="Resume a specific session by ID")
-@click.option("--no-memory", is_flag=True, help="Disable persistent memory")
 @click.option("--sandbox", is_flag=True, help="Sandbox shell commands")
 @click.option("--read-only", is_flag=True, help="No file modifications")
 @click.option("--accept-edits", is_flag=True, help="Auto-approve file edits")
@@ -48,7 +47,6 @@ def cli(
     message,
     continue_session,
     session_id,
-    no_memory,
     sandbox,
     read_only,
     accept_edits,
@@ -119,9 +117,6 @@ def cli(
                 "git_destructive": "allow",
             }
         )
-    if no_memory:
-        cli_overrides.setdefault("learning", {})["enabled"] = False
-        cli_overrides.setdefault("memory", {})["enable_agentic_memory"] = False
     if no_web:
         cli_overrides.setdefault("permissions", {}).update(
             {

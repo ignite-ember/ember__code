@@ -267,12 +267,13 @@ class TestSessionLearning:
             settings.learning.enabled = True
             Session(settings, project_dir=tmp_path)
 
-            # Team() should have been called with learning=fake_lm
+            # learning=None on Agent (extraction is fire-and-forget in run controller)
+            # learnings injected via _inject_learnings() before each run
             agent_cls = mocks["Agent"]
             assert agent_cls.called
             call_kwargs = agent_cls.call_args[1]
-            assert call_kwargs["learning"] is fake_lm
-            assert call_kwargs["add_learnings_to_context"] is True
+            assert call_kwargs["learning"] is None
+            assert call_kwargs["add_learnings_to_context"] is False
         finally:
             _stop_patches(patches)
 

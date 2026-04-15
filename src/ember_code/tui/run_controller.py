@@ -208,6 +208,7 @@ class RunController:
         self._run_output_text = []  # accumulate streamed text for token counting
         self._last_token_update = 0.0  # throttle status bar updates
         self._streamed = False
+        self._ui_finalized = False
 
         # Wire up queue hook for this run
         hook = create_queue_hook(queue=self._queue)
@@ -216,11 +217,17 @@ class RunController:
         existing_hooks = team.tool_hooks or []
         team.tool_hooks = [*existing_hooks, hook]
 
+        # Save original message for learning extraction (before timestamp)
+        original_message = message
+
         # Add system context with timestamp so the agent knows the current time
         from datetime import datetime
 
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         message = f"<system-context>Current datetime: {timestamp}</system-context>\n{message}"
+
+        # Inject latest learnings into agent context
+        await self._session._inject_learnings()
 
         # Count input tokens from message
         self._run_input_tokens = len(self._tokenizer.encode(message))
@@ -247,15 +254,17 @@ class RunController:
                 if text:
                     self._conversation.append_assistant(text)
 
-        # Final token count from accumulated text
-        if self._run_output_text:
-            full_output = "".join(self._run_output_text)
-            self._run_output_tokens = len(self._tokenizer.encode(full_output))
-        self._status.set_run_tokens(self._run_input_tokens, self._run_output_tokens)
-        self._status.add_tokens(self._run_input_tokens, self._run_output_tokens)
-        self._finalize_spinner()
-        self._status.end_run()
-        self._status.update_context_usage()
+        # Finalize UI if not already done by RUN_COMPLETED event
+        if not getattr(self, "_ui_finalized", False):
+            if self._run_output_text:
+                full_output = "".join(self._run_output_text)
+                self._run_output_tokens = len(self._tokenizer.encode(full_output))
+            self._status.set_run_tokens(self._run_input_tokens, self._run_output_tokens)
+            self._status.add_tokens(self._run_input_tokens, self._run_output_tokens)
+            self._finalize_spinner()
+            self._status.end_run()
+            self._status.update_context_usage()
+        self._ui_finalized = False
         self._status.record_turn()
 
         # Compact history if approaching context limit
@@ -291,10 +300,21 @@ class RunController:
         if not stop_result.should_continue and stop_result.message:
             self._conversation.append_info(stop_result.message)
 
+        # Fire-and-forget learning extraction as async task.
+        # Build messages from what we captured during the run — don't rely
+        # on DB which may not have been written yet.
+        learning = self._session._learning
+        if learning is not None:
+            from agno.models.message import Message as AgnoMessage
+
+            run_messages = [AgnoMessage(role="user", content=original_message)]
+            if self._run_output_text:
+                run_messages.append(
+                    AgnoMessage(role="assistant", content="".join(self._run_output_text))
+                )
+            asyncio.create_task(self._extract_learnings(learning, run_messages))
+
         # Clean up hook
-        team.tool_hooks = [h for h in (team.tool_hooks or []) if h is not hook]
-        hook.reset()
-        self._queue_hook = None
         self._processing = False
         self._current_task = None
 
@@ -306,6 +326,29 @@ class RunController:
             next_msg = self._queue.pop(0)
             self._sync_queue_panel()
             await self._run(next_msg)
+
+    async def _extract_learnings(self, learning: Any, messages: list) -> None:
+        """Fire-and-forget learning extraction in a background thread."""
+
+        # TODO: Evaluate if this is a good approach
+        def _run():
+            import asyncio as _aio
+
+            loop = _aio.new_event_loop()
+            try:
+                loop.run_until_complete(
+                    learning.aprocess(
+                        messages=messages,
+                        user_id=self._session.user_id,
+                        session_id=self._session.session_id,
+                    )
+                )
+            except Exception:
+                pass
+            finally:
+                loop.close()
+
+        await asyncio.to_thread(_run)
 
     # ── Event dispatch ────────────────────────────────────────────
 
@@ -377,7 +420,6 @@ class RunController:
             input_t = getattr(event, "input_tokens", 0) or 0
             output_t = getattr(event, "output_tokens", 0) or 0
             if input_t > 0:
-                # Real token count from model — override our estimates
                 self._run_input_tokens = input_t
             if output_t > 0:
                 self._run_output_tokens = output_t
@@ -387,6 +429,19 @@ class RunController:
                 getattr(event, "run_id", None),
                 getattr(event, "parent_run_id", None),
             )
+            # Finalize spinner and timer on model completion — don't wait
+            # for background learning extraction (can take 20+ seconds).
+            # Note: _processing stays True until arun() fully completes.
+            if self._streamed and not self._ui_finalized:
+                self._ui_finalized = True
+                if self._run_output_text:
+                    full_output = "".join(self._run_output_text)
+                    self._run_output_tokens = len(self._tokenizer.encode(full_output))
+                self._status.set_run_tokens(self._run_input_tokens, self._run_output_tokens)
+                self._status.add_tokens(self._run_input_tokens, self._run_output_tokens)
+                self._finalize_spinner()
+                self._status.end_run()
+                self._status.update_context_usage()
 
         # ── Agent/run started ──
         elif isinstance(event, RUN_STARTED_EVENTS):

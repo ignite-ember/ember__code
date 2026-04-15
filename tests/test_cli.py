@@ -93,17 +93,6 @@ class TestCLIFlags:
             assert overrides["permissions"]["file_write"] == "deny"
             assert overrides["safety"]["sandbox_shell"] is True
 
-    def test_no_memory_flag(self):
-        runner = CliRunner()
-        with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
-            patch("ember_code.cli.asyncio.run"),
-        ):
-            mock_load.return_value = MagicMock()
-            runner.invoke(cli, ["--no-memory", "-m", "hi"], catch_exceptions=False)
-            overrides = mock_load.call_args[1].get("cli_overrides", {})
-            assert overrides["learning"]["enabled"] is False
-
     def test_no_web_flag(self):
         runner = CliRunner()
         with (

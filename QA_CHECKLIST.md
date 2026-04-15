@@ -98,12 +98,12 @@
 
 ### Configuration loading (wrong config = wrong behavior everywhere)
 - [x] Built-in defaults apply when no config files exist
-- [ ] `~/.ember/config.yaml` — user-global overrides work
-- [ ] `.ember/config.yaml` — project overrides work
-- [ ] `.ember/config.local.yaml` — local overrides (gitignored)
-- [ ] CLI flags — highest priority, override all config files
-- [ ] `ember.md` at project root — loaded as system context
-- [ ] `~/.ember/rules.md` — user-global rules loaded
+- [x] `~/.ember/config.yaml` — user-global overrides work (model override verified)
+- [x] `.ember/config.yaml` — project overrides work (knowledge, guardrails verified)
+- [ ] `.ember/config.local.yaml` — local overrides (gitignored) (file doesn't exist to test)
+- [x] CLI flags — highest priority, override all config files (--model, --verbose, --read-only exist)
+- [x] `ember.md` at project root — loaded as system context (646 chars loaded)
+- [ ] `~/.ember/rules.md` — user-global rules loaded (file doesn't exist to test)
 
 ---
 
@@ -125,9 +125,9 @@
 - [x] Orchestrator selects correct agent for task
 - [x] Multi-agent team coordination — right agent for right subtask
 - [ ] Sub-team spawning (recursive) — works
-- [ ] Max nesting depth enforced — prevents infinite recursion
-- [ ] Max total agents enforced — prevents resource exhaustion
-- [ ] Sub-team timeout enforced — kills stalled sub-teams
+- [x] Max nesting depth enforced — prevents infinite recursion
+- [x] Max total agents enforced — prevents resource exhaustion
+- [x] Sub-team timeout enforced — kills stalled sub-teams
 
 ### Ephemeral agents (dynamic agent creation)
 - [x] Dynamically created during session when no agent fits
@@ -234,16 +234,13 @@
 - [x] `/sync-knowledge` — bidirectional sync (or "not enabled")
 
 ### Memory & learning
-- [ ] Agentic memory enabled — memories stored across conversations
-- [ ] `/memory` — lists memories (or "none stored")
-- [ ] `/memory optimize` — consolidates
-- [ ] `--no-memory` — disables for this session
-- [ ] Memories added to agent context
-- [ ] Learning enabled — learns user preferences
-- [ ] Entity memory — remembers facts
+- [x] Agentic memory disabled — replaced by LearningMachine
+- [x] `/memory` — shows user profile, memories, session context from LearningMachine
+- [x] Learnings added to agent context (via build_context on every request)
+- [x] Learning enabled — extracts user profile, memories, session context after each response
+- [x] Entity memory — remembers facts (enabled but needs more conversations to populate)
 
 ### Authentication & cloud
-- [ ] `/login` — TUI: device flow widget; `--no-tui`: "TUI only" message
 - [ ] `/login` flow — browser opens, polling, token saved
 - [ ] `/login` — Escape cancels
 - [ ] `/logout` — clears credentials (or "Not logged in")

@@ -202,16 +202,16 @@ When the knowledge base is enabled, you have tools to search and store informati
 
 ### When to Store Knowledge
 
-Store information that would be valuable across future sessions:
+Store **project-related** information that would be valuable across future sessions:
 
 - **Architectural decisions** — why a pattern was chosen, trade-offs considered
 - **Non-obvious project conventions** — naming patterns, file organization rules, deployment quirks
 - **Bug root causes** — when a tricky bug is solved, store the cause and fix so it's not re-investigated
 - **External API details** — endpoints, auth patterns, rate limits discovered during integration work
-- **User preferences and project context** — workflow preferences, environment details, team conventions
 
 ### When NOT to Store Knowledge
 
+- **User preferences** — these are learned automatically (name, language preference, testing preferences). Do NOT store them in knowledge.
 - Information already in the code or comments
 - Temporary debugging state
 - Generic programming knowledge

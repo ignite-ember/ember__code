@@ -1,6 +1,7 @@
 """Tests for TUI handler classes: InputHandler, CommandHandler, RunController queue, QueueInjectorHook."""
 
 import sys
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -339,27 +340,49 @@ class TestCommandHandler:
         assert "My Session" in result.content
 
     @pytest.mark.asyncio
-    async def test_memory_list_empty(self, mock_session):
+    async def test_memory_list_no_learning(self, mock_session):
+        mock_session.main_team = MagicMock()
+        mock_session.main_team.learning_machine = None
+        mock_session._learning = None
         handler = CommandHandler(mock_session)
         result = await handler.handle("/memory")
         assert result.kind == "info"
-        assert "No memories" in result.content
+        assert "not enabled" in result.content.lower()
 
     @pytest.mark.asyncio
-    async def test_memory_list_with_items(self, mock_session):
-        async def mock_get():
-            return [
-                {"memory": "User prefers pytest", "topics": "testing"},
-                {"memory": "User uses Python 3.13", "topics": "python"},
-            ]
+    async def test_memory_list_with_learnings(self, mock_session):
+        from unittest.mock import AsyncMock
 
-        mock_session.memory_mgr.get_memories = mock_get
+        profile = MagicMock()
+        profile.name = "Dmytro"
+        profile.preferred_name = "Dmytro"
+        profile.role = None
+        profile.expertise = "Python"
+        profile.preferences = "pytest"
+
+        memories = MagicMock()
+        memories.memories = [
+            {"content": "Prefers Python over JavaScript"},
+            {"content": "Uses pytest for testing"},
+        ]
+
+        learning = MagicMock()
+        learning.arecall = AsyncMock(
+            return_value={
+                "user_profile": profile,
+                "user_memory": memories,
+            }
+        )
+        mock_session.main_team = MagicMock()
+        mock_session.main_team.learning_machine = learning
+        mock_session.user_id = "testuser"
+        mock_session.session_id = "test123"
 
         handler = CommandHandler(mock_session)
         result = await handler.handle("/memory")
         assert result.kind == "markdown"
+        assert "Dmytro" in result.content
         assert "pytest" in result.content
-        assert "2" in result.content
 
     @pytest.mark.asyncio
     async def test_memory_optimize(self, mock_session):

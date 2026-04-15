@@ -141,9 +141,8 @@ class Session:
         self.pool._knowledge_mgr = self.knowledge_mgr if self.knowledge else None
 
         # ── Turn counter (for periodic memory extraction) ──────────
-        self._turn_count = 0
-        self._memory_interval = 10  # extract memories every N turns
-        self._recent_messages: list[str] = []  # buffer for memory extraction
+        # Note: agentic memory extraction removed — replaced by LearningMachine
+        # which runs in the TUI's run_controller after each response.
         self._memory_manager = self._create_memory_manager()
 
         # ── Main Agent (single agent with all tools + orchestration) ──
@@ -356,13 +355,41 @@ class Session:
             search_knowledge=self.knowledge is not None,
             # Guardrails
             pre_hooks=guardrails,
-            # Learning
-            learning=self._learning,
-            add_learnings_to_context=self._learning is not None,
+            # Learning — disabled on agent to prevent blocking extraction
+            # during arun().  We inject learnings into instructions manually
+            # and run extraction in a fire-and-forget thread after the run.
+            learning=None,
+            add_learnings_to_context=False,
             # Tool event hooks
             tool_hooks=[tool_event_hook],
         )
         return agent
+
+    async def _inject_learnings(self) -> None:
+        """Inject learning context into the main agent's instructions."""
+        if self._learning is None:
+            return
+        if self._learning.model is None:
+            from ember_code.config.models import ModelRegistry
+
+            self._learning.model = ModelRegistry(self.settings).get_model()
+        if self._learning.db is None:
+            self._learning.db = self.db
+        try:
+            ctx = await self._learning.abuild_context(
+                user_id=self.user_id, session_id=self.session_id
+            )
+            if ctx and self.main_team.instructions:
+                # Remove old learning context and add fresh
+                self.main_team.instructions = [
+                    i
+                    for i in self.main_team.instructions
+                    if not i.startswith("## What I Know About You")
+                    and not i.startswith("## User Profile")
+                ]
+                self.main_team.instructions.append(ctx)
+        except Exception:
+            pass
 
     def _build_agent_catalog(self) -> str:
         """Build a text catalog of specialist agents for the system prompt."""
@@ -698,21 +725,6 @@ class Session:
             if metrics:
                 input_tokens = getattr(metrics, "input_tokens", 0) or 0
                 await self.compact_if_needed(input_tokens, self._context_window)
-
-            # ── Periodic memory extraction (background, every N turns) ─
-            self._turn_count += 1
-            self._recent_messages.append(message)
-            if self._memory_manager is not None and self._turn_count % self._memory_interval == 0:
-                from agno.models.message import Message as AgnoMessage
-
-                batch = [AgnoMessage(role="user", content=m) for m in self._recent_messages]
-                self._recent_messages.clear()
-                asyncio.create_task(
-                    self._memory_manager.acreate_user_memories(
-                        messages=batch,
-                        user_id=self.user_id,
-                    )
-                )
 
             return response_text
 

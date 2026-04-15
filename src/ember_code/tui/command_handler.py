@@ -212,18 +212,68 @@ class CommandHandler:
                 return CommandResult.error(f"Memory optimization failed: {result['error']}")
             return CommandResult.info(result["message"])
 
-        # Default: list memories
-        memories = await self._session.memory_mgr.get_memories()
-        if not memories:
-            return CommandResult.info("No memories stored yet.")
+        # Show Learning Machine data — use agent's property which triggers lazy init
+        learning = getattr(self._session.main_team, "learning_machine", None)
+        if learning is None:
+            learning = getattr(self._session, "_learning", None)
+        if learning is None:
+            return CommandResult.info(
+                "Learning is not enabled. Set learning.enabled=true in config."
+            )
 
-        lines = f"## Memories ({len(memories)})\n"
-        for i, m in enumerate(memories, 1):
-            lines += f"{i}. {m['memory']}\n"
-            if m["topics"]:
-                lines += f"   *topics: {m['topics']}*\n"
-        lines += "\n*Use `/memory optimize` to consolidate memories.*\n"
-        return CommandResult.markdown(lines)
+        sections: list[str] = []
+        try:
+            # Recall with session_id=None to get cross-session data
+            # (user profile, user memory, entity memory)
+            data = await learning.arecall(
+                user_id=self._session.user_id,
+            )
+            for store_name, store_data in data.items():
+                if not store_data:
+                    continue
+                title = store_name.replace("_", " ").title()
+                lines = f"## {title}\n"
+
+                if store_name == "user_profile":
+                    for attr in ("name", "preferred_name", "role", "expertise", "preferences"):
+                        val = getattr(store_data, attr, None)
+                        if val:
+                            lines += f"- **{attr.replace('_', ' ').title()}**: {val}\n"
+
+                elif store_name == "user_memory":
+                    memories = getattr(store_data, "memories", []) or []
+                    for m in memories:
+                        content = m.get("content", "") if isinstance(m, dict) else str(m)
+                        if content:
+                            lines += f"- {content}\n"
+
+                elif store_name == "session_context":
+                    summary = getattr(store_data, "summary", None)
+                    if summary:
+                        lines += f"{summary}\n"
+
+                elif store_name == "entity_memory":
+                    entities = getattr(store_data, "entities", []) or []
+                    for e in entities:
+                        if isinstance(e, dict):
+                            lines += f"- **{e.get('name', '?')}**: {e.get('description', '')}\n"
+                        else:
+                            lines += f"- {e}\n"
+
+                else:
+                    lines += f"{store_data}\n"
+
+                if lines.strip() != f"## {title}":
+                    sections.append(lines)
+        except Exception:
+            pass
+
+        if not sections:
+            return CommandResult.info(
+                "No learnings stored yet. The agent learns from your conversations automatically."
+            )
+
+        return CommandResult.markdown("\n\n".join(sections))
 
     async def _cmd_knowledge(self, args: str) -> "CommandResult":
         """Handle /knowledge commands: add url|path|text, search, status."""
