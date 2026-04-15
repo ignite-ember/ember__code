@@ -89,12 +89,12 @@
 - [x] Conversation history survives app restart (via `--continue`)
 
 ### Context & compaction (prevents context overflow)
-- [ ] Auto-compaction at 80% context window — summarizes and trims
+- [x] Auto-compaction at 80% context window — summarizes and trims
 - [x] `/compact` — manual compaction works
 - [x] `/compact` at minimum (2 runs) — says "Already at minimum"
 - [x] Session summaries generated before trimming
-- [] Conversation still works after compaction
-- [ ] Tool result compression — Agno CompressionManager active
+- [x] Conversation still works after compaction
+- [x] Tool result compression — Agno CompressionManager active (code verified)
 
 ### Configuration loading (wrong config = wrong behavior everywhere)
 - [x] Built-in defaults apply when no config files exist

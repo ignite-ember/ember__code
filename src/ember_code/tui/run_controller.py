@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+import tiktoken
 from textual.widgets import Static
 
 from ember_code.queue_hook import create_queue_hook
@@ -84,6 +85,7 @@ class RunController:
         self._current_task: asyncio.Task | None = None
         self._queue: list[str] = []
         self._queue_hook: Any = None
+        self._tokenizer = tiktoken.get_encoding("cl100k_base")
 
         # Per-run token tracking
         self._run_input_tokens = 0
@@ -162,9 +164,7 @@ class RunController:
             payload={"message": message, "session_id": self._session.session_id},
         )
         if not hook_result.should_continue:
-            self._conversation.append_info(
-                hook_result.message or "Message blocked by hook."
-            )
+            self._conversation.append_info(hook_result.message or "Message blocked by hook.")
             return
 
         # Slash commands bypass the team
@@ -205,6 +205,8 @@ class RunController:
         # Reset per-run state
         self._run_input_tokens = 0
         self._run_output_tokens = 0
+        self._run_output_text = []  # accumulate streamed text for token counting
+        self._last_token_update = 0.0  # throttle status bar updates
         self._streamed = False
 
         # Wire up queue hook for this run
@@ -219,6 +221,9 @@ class RunController:
 
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         message = f"<system-context>Current datetime: {timestamp}</system-context>\n{message}"
+
+        # Count input tokens from message
+        self._run_input_tokens = len(self._tokenizer.encode(message))
 
         try:
             async for event in team.arun(message, stream=True, **media_kwargs):
@@ -242,7 +247,10 @@ class RunController:
                 if text:
                     self._conversation.append_assistant(text)
 
-        # Finalize
+        # Final token count from accumulated text
+        if self._run_output_text:
+            full_output = "".join(self._run_output_text)
+            self._run_output_tokens = len(self._tokenizer.encode(full_output))
         self._status.set_run_tokens(self._run_input_tokens, self._run_output_tokens)
         self._status.add_tokens(self._run_input_tokens, self._run_output_tokens)
         self._finalize_spinner()
@@ -251,9 +259,29 @@ class RunController:
         self._status.record_turn()
 
         # Compact history if approaching context limit
-        await self._session.compact_if_needed(
-            self._run_input_tokens, self._status.max_context_tokens
-        )
+        ctx_tokens = self._status._context_input_tokens
+        max_ctx = self._status.max_context_tokens
+        compacted = await self._session.compact_if_needed(ctx_tokens, max_ctx)
+        if compacted:
+            # Clear the visual conversation and show summary
+            await self._conversation.container.remove_children()
+            self._conversation.append_info("Context compacted — older messages summarized.")
+            # Show the full summary so the user knows what was retained
+            try:
+                agno_session = await self._session.main_team.aget_session(
+                    session_id=self._session.session_id,
+                    user_id=self._session.user_id,
+                )
+                if agno_session and agno_session.summary and agno_session.summary.summary:
+                    self._conversation.append_info(f"Summary: {agno_session.summary.summary}")
+            except Exception:
+                pass
+            # Reset context tracking and force status bar to show 0%
+            self._status._context_input_tokens = 0
+            bar = self._status._bar()
+            if bar:
+                bar.set_context_usage(0, self._status.max_context_tokens)
+                bar.set_run_tokens(0, 0)
 
         # Fire Stop hook
         stop_result = await self._session.hook_executor.execute(
@@ -296,6 +324,16 @@ class RunController:
             if content:
                 await self._on_content_chunk(content)
                 self._streamed = True
+                # Count output tokens — recount full text every 1s
+                self._run_output_text.append(content)
+                import time as _time
+
+                now = _time.monotonic()
+                if now - self._last_token_update > 1.0:
+                    self._last_token_update = now
+                    full_output = "".join(self._run_output_text)
+                    self._run_output_tokens = len(self._tokenizer.encode(full_output))
+                    self._status.set_run_tokens(self._run_input_tokens, self._run_output_tokens)
 
         # ── Tool started ──
         elif isinstance(event, TOOL_STARTED_EVENTS):
@@ -313,6 +351,10 @@ class RunController:
         # ── Tool completed ──
         elif isinstance(event, TOOL_COMPLETED_EVENTS):
             summary, full_result = extract_result(event)
+            # Count tool result tokens (added to context as input)
+            self._run_input_tokens += len(self._tokenizer.encode(full_result))
+            self._status.set_run_tokens(self._run_input_tokens, self._run_output_tokens)
+            self._status.update_status_bar()
             # Debug: log tool result content reaching the model
             tool_exec = getattr(event, "tool", None)
             tool_name = (tool_exec.tool_name or "?") if tool_exec else "?"
@@ -330,12 +372,15 @@ class RunController:
         elif isinstance(event, TOOL_ERROR_EVENTS):
             self._on_tool_error(str(getattr(event, "error", "Unknown error")))
 
-        # ── Model completed (tokens) ──
+        # ── Model completed (tokens) — use real numbers if available ──
         elif isinstance(event, MODEL_COMPLETED_EVENTS):
             input_t = getattr(event, "input_tokens", 0) or 0
             output_t = getattr(event, "output_tokens", 0) or 0
-            self._run_input_tokens += input_t
-            self._run_output_tokens += output_t
+            if input_t > 0:
+                # Real token count from model — override our estimates
+                self._run_input_tokens = input_t
+            if output_t > 0:
+                self._run_output_tokens = output_t
             self._on_tokens(
                 input_t,
                 output_t,

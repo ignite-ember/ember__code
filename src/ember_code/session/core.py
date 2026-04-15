@@ -505,9 +505,11 @@ class Session:
         except Exception as e:
             logger.warning("Failed to save session: %s", e)
 
-        # Reset history limit for fresh accumulation
-        self.main_team.num_history_runs = 10000
-        logger.info("Compacted: summary injected, old messages deleted")
+        # Rebuild the main agent from scratch. This is the only reliable
+        # way to clear Agno's in-memory message history — the cached
+        # session, run_response, and internal state all hold old messages.
+        self.main_team = self._build_main_agent()
+        logger.info("Compacted: summary injected, agent rebuilt")
 
     async def compact_if_needed(self, input_tokens: int, context_window: int) -> bool:
         """Auto-compact at 80% context usage.

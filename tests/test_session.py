@@ -213,12 +213,12 @@ class TestSessionCompaction:
         mock_agno_session = MagicMock()
         mock_agno_session.runs = []
         mock_agno_session.summary = None
-        session.main_team.num_history_runs = None
         session.main_team.aget_session = AsyncMock(return_value=mock_agno_session)
         session.main_team.asave_session = AsyncMock()
         result = await session.compact_if_needed(8500, 10000)  # 85%
         assert result is True
-        assert session.main_team.num_history_runs == 10000
+        # Runs should have been cleared
+        session.main_team.asave_session.assert_called_once()
 
 
 class TestSessionLearning:
