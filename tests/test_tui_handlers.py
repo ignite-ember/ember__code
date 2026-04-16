@@ -271,12 +271,23 @@ class TestCommandHandler:
         assert result.action == "quit"
 
     @pytest.mark.asyncio
-    async def test_help(self, mock_session):
+    async def test_help_no_args_shows_panel(self, mock_session):
         handler = CommandHandler(mock_session)
         result = await handler.handle("/help")
+        assert result.action == "help"
+
+    @pytest.mark.asyncio
+    async def test_help_with_topic(self, mock_session):
+        handler = CommandHandler(mock_session)
+        result = await handler.handle("/help schedule")
         assert result.kind == "markdown"
-        assert "Commands" in result.content
-        assert "Keyboard Shortcuts" in result.content
+        assert "Schedule" in result.content
+
+    @pytest.mark.asyncio
+    async def test_help_unknown_topic(self, mock_session):
+        handler = CommandHandler(mock_session)
+        result = await handler.handle("/help nonexistent")
+        assert result.kind == "error"
 
     @pytest.mark.asyncio
     async def test_agents(self, mock_session):

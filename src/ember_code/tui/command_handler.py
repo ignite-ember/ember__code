@@ -86,44 +86,94 @@ class CommandHandler:
     async def _cmd_quit(self, _args: str) -> "CommandResult":
         return CommandResult.quit()
 
-    async def _cmd_help(self, _args: str) -> "CommandResult":
-        skills_text = ""
-        for s in self._session.skill_pool.list_skills():
-            hint = f" {s.argument_hint}" if s.argument_hint else ""
-            skills_text += f"- **/{s.name}**{hint} — {s.description[:60]}\n"
-
-        return CommandResult.markdown(
-            "## Commands\n"
-            "- `/help` — show this help\n"
-            "- `/quit` — exit\n"
-            "- `/agents` — list loaded agents\n"
-            "- `/agents ephemeral` — list ephemeral agents\n"
-            "- `/agents promote <name>` — promote ephemeral agent to permanent\n"
-            "- `/agents discard <name>` — delete an ephemeral agent\n"
-            "- `/skills` — list loaded skills\n"
-            "- `/hooks` — list loaded hooks\n"
-            "- `/clear` — reset conversation context\n"
-            "- `/sessions` — browse and resume past sessions\n"
-            "- `/rename <name>` — rename the current session\n"
-            "- `/memory` — list stored memories\n"
-            "- `/memory optimize` — consolidate memories\n"
-            "- `/model [name]` — switch model (picker or direct)\n"
-            "- `/config` — show current settings\n"
-            "- `/schedule add <task> at/in <time>` — schedule a deferred task\n"
+    _HELP_TOPICS: dict[str, str] = {
+        "schedule": (
+            "## Schedule\n\n"
+            "Schedule tasks for later or recurring execution.\n\n"
+            "**Commands:**\n"
             "- `/schedule` — list pending tasks\n"
-            "- `/schedule cancel <id>` — cancel a scheduled task\n"
-            "- `/mcp` — manage MCP server connections\n"
-            "- `/compact` — manually compact conversation context\n"
-            "- `/login` — authenticate with Ember Cloud\n"
-            "- `/logout` — clear stored credentials\n"
-            "- `/whoami` — show current auth status\n"
-            "- `/bug` — report an issue on GitHub\n"
-            "- `/evals [agent]` — run agent evals\n"
-            "- `/sync-knowledge` — sync knowledge between git file and vector DB\n"
-            "\n## Skills\n"
-            f"{skills_text or '(no skills loaded)'}\n"
-            f"\n{SHORTCUT_HELP}"
-        )
+            "- `/schedule all` — include completed and cancelled\n"
+            "- `/schedule add <description> at <time>` — one-shot task\n"
+            "- `/schedule add <description> in <duration>` — relative time\n"
+            "- `/schedule add <description> every <interval>` — recurring\n"
+            "- `/schedule show <id>` — show task details\n"
+            "- `/schedule cancel <id>` — cancel a task\n\n"
+            "**Time formats:**\n"
+            "- One-shot: `at 5pm`, `at 3:30`, `tomorrow`, `tomorrow at 9am`, `2026-12-25 14:00`\n"
+            "- Relative: `in 30 minutes`, `in 2 hours`, `in 1 day`\n"
+            "- Recurring: `every 2 hours`, `every 30 minutes`, `daily`, `daily at 9am`, `hourly`, `weekly`\n\n"
+            "**Examples:**\n"
+            "```\n"
+            "/schedule add review code at 5pm\n"
+            "/schedule add run tests in 30 minutes\n"
+            "/schedule add check deps daily\n"
+            "/schedule add run linter every 2 hours\n"
+            "```"
+        ),
+        "agents": (
+            "## Agents\n\n"
+            "Agents are specialist roles with tools and system prompts.\n\n"
+            "**Commands:**\n"
+            "- `/agents` — list all loaded agents with tools\n"
+            "- `/agents ephemeral` — list dynamically created agents\n"
+            "- `/agents promote <name>` — save ephemeral agent permanently\n"
+            "- `/agents discard <name>` — delete an ephemeral agent\n\n"
+            "**Create agents:** add `.md` files to `.ember/agents/`\n"
+            "**Customize:** edit any agent in `.ember/agents/` to change its behavior"
+        ),
+        "knowledge": (
+            "## Knowledge Base\n\n"
+            "Store and search project knowledge with embeddings.\n\n"
+            "**Commands:**\n"
+            "- `/knowledge` — show status (collection, doc count, embedder)\n"
+            "- `/knowledge add <url>` — add a URL\n"
+            "- `/knowledge add <path>` — add a file or directory\n"
+            "- `/knowledge add <text>` — add inline text\n"
+            "- `/knowledge search <query>` — search the knowledge base\n"
+            "- `/sync-knowledge` — sync between git file and vector DB"
+        ),
+        "memory": (
+            "## Memory & Learning\n\n"
+            "Ember Code learns your preferences automatically from conversations.\n\n"
+            "**Commands:**\n"
+            "- `/memory` — show what Ember has learned about you\n"
+            "- `/memory optimize` — consolidate memories\n\n"
+            "**What gets learned:**\n"
+            "- Your name and how you prefer to be addressed\n"
+            "- Tool and framework preferences (pytest, ruff, Pydantic, etc.)\n"
+            "- Project structure conventions (src/ layout, etc.)\n"
+            "- Coding style preferences (type hints, etc.)\n\n"
+            "Learning happens in the background after each response."
+        ),
+        "mcp": (
+            "## MCP Servers\n\n"
+            "Connect external tools via the Model Context Protocol.\n\n"
+            "**Commands:**\n"
+            "- `/mcp` — open the MCP panel (browse, connect, disconnect)\n\n"
+            "**Configuration:** add servers to `.mcp.json`:\n"
+            "```json\n"
+            '{"mcpServers": {"name": {"type": "stdio", "command": "npx", "args": [...]}}}\n'
+            "```\n"
+            "**Transports:** `stdio` and `sse` supported\n"
+            "**Panel controls:** Space toggle, Enter expand tools, Escape close"
+        ),
+        "shortcuts": SHORTCUT_HELP,
+    }
+
+    async def _cmd_help(self, args: str) -> "CommandResult":
+        topic = args.strip().lower()
+
+        # Topic-specific help
+        if topic and topic in self._HELP_TOPICS:
+            return CommandResult.markdown(self._HELP_TOPICS[topic])
+
+        # List available topics if unknown
+        if topic:
+            available = ", ".join(sorted(self._HELP_TOPICS.keys()))
+            return CommandResult.error(f"Unknown help topic: {topic}. Available: {available}")
+
+        # No topic: show interactive panel
+        return CommandResult(kind="info", content="", action="help")
 
     async def _cmd_agents(self, args: str) -> "CommandResult":
         parts = args.strip().split(None, 1)

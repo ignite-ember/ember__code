@@ -55,14 +55,18 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_help(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_markdown") as mock_print:
+        with patch("ember_code.session.commands.print_info"):
             result = await dispatch(session, "/help")
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_dispatch_help_with_topic(self):
+        session = _make_session()
+        with patch("ember_code.session.commands.print_markdown") as mock_print:
+            result = await dispatch(session, "/help schedule")
+        assert result is True
         printed = mock_print.call_args[0][0]
-        assert "/help" in printed
-        assert "/compact" in printed
-        assert "/bug" in printed
-        assert "/mcp" in printed
+        assert "Schedule" in printed
 
     @pytest.mark.asyncio
     async def test_dispatch_config(self):

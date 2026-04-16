@@ -36,6 +36,7 @@ from ember_code.tui.session_manager import SessionManager
 from ember_code.tui.status_tracker import StatusTracker
 from ember_code.tui.widgets import (
     FilePickerDropdown,
+    HelpPanelWidget,
     LoginWidget,
     MCPPanelWidget,
     MCPServerInfo,
@@ -687,6 +688,8 @@ class EmberApp(App):
             self._show_model_picker()
         elif result.action == "login":
             self._show_login()
+        elif result.action == "help":
+            self._show_help_panel()
         elif result.action == "mcp":
             asyncio.create_task(self._show_mcp_panel())
         elif result.action == "compact":
@@ -766,6 +769,16 @@ class EmberApp(App):
         self.query_one("#user-input", PromptInput).focus()
 
     # ── MCP panel ───────────────────────────────────────────────────
+
+    def _show_help_panel(self) -> None:
+        """Mount the interactive help panel."""
+        panel = HelpPanelWidget()
+        self.mount(panel)
+        panel.focus()
+
+    @on(HelpPanelWidget.PanelClosed)
+    def _on_help_panel_closed(self, _event: HelpPanelWidget.PanelClosed) -> None:
+        self.query_one("#user-input", PromptInput).focus()
 
     async def _show_mcp_panel(self) -> None:
         """Gather MCP server info and mount the panel.
