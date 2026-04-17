@@ -493,7 +493,7 @@ class RunController:
 
         # ── Tool completed ──
         elif isinstance(event, TOOL_COMPLETED_EVENTS):
-            summary, full_result = extract_result(event)
+            summary, full_result, has_markup, diff_table = extract_result(event)
             # Count tool result tokens (added to context as input)
             self._run_input_tokens += len(self._tokenizer.encode(full_result))
             self._status.set_run_tokens(self._run_input_tokens, self._run_output_tokens)
@@ -509,7 +509,9 @@ class RunController:
                 len(str(result_obj)) if result_obj is not None else 0,
                 str(result_obj)[:200] if result_obj is not None else "<None>",
             )
-            self._on_tool_completed(summary, full_result, getattr(event, "run_id", None))
+            self._on_tool_completed(
+                summary, full_result, getattr(event, "run_id", None), has_markup, diff_table
+            )
 
         # ── Tool error ──
         elif isinstance(event, TOOL_ERROR_EVENTS):
@@ -755,11 +757,18 @@ class RunController:
                 tool._on_progress = _progress
                 break
 
-    def _on_tool_completed(self, summary: str, full_result: str, run_id: str | None) -> None:
+    def _on_tool_completed(
+        self,
+        summary: str,
+        full_result: str,
+        run_id: str | None,
+        has_markup: bool = False,
+        diff_table: Any = None,
+    ) -> None:
         try:
             for w in reversed(list(self._conversation.container.query(ToolCallLiveWidget))):
                 if w.is_running():
-                    w.mark_done(summary, full_result)
+                    w.mark_done(summary, full_result, has_markup=has_markup, diff_table=diff_table)
                     break
         except Exception as exc:
             logger.debug("Failed to mark tool completed in widget: %s", exc)

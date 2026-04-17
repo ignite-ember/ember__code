@@ -314,6 +314,7 @@ class ToolCallLiveWidget(Static):
     ToolCallLiveWidget {
         height: auto;
         margin: 0 0 0 2;
+        overflow: hidden;
     }
     """
 
@@ -330,6 +331,8 @@ class ToolCallLiveWidget(Static):
         self._status = status
         self._result_summary = ""
         self._full_result = ""
+        self._result_has_markup = False  # True if result contains Rich markup
+        self._diff_table = None  # Rich Table for edit diffs
         self._expanded = False
         self._preview_lines = preview_lines
         display = self._format()
@@ -345,6 +348,12 @@ class ToolCallLiveWidget(Static):
         if self._status == "running":
             return f"\u23f3 {self._raw_tool_name}{args}"
         return f"[dim]\u2713 {self._raw_tool_name}{args}[/dim]"
+
+    def _format_header(self) -> str:
+        """Format just the header line (checkmark + tool name + args)."""
+        safe_args = self._args_summary.replace("[", "\\[") if self._args_summary else ""
+        args = f"({safe_args})" if safe_args else ""
+        return f"[dim]\u2713 {self._tool_name}{args}[/dim]"
 
     def _format(self) -> str:
         # Escape Rich markup in args to avoid bracket conflicts
@@ -376,23 +385,51 @@ class ToolCallLiveWidget(Static):
                 return line1 + f"\n  [dim]└ {self._result_summary}[/dim]"
             return line1
 
-        escaped = self._full_result.replace("[", "\\[")
-        lines = escaped.splitlines()
+        # If result contains Rich markup (e.g. colored diff), render as-is
+        if self._result_has_markup:
+            display = self._full_result
+        else:
+            display = self._full_result.replace("[", "\\[")
+        lines = display.splitlines()
 
         if self._expanded:
-            return line1 + f"\n[dim]{escaped}[/dim]"
+            return line1 + f"\n{display}"
 
         # Collapsed: show up to PREVIEW_LINES
         preview = "\n".join(lines[: self._preview_lines])
         remaining = len(lines) - self._preview_lines
-        result = line1 + f"\n[dim]{preview}[/dim]"
+        result = line1 + f"\n{preview}"
         if remaining > 0:
             result += f"\n  [dim]└ {remaining} more lines — click to expand[/dim]"
         return result
 
+    def render(self):
+        """Override render to use Rich Table for diff content (full-width backgrounds)."""
+        if not self._result_has_markup or not getattr(self, "_diff_table", None):
+            return super().render()
+        if self._status != "done":
+            return super().render()
+
+        from rich.console import Group
+        from rich.text import Text
+
+        header = Text.from_markup(self._format_header())
+        collapsed_table, expanded_table = self._diff_table
+
+        if self._expanded:
+            return Group(header, expanded_table)
+        return Group(header, collapsed_table)
+
     def on_click(self) -> None:
-        if self._status == "done" and self._full_result:
-            self._expanded = not self._expanded
+        if self._status != "done":
+            return
+        if not self._full_result and not self._diff_table:
+            return
+        self._expanded = not self._expanded
+        if self._diff_table:
+            # Force full re-render with layout recalculation
+            self.refresh(layout=True)
+        else:
             self.update(self._format())
 
     def update_progress(self, line: str) -> None:
@@ -435,10 +472,18 @@ class ToolCallLiveWidget(Static):
 
         self.update(self._format())
 
-    def mark_done(self, result_summary: str = "", full_result: str = "") -> None:
+    def mark_done(
+        self,
+        result_summary: str = "",
+        full_result: str = "",
+        has_markup: bool = False,
+        diff_table: object = None,
+    ) -> None:
         self._status = "done"
         self._result_summary = result_summary
         self._full_result = full_result
+        self._result_has_markup = has_markup
+        self._diff_table = diff_table
         self.update(self._format())
 
 

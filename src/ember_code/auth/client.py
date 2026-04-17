@@ -97,12 +97,26 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"<html><body><h2>Missing token</h2></body></html>")
 
-    def log_message(self, *args):
-        pass  # silence HTTP logs
+    def log_message(self, *args: object) -> None:
+        """Silence HTTP request logs during OAuth callback.
+
+        Overrides BaseHTTPRequestHandler.log_message to prevent
+        incoming HTTP request logs from cluttering the console output
+        while waiting for the OAuth callback redirection from the portal.
+        """
+        pass
 
 
 def get_login_url(port: int, portal_url: str = DEFAULT_PORTAL_URL) -> str:
-    """Return the portal CLI auth URL that redirects the token back to localhost."""
+    """Build the portal CLI authentication URL.
+
+    Args:
+        port: Local port for the callback server.
+        portal_url: Base URL of the portal. Defaults to production portal.
+
+    Returns:
+        The full authentication URL, e.g., "https://ignite-ember.sh/cli-auth?port=53842"
+    """
     return f"{portal_url.rstrip('/')}/cli-auth?port={port}"
 
 

@@ -116,8 +116,63 @@ def format_tool_args(tool_args: dict | None, tool_name: str = "") -> str:
     return ", ".join(parts)
 
 
-def _format_edit_diff(tool: Any) -> str | None:
-    """Format an Edit tool's old_string/new_string as a colored diff."""
+def _get_terminal_width() -> int:
+    """Get the current terminal width for diff line padding."""
+    import shutil
+
+    return shutil.get_terminal_size((120, 40)).columns
+
+
+_DIFF_PAD = 300  # fallback; prefer _get_terminal_width() at render time
+
+
+def _styled_line(prefix: str, content: str, pad_width: int, style: str) -> str:
+    """Build a styled diff line padded to fill the full width."""
+    padded = f"{prefix}{content}".ljust(pad_width)
+    return f"[{style}]{padded}[/{style}]"
+
+
+def _build_diff_table(rows: list[tuple[str, str]], max_rows: int | None = None) -> Any:
+    """Build a Rich Table for the diff with full-width colored backgrounds.
+
+    Args:
+        rows: list of (display_text, style_string) tuples.
+        max_rows: if set, limit to this many rows and add a hint.
+    """
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(
+        show_header=False,
+        show_edge=False,
+        show_lines=False,
+        box=None,
+        expand=True,
+        padding=0,
+        pad_edge=False,
+    )
+    table.add_column(ratio=1, no_wrap=False, overflow="fold")
+
+    display_rows = rows[:max_rows] if max_rows else rows
+    for text_content, style in display_rows:
+        table.add_row(Text(text_content, style=style) if style else Text(text_content))
+
+    if max_rows and len(rows) > max_rows:
+        remaining = len(rows) - max_rows
+        table.add_row(Text(f"  └ {remaining} more lines — click to expand", style="dim"))
+
+    return table
+
+
+def _format_edit_diff(tool: Any) -> tuple[str, Any] | None:
+    """Format an Edit tool's diff as (markup_preview, table_renderable).
+
+    Returns a tuple of (preview_markup_str, Rich Table) or None.
+    The preview is used for the collapsed view, the Table for the expanded view
+    so that backgrounds fill edge-to-edge even on wrapped lines.
+    """
+    import difflib
+
     args = getattr(tool, "tool_args", None)
     if not args or not isinstance(args, dict):
         return None
@@ -126,16 +181,65 @@ def _format_edit_diff(tool: Any) -> str | None:
     if not old and not new:
         return None
 
-    lines = []
-    for line in old.splitlines():
-        lines.append(f"[red]- {line}[/red]")
-    for line in new.splitlines():
-        lines.append(f"[green]+ {line}[/green]")
-    return "\n".join(lines)
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+
+    # Find the real starting line number in the file.
+    start_line = 1
+    file_path = args.get("file_path", "")
+    if file_path and new:
+        try:
+            with open(file_path) as f:
+                file_content = f.read()
+            idx = file_content.find(new)
+            if idx >= 0:
+                start_line = file_content[:idx].count("\n") + 1
+        except Exception:
+            pass
+
+    sm = difflib.SequenceMatcher(None, old_lines, new_lines)
+    # Collect lines as (display_text, style_string)
+    rows: list[tuple[str, str]] = []
+    old_num = start_line
+    new_num = start_line
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(j2 - j1):
+                rows.append((f"  {new_num + k:>4}   {new_lines[j1 + k]}", ""))
+            old_num += i2 - i1
+            new_num += j2 - j1
+        elif tag == "delete":
+            for k in range(i2 - i1):
+                rows.append((f"- {old_num + k:>4}   {old_lines[i1 + k]}", "#ff6b6b on #3d0000"))
+            old_num += i2 - i1
+        elif tag == "insert":
+            for k in range(j2 - j1):
+                rows.append((f"+ {new_num + k:>4}   {new_lines[j1 + k]}", "#69db7c on #003d00"))
+            new_num += j2 - j1
+        elif tag == "replace":
+            for k in range(i2 - i1):
+                rows.append((f"- {old_num + k:>4}   {old_lines[i1 + k]}", "#ff6b6b on #3d0000"))
+            old_num += i2 - i1
+            for k in range(j2 - j1):
+                rows.append((f"+ {new_num + k:>4}   {new_lines[j1 + k]}", "#69db7c on #003d00"))
+            new_num += j2 - j1
+
+    if not rows:
+        return None
+
+    # Build both collapsed and expanded tables
+    collapsed_table = _build_diff_table(rows, max_rows=4)
+    expanded_table = _build_diff_table(rows)
+
+    return collapsed_table, expanded_table
 
 
-def extract_result(event: Any) -> tuple[str, str]:
-    """Extract (summary, full_result) from a tool completion event."""
+def extract_result(event: Any) -> tuple[str, str, bool, Any]:
+    """Extract (summary, full_result, has_markup, renderable) from a tool completion event.
+
+    ``renderable`` is a Rich Table for edit diffs (full-width backgrounds), or None.
+    """
     tool = getattr(event, "tool", None)
 
     timing = ""
@@ -162,10 +266,11 @@ def extract_result(event: Any) -> tuple[str, str]:
     if tool_name == "edit_file" and tool:
         diff = _format_edit_diff(tool)
         if diff:
+            collapsed_table, expanded_table = diff
             summary_msg = str(result).strip() if result else "Edited"
             if timing:
                 summary_msg = f"{summary_msg}, {timing}"
-            return summary_msg, diff
+            return summary_msg, "", True, (collapsed_table, expanded_table)
 
     full_text = str(result).strip() if result else ""
     # MCP tools may return literal "None"/"null" for empty responses
@@ -186,4 +291,4 @@ def extract_result(event: Any) -> tuple[str, str]:
     elif not summary and timing:
         summary = f"completed in {timing}"
 
-    return summary, full_text
+    return summary, full_text, False, None

@@ -23,6 +23,14 @@ if not _llm_logger.handlers:
     _llm_logger.setLevel(logging.INFO)
     _llm_logger.propagate = False  # don't duplicate to root
 
+    # Also capture httpx connection lifecycle to diagnose hanging requests
+    _httpx_logger = logging.getLogger("httpx")
+    _httpx_logger.addHandler(_llm_handler)
+    _httpx_logger.setLevel(logging.DEBUG)
+    _httpcore_logger = logging.getLogger("httpcore")
+    _httpcore_logger.addHandler(_llm_handler)
+    _httpcore_logger.setLevel(logging.DEBUG)
+
 
 DEFAULT_CONTEXT_WINDOW = 128_000
 
@@ -239,6 +247,16 @@ class ModelRegistry:
         # upstream provider stops responding.  Configurable per model via
         # ``timeout`` in the registry entry; defaults to 120s.
         kwargs["timeout"] = entry.get("timeout", 120)
+
+        # Short keepalive expiry avoids stale connections that hang
+        # when reused after idle periods (e.g. between user messages).
+        kwargs["http_client"] = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+                keepalive_expiry=30,
+            ),
+        )
 
         # Use logging wrapper to trace all LLM API calls
         return _LoggingModel(**kwargs)
