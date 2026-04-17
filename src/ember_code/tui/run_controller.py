@@ -98,6 +98,9 @@ class RunController:
         self._learning_interval = 10
         self._pending_learn_messages: list = []  # accumulated since last extraction
 
+        # Hook system messages queued for injection into next AI turn
+        self._pending_hook_context: list[str] = []
+
     # ── Public API ────────────────────────────────────────────────
 
     @property
@@ -172,6 +175,8 @@ class RunController:
         if not hook_result.should_continue:
             self._conversation.append_info(hook_result.message or "Message blocked by hook.")
             return
+        if hook_result.message:
+            self._pending_hook_context.append(hook_result.message)
 
         # Slash commands bypass the team
         if message.startswith("/"):
@@ -231,6 +236,12 @@ class RunController:
 
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         message = f"<system-context>Current datetime: {timestamp}</system-context>\n{message}"
+
+        # Inject queued hook messages into the AI's context
+        if self._pending_hook_context:
+            hook_ctx = "\n".join(self._pending_hook_context)
+            message = f"{message}\n<hook-context>{hook_ctx}</hook-context>"
+            self._pending_hook_context.clear()
 
         # Inject latest learnings into agent context
         await self._session._inject_learnings()
@@ -369,13 +380,18 @@ class RunController:
                 bar.set_context_usage(0, self._status.max_context_tokens)
                 bar.set_run_tokens(0, 0)
 
-        # Fire Stop hook
+        # Fire Stop hook — messages are injected into the AI's next turn context
         stop_result = await self._session.hook_executor.execute(
             event=HookEvent.STOP.value,
             payload={"session_id": self._session.session_id},
         )
-        if not stop_result.should_continue and stop_result.message:
-            self._conversation.append_info(stop_result.message)
+        if stop_result.message:
+            if not stop_result.should_continue:
+                # Blocking: show to user
+                self._conversation.append_info(stop_result.message)
+            else:
+                # Non-blocking: queue for AI context on next turn
+                self._pending_hook_context.append(stop_result.message)
 
         # Extract learnings every N turns
         if self._turn_count % self._learning_interval == 0:

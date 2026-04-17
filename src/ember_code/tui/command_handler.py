@@ -446,9 +446,16 @@ class CommandHandler:
 
         creds = load_credentials()
         clear_credentials()
-        if creds:
-            return CommandResult.info(f"Logged out ({creds.email}).")
-        return CommandResult.info("Not logged in.")
+
+        # Clear in-memory cloud state and rebuild agent with direct model URL
+        if self._session:
+            self._session._cloud_token = None
+            self._session._cloud_org_id = None
+            self._session._cloud_org_name = None
+            self._session.main_team = self._session._build_main_agent()
+
+        msg = f"Logged out ({creds.email})." if creds else "Not logged in."
+        return CommandResult(kind="info", content=msg, action="logout")
 
     async def _cmd_whoami(self, _args: str) -> "CommandResult":
         from ember_code.auth.credentials import is_token_expired, load_credentials

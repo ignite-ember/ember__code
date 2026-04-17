@@ -181,9 +181,9 @@ class TestHookProvisioning:
         # Settings now written to ~/.ember/settings.json
         settings = json.loads((tmp_path / "home" / ".ember" / "settings.json").read_text())
         assert "hooks" in settings
-        assert "Stop" in settings["hooks"]
+        assert "PreToolUse" in settings["hooks"]
         assert any(
-            h["command"] == ".ember/hooks/test-reminder.sh" for h in settings["hooks"]["Stop"]
+            h["command"] == ".ember/hooks/pre-pr-review.sh" for h in settings["hooks"]["PreToolUse"]
         )
 
     def test_preserves_existing_settings(self, tmp_path):

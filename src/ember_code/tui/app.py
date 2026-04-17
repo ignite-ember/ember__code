@@ -688,6 +688,11 @@ class EmberApp(App):
             self._show_model_picker()
         elif result.action == "login":
             self._show_login()
+        elif result.action == "logout":
+            self._status.set_cloud_status(False)
+            self._status.update_status_bar()
+            self._conversation.append_info(result.content)
+            return
         elif result.action == "help":
             self._show_help_panel()
         elif result.action == "mcp":
@@ -761,6 +766,18 @@ class EmberApp(App):
 
     @on(LoginWidget.LoggedIn)
     def _on_logged_in(self, event: LoginWidget.LoggedIn) -> None:
+        # Reload cloud credentials into session and rebuild agent
+        if self.session:
+            from ember_code.auth.credentials import get_access_token, get_org_id, get_org_name
+
+            creds_file = self.settings.auth.credentials_file
+            self.session._cloud_token = get_access_token(creds_file)
+            self.session._cloud_org_id = get_org_id(creds_file)
+            self.session._cloud_org_name = get_org_name(creds_file)
+            self.session.main_team = self.session._build_main_agent()
+            self._status.set_cloud_status(True, self.session.cloud_org_name or "")
+            self._status.update_status_bar()
+
         self._conversation.append_info(f"Logged in as {event.email}")
         self.query_one("#user-input", PromptInput).focus()
 

@@ -25,112 +25,14 @@ CHECKSUMS_FILE = ".checksums.json"
 
 # ── Built-in hook scripts ─────────────────────────────────────────────
 
-SESSION_CONTEXT_HOOK = """\
-#!/bin/bash
-# .ember/hooks/session-context.sh
-# Hook: SessionStart
-#
-# Reports current branch, uncommitted changes, and stale TODO on session start.
-
-branch=$(git branch --show-current 2>/dev/null || echo "unknown")
-uncommitted=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-behind=$(git rev-list HEAD..@{u} --count 2>/dev/null || echo "0")
-
-parts=()
-[[ "$branch" != "unknown" ]] && parts+=("branch: $branch")
-[[ "$uncommitted" -gt 0 ]] && parts+=("$uncommitted uncommitted change(s)")
-[[ "$behind" -gt 0 ]] && parts+=("$behind commit(s) behind remote")
-
-# Check for stale TODO.md
-if [[ -f ".ember/TODO.md" ]]; then
-  last_modified=$(stat -f %m .ember/TODO.md 2>/dev/null || stat -c %Y .ember/TODO.md 2>/dev/null || echo "0")
-  now=$(date +%s)
-  age_days=$(( (now - last_modified) / 86400 ))
-  [[ "$age_days" -gt 7 ]] && parts+=("TODO.md is ${age_days} days old")
-fi
-
-# Check if ember.md exists
-[[ ! -f "ember.md" ]] && parts+=("no ember.md found — consider creating one")
-
-if [[ ${#parts[@]} -eq 0 ]]; then
-  echo '{"continue": true}'
-  exit 0
-fi
-
-msg=$(IFS=", "; echo "${parts[*]}")
-cat << EOF
-{"continue": true, "systemMessage": "Session context: ${msg}"}
-EOF
-exit 0
-"""
-
-TEST_REMINDER_HOOK = """\
-#!/bin/bash
-# .ember/hooks/test-reminder.sh
-# Hook: Stop
-#
-# Before the agent finishes, checks if source files were modified but no
-# tests were updated or run. If so, blocks and reminds to run tests.
-
-changed_files=$(git diff --name-only HEAD 2>/dev/null; git diff --name-only --cached 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
-
-if [[ -z "$changed_files" ]]; then
-  echo '{"continue": true}'
-  exit 0
-fi
-
-# Check if source files were modified
-source_changed=false
-while IFS= read -r file; do
-  case "$file" in
-    *.py|*.ts|*.tsx|*.js|*.jsx|*.go|*.rs|*.java|*.rb|*.c|*.cpp)
-      # Skip test files
-      case "$file" in
-        test_*|*_test.*|*.test.*|*_spec.*|*.spec.*|tests/*|__tests__/*|spec/*) continue ;;
-      esac
-      source_changed=true
-      break
-      ;;
-  esac
-done <<< "$changed_files"
-
-if [[ "$source_changed" != "true" ]]; then
-  echo '{"continue": true}'
-  exit 0
-fi
-
-# Check if test files were also modified
-test_changed=false
-while IFS= read -r file; do
-  case "$file" in
-    test_*|*_test.*|*.test.*|*_spec.*|*.spec.*|tests/*|__tests__/*|spec/*)
-      test_changed=true
-      break
-      ;;
-  esac
-done <<< "$changed_files"
-
-if [[ "$test_changed" == "true" ]]; then
-  echo '{"continue": true}'
-  exit 0
-fi
-
-cat << EOF
-{
-  "continue": false,
-  "systemMessage": "Source files were modified but no tests were updated. Run tests to verify your changes, or confirm that no test updates are needed."
-}
-EOF
-exit 2
-"""
-
 PRE_PR_REVIEW_HOOK = """\
 #!/bin/bash
 # .ember/hooks/pre-pr-review.sh
 # Hook: PreToolUse (matcher: Bash)
 #
-# Early warning: catches TODOs, debug statements, and console.log before
-# push or PR creation. This is NOT enforcement — real gates belong in CI/CD.
+# Early warning before push/PR: detects TODOs, debug statements, and
+# console.log in staged changes. Informs the AI so it can fix them
+# before the push proceeds.
 
 # Read payload from stdin
 payload=$(cat)
@@ -160,13 +62,8 @@ if [[ ${#issues[@]} -eq 0 ]]; then
 fi
 
 msg=$(IFS=", "; echo "${issues[*]}")
-cat << EOF
-{
-  "continue": false,
-  "systemMessage": "Before pushing: found ${msg} in your changes. Address these or confirm they are intentional."
-}
-EOF
-exit 2
+echo "{\\"continue\\": true, \\"systemMessage\\": \\"Before pushing: found ${msg} in your changes. Review and fix these issues before proceeding with the push.\\"}"
+exit 0
 """
 
 POST_COMMIT_TODO_HOOK = """\
@@ -174,8 +71,9 @@ POST_COMMIT_TODO_HOOK = """\
 # .ember/hooks/post-commit-todo.sh
 # Hook: PostToolUse (matcher: Bash, background: true)
 #
-# After a git commit, scan committed files for new TODOs and append them
-# to .ember/TODO.md if it exists.
+# After a git commit, feeds the commit context to the AI so it can
+# intelligently update .ember/TODO.md — crossing out completed items
+# and adding new ones based on what the commit actually did.
 
 payload=$(cat)
 cmd=$(echo "$payload" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"command"[[:space:]]*:[[:space:]]*"//;s/"$//')
@@ -192,46 +90,28 @@ if [[ ! -f ".ember/TODO.md" ]]; then
   exit 0
 fi
 
-# Find TODOs in last commit
-new_todos=$(git diff HEAD~1..HEAD 2>/dev/null | grep "^+" | grep -i "TODO\\|FIXME" | sed 's/^+//' | head -10)
+# Gather commit context
+commit_msg=$(git log -1 --pretty=format:"%s" 2>/dev/null)
+files_changed=$(git diff HEAD~1..HEAD --stat 2>/dev/null | head -30)
+diff_preview=$(git diff HEAD~1..HEAD 2>/dev/null | head -200)
 
-if [[ -z "$new_todos" ]]; then
-  echo '{"continue": true}'
-  exit 0
-fi
+# Build the system message
+msg="A git commit was just made. Review it and update .ember/TODO.md:\\n"
+msg+="- Mark completed items as done (change '- [ ]' to '- [x]')\\n"
+msg+="- Add new items if the commit introduced incomplete work\\n"
+msg+="- Remove items that are no longer relevant\\n\\n"
+msg+="Commit: ${commit_msg}\\n\\n"
+msg+="Files changed:\\n${files_changed}\\n\\n"
+msg+="Diff preview:\\n${diff_preview}"
 
-# Append to TODO.md
-echo "" >> .ember/TODO.md
-echo "## New TODOs (auto-detected $(date +%Y-%m-%d))" >> .ember/TODO.md
-while IFS= read -r line; do
-  echo "- [ ] $line" >> .ember/TODO.md
-done <<< "$new_todos"
+# Use python to safely JSON-encode the message
+escaped=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" <<< "$msg")
 
-echo '{"continue": true}'
+echo "{\\"continue\\": true, \\"systemMessage\\": ${escaped}}"
 exit 0
 """
 
 BUILT_IN_HOOKS = [
-    {
-        "filename": "session-context.sh",
-        "content": SESSION_CONTEXT_HOOK,
-        "event": "SessionStart",
-        "definition": {
-            "type": "command",
-            "command": ".ember/hooks/session-context.sh",
-            "timeout": 10000,
-        },
-    },
-    {
-        "filename": "test-reminder.sh",
-        "content": TEST_REMINDER_HOOK,
-        "event": "Stop",
-        "definition": {
-            "type": "command",
-            "command": ".ember/hooks/test-reminder.sh",
-            "timeout": 10000,
-        },
-    },
     {
         "filename": "pre-pr-review.sh",
         "content": PRE_PR_REVIEW_HOOK,

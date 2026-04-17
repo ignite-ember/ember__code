@@ -18,7 +18,7 @@
 - [x] `echo "text" | ignite-ember -p -m "prompt"` — combined works
 - [x] Send a message in TUI — get a coherent response back
 - [x] Send a message in `--no-tui` — get a coherent response back
-- [X] Multi-turn conversation — context preserved across turns
+- [x] Multi-turn conversation — context preserved across turns
 - [x] Streaming — responses appear token-by-token (not all at once)
 
 ### End-to-end coding workflows
@@ -241,13 +241,12 @@
 - [x] Entity memory — remembers facts (enabled but needs more conversations to populate)
 
 ### Authentication & cloud
-- [ ] `/login` flow — browser opens, polling, token saved
-- [ ] `/login` — Escape cancels
-- [ ] `/logout` — clears credentials (or "Not logged in")
-- [ ] `/whoami` — shows email/expiry (or "Not logged in" / "Expired")
-- [ ] Token stored at `~/.ember/credentials.json` with 0600 perms
-- [ ] Cloud model auto-injected when authenticated
-- [ ] Status bar shows cloud indicator
+- [x] `/login` flow — browser opens, polling, token saved
+- [x] `/logout` — clears credentials (or "Not logged in")
+- [x] `/whoami` — shows email/expiry (or "Not logged in" / "Expired")
+- [x] Token stored at `~/.ember/credentials.json` with 0600 perms
+- [x] Cloud model auto-injected when authenticated
+- [x] Status bar shows cloud indicator
 
 ### Scheduling
 - [ ] `/schedule` — lists tasks (or "none")
@@ -271,7 +270,6 @@
 - [ ] TUI: non-existent file — left in text
 - [ ] TUI: no media — normal send
 - [ ] TUI: URL without known extension — NOT attached
-- [ ] `--no-tui`: same behavior
 - [ ] `-m "analyze ~/img.png"` — media detected
 - [ ] Pipe mode — media detected
 - [ ] Image (`.png`, `.jpg`, `.gif`, `.webp`) — auto-attached
