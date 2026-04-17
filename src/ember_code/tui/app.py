@@ -697,6 +697,11 @@ class EmberApp(App):
             self._show_help_panel()
         elif result.action == "mcp":
             asyncio.create_task(self._show_mcp_panel())
+        elif result.action == "schedule":
+            asyncio.create_task(self.action_toggle_tasks())
+        elif result.action == "run_prompt":
+            # Feed skill prompt into the main streaming run loop
+            asyncio.create_task(self._controller.process_message(result.content))
         elif result.action == "compact":
             self._sessions.clear()
             self._status.reset()
@@ -909,26 +914,6 @@ class EmberApp(App):
 
     # ── Task panel events ──────────────────────────────────────────
 
-    @on(TaskPanel.TaskSelected)
-    async def _on_task_selected(self, event: TaskPanel.TaskSelected) -> None:
-        """Show task details in conversation."""
-        from ember_code.scheduler.store import TaskStore
-
-        store = TaskStore()
-        task = await store.get(event.task_id)
-        if not task:
-            return
-        lines = (
-            f"**Task {task.id}** — {task.status.value}\n"
-            f"*{task.description}*\n"
-            f"Scheduled: {task.scheduled_at.strftime('%Y-%m-%d %H:%M')}\n"
-        )
-        if task.result:
-            lines += f"\n**Result:**\n{task.result}\n"
-        if task.error:
-            lines += f"\n**Error:**\n{task.error}\n"
-        self._conversation.append_markdown(lines)
-
     @on(TaskPanel.TaskCancelled)
     async def _on_task_cancelled(self, event: TaskPanel.TaskCancelled) -> None:
         from ember_code.scheduler.models import TaskStatus
@@ -943,6 +928,9 @@ class EmberApp(App):
     def _on_task_panel_closed(self, _event: TaskPanel.PanelClosed) -> None:
         with contextlib.suppress(NoMatches):
             self.query_one("#task-panel", TaskPanel).add_class("-hidden")
+        if hasattr(self, "_task_refresh_timer") and self._task_refresh_timer:
+            self._task_refresh_timer.stop()
+            self._task_refresh_timer = None
         self.query_one("#user-input", PromptInput).focus()
 
     # ── Scheduler ────────────────────────────────────────────────
@@ -1065,9 +1053,28 @@ class EmberApp(App):
                 await self._refresh_task_panel()
                 panel.remove_class("-hidden")
                 panel.focus()
+                # Start auto-refresh while panel is open
+                if not hasattr(self, "_task_refresh_timer") or self._task_refresh_timer is None:
+                    self._task_refresh_timer = self.set_interval(1.0, self._auto_refresh_tasks)
             else:
                 panel.add_class("-hidden")
+                if hasattr(self, "_task_refresh_timer") and self._task_refresh_timer:
+                    self._task_refresh_timer.stop()
+                    self._task_refresh_timer = None
                 self.query_one("#user-input", PromptInput).focus()
+        except Exception:
+            pass
+
+    async def _auto_refresh_tasks(self) -> None:
+        """Periodic refresh of the task panel while it's visible."""
+        try:
+            panel = self.query_one("#task-panel", TaskPanel)
+            if panel.has_class("-hidden"):
+                if hasattr(self, "_task_refresh_timer") and self._task_refresh_timer:
+                    self._task_refresh_timer.stop()
+                    self._task_refresh_timer = None
+                return
+            await self._refresh_task_panel()
         except Exception:
             pass
 

@@ -34,6 +34,7 @@ dependencies = [
     "youtube_transcript_api>=1.0",
     "arxiv>=2.1",
     "wikipedia>=1.4",
+    "dateparser>=1.4.0",
 ]
 
 [project.optional-dependencies]

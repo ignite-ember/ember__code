@@ -481,6 +481,10 @@ class CommandHandler:
         subcommand = parts[0].lower() if parts else "list"
         sub_args = parts[1].strip() if len(parts) > 1 else ""
 
+        # No args or "list" → open the task panel
+        if subcommand == "list" or not args.strip():
+            return CommandResult(kind="info", content="", action="schedule")
+
         if subcommand == "add" and sub_args:
             return await self._schedule_add(store, sub_args)
 
@@ -511,29 +515,8 @@ class CommandHandler:
                 lines += f"\n**Error:**\n{task.error}\n"
             return CommandResult.markdown(lines)
 
-        if subcommand == "all":
-            tasks = await store.get_all(include_done=True)
-        else:
-            # Default: list pending/running
-            tasks = await store.get_all(include_done=False)
-
-        if not tasks:
-            return CommandResult.info("No scheduled tasks.")
-
-        lines = "## Scheduled Tasks\n"
-        for t in tasks:
-            time_str = t.scheduled_at.strftime("%Y-%m-%d %H:%M")
-            status_icon = {
-                "pending": "pending",
-                "running": "**running**",
-                "completed": "done",
-                "failed": "FAILED",
-                "cancelled": "cancelled",
-            }.get(t.status.value, t.status.value)
-            desc = t.description[:60] + ("..." if len(t.description) > 60 else "")
-            lines += f"- `{t.id}` {status_icon} {time_str} — {desc}\n"
-        lines += "\n*Use `/schedule show <id>` for details, `/schedule cancel <id>` to cancel.*\n"
-        return CommandResult.markdown(lines)
+        # Unknown subcommand — open the panel
+        return CommandResult(kind="info", content="", action="schedule")
 
     @staticmethod
     async def _schedule_add(store, text: str) -> "CommandResult":
@@ -631,16 +614,17 @@ class CommandHandler:
         return CommandResult.info(f"Opened {url}")
 
     async def _handle_skill(self, stripped: str) -> "CommandResult":
-        """Try to match and execute a skill command."""
+        """Try to match and execute a skill command.
+
+        Instead of running non-interactively, we feed the rendered skill
+        prompt into the main agent's streaming run loop so the user sees
+        tool calls, progress, and streaming output.
+        """
         skill_match = self._session.skill_pool.match_user_command(stripped)
         if skill_match:
             skill, args = skill_match
-            from ember_code.skills.executor import SkillExecutor
-
-            result = await SkillExecutor(
-                self._session.pool, self._session.settings, self._session.session_id
-            ).execute(skill, args)
-            return CommandResult.markdown(result)
+            rendered = skill.render(args, session_id=self._session.session_id)
+            return CommandResult(kind="info", content=rendered, action="run_prompt")
         return CommandResult.error(f"Unknown command: {stripped.split()[0]}")
 
     # ── Command dispatch table ────────────────────────────────────

@@ -249,19 +249,17 @@
 - [x] Status bar shows cloud indicator
 
 ### Scheduling
-- [ ] `/schedule` — lists tasks (or "none")
-- [ ] `/schedule all` — includes completed/cancelled
-- [ ] `/schedule add review code at 5pm` — one-shot
-- [ ] `/schedule add run tests in 30 minutes` — relative
-- [ ] `/schedule add run tests every 2 hours` — recurring
-- [ ] `/schedule add check deps daily` — daily
-- [ ] `/schedule show <id>` — details (or error)
-- [ ] `/schedule cancel <id>` — cancels (or "already completed")
-- [ ] Scheduled task executes at scheduled time
-- [ ] Recurring tasks reschedule after completion
+- [x] `/schedule` — lists tasks (or "none")
+- [x] `/schedule` — includes completed/cancelled
+- [x] `/schedule add review code at 5pm` — one-shot
+- [x] `/schedule add run tests in 30 minutes` — relative
+- [x] `/schedule add run tests every 2 hours` — recurring
+- [x] `/schedule add check deps daily` — daily
+- [x] Scheduled task executes at scheduled time
+- [x] Recurring tasks reschedule after completion
 - [ ] Task timeout enforced
 - [ ] Max concurrent enforced
-- [ ] Task panel (Ctrl+T) — shows live status
+- [x] Task panel (Ctrl+T) — shows live status
 
 ### Media auto-detection
 - [ ] TUI: local image path — "Attached: 1 image(s)"
@@ -279,18 +277,18 @@
 - [ ] Code/text files (`.py`, `.js`, `.json`, `.md`, etc.) — NOT auto-attached, agent reads via tools
 
 ### @file mention autocomplete
-- [ ] Type `@` — file picker dropdown appears above input
-- [ ] Type `@src/` — filters to files under src/
-- [ ] Fuzzy matching works (e.g., `@s/u/m` matches `src/utils/media.py`)
-- [ ] Up/Down arrows navigate the picker
-- [ ] Tab selects file and inserts path after `@`
-- [ ] Enter selects file (does NOT submit message)
-- [ ] Escape dismisses picker without inserting
+- [x] Type `@` — file picker dropdown appears above input
+- [x] Type `@src/` — filters to files under src/
+- [x] Fuzzy matching works (e.g., `@s/u/m` matches `src/utils/media.py`)
+- [x] Up/Down arrows navigate the picker
+- [x] Tab selects file and inserts path after `@`
+- [x] Enter selects file (does NOT submit message)
+- [x] Escape dismisses picker without inserting
 - [ ] Selected path inserted with trailing space
-- [ ] `@nonexistent` — shows "No matching files"
-- [ ] `@` alone (empty query) — shows first 20 project files
-- [ ] Picker disappears when cursor leaves @-mention
-- [ ] `email@domain` — does NOT trigger picker
+- [x] `@nonexistent` — shows "No matching files"
+- [x] `@` alone (empty query) — shows first 100 project files
+- [x] Picker disappears when cursor leaves @-mention
+- [x] `email@domain` — does NOT trigger picker
 - [ ] Works after `/clear` and session switches
 - [ ] Large project (1000+ files) — no lag on first `@`
 - [ ] Git-ignored files excluded from results
@@ -303,20 +301,15 @@
 - [ ] Exit with changes — preserved, merge instructions shown
 
 ### Skills
-- [ ] `/skills` — lists loaded skills
-- [ ] `/<skill-name>` — executes skill
-- [ ] `/<skill-name> args` — passes arguments
+- [x] `/skills` — lists loaded skills
+- [x] `/<skill-name>` — executes skill
+- [x] `/<skill-name> args` — passes arguments
 - [ ] Auto-trigger — Orchestrator triggers matching skill (if enabled)
 
 ### Evals
 - [ ] `/evals` — runs suites (or "no suites found")
 - [ ] `/evals <agent>` — filters by agent
 - [ ] Works in both TUI and `--no-tui`
-
-### `--file` flag removal
-- [ ] `--help` — no `-f` or `--file`
-- [ ] `-f test.png` — errors as unknown flag
-- [ ] `--file test.png` — errors as unknown flag
 
 ### Queue panel (Ctrl+Q)
 - [ ] Shows pending messages

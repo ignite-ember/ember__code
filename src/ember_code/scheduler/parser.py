@@ -1,12 +1,15 @@
 """Natural language time parser for scheduling.
 
+Uses ``dateparser`` for multilingual support (200+ languages).
+
 Supports formats like:
-- "in 5 minutes", "in 2 hours", "in 1 day"
-- "at 5pm", "at 17:00", "at 5:30pm"
-- "tomorrow", "tomorrow at 9am"
+- "in 5 minutes", "через 5 хвилин", "en 30 minutos"
+- "at 5pm", "о 17:00", "a las 5pm"
+- "tomorrow", "завтра", "mañana"
+- "tomorrow at 9am", "завтра о 9 ранку"
 - "2026-03-20 14:00"
 
-Recurrence patterns:
+Recurrence patterns (English):
 - "every 30 minutes", "every 2 hours", "every 1 day"
 - "daily", "hourly", "weekly"
 - "daily at 9am", "weekly at 5pm"
@@ -15,61 +18,34 @@ Recurrence patterns:
 import re
 from datetime import datetime, timedelta
 
+import dateparser
+
 
 def parse_time(text: str) -> datetime | None:
     """Parse a natural language time expression into a datetime.
 
-    Returns None if the text can't be parsed.
+    Uses dateparser for multilingual support. Falls back to None
+    if the text can't be parsed.
     """
-    text = text.strip().lower()
+    text = text.strip()
 
-    # "in X minutes/hours/days"
-    m = re.match(r"in\s+(\d+)\s+(min(?:ute)?s?|hours?|days?|secs?|seconds?)", text)
-    if m:
-        amount = int(m.group(1))
-        unit = m.group(2)
-        if unit.startswith("sec"):
-            return datetime.now() + timedelta(seconds=amount)
-        if unit.startswith("min"):
-            return datetime.now() + timedelta(minutes=amount)
-        if unit.startswith("hour"):
-            return datetime.now() + timedelta(hours=amount)
-        if unit.startswith("day"):
-            return datetime.now() + timedelta(days=amount)
+    result = dateparser.parse(
+        text,
+        settings={
+            "PREFER_DATES_FROM": "future",
+            "RETURN_AS_TIMEZONE_AWARE": False,
+        },
+    )
 
-    # "at HH:MM" or "at H:MMam/pm" or "at Hpm"
-    m = re.match(r"at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text)
-    if m:
-        hour = int(m.group(1))
-        minute = int(m.group(2) or 0)
-        ampm = m.group(3)
-        if ampm == "pm" and hour < 12:
-            hour += 12
-        elif ampm == "am" and hour == 12:
-            hour = 0
-        target = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target <= datetime.now():
-            target += timedelta(days=1)  # next occurrence
-        return target
+    if result is None:
+        return None
 
-    # "tomorrow" or "tomorrow at ..."
-    if text.startswith("tomorrow"):
-        rest = text[len("tomorrow") :].strip()
-        base = datetime.now() + timedelta(days=1)
-        if rest.startswith("at"):
-            inner = parse_time(rest)
-            if inner:
-                return base.replace(hour=inner.hour, minute=inner.minute, second=0, microsecond=0)
-        return base.replace(hour=9, minute=0, second=0, microsecond=0)  # default 9am
+    # If the parsed time is in the past, push to tomorrow (for "at 5pm" style)
+    is_explicit_date = re.search(r"\d{4}[-/]", text) or "tomorrow" in text.lower()
+    if result <= datetime.now() and not is_explicit_date:
+        result += timedelta(days=1)
 
-    # ISO format "YYYY-MM-DD HH:MM"
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-
-    return None
+    return result
 
 
 # ── Recurrence ──────────────────────────────────────────────────
@@ -123,15 +99,7 @@ def parse_recurrence(text: str) -> tuple[str, datetime | None]:
 
 
 def next_occurrence_from_recurrence(recurrence: str, last_run: datetime) -> datetime | None:
-    """Compute the next occurrence given a recurrence pattern and the last run time.
-
-    Args:
-        recurrence: canonical form like "every 1 days", "every 30 minutes"
-        last_run: when the task last ran
-
-    Returns:
-        The next scheduled datetime, or None if the pattern is invalid.
-    """
+    """Compute the next occurrence given a recurrence pattern and the last run time."""
     delta = _recurrence_to_delta(recurrence)
     if delta is None:
         return None

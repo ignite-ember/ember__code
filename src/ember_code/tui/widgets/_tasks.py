@@ -1,7 +1,9 @@
-"""Task panel widget — shows scheduled/background tasks and their status."""
+"""Task panel widget — shows scheduled/background tasks with expandable details."""
 
 import logging
 
+from textual.app import ComposeResult
+from textual.containers import Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -21,55 +23,54 @@ _STATUS_ICONS = {
 
 
 class TaskPanel(Widget):
-    """Dockable panel showing scheduled tasks and their status."""
+    """Bottom-docked interactive task panel with expandable details."""
 
     can_focus = True
 
     DEFAULT_CSS = """
     TaskPanel {
+        layer: dialog;
         dock: bottom;
+        width: 100%;
         height: auto;
-        max-height: 12;
-        border-top: solid $accent;
-        padding: 0 1;
+        max-height: 60%;
+        background: $surface-darken-1;
+        border-top: heavy $accent;
+        padding: 0 2;
     }
 
     TaskPanel.-hidden {
         display: none;
     }
 
-    TaskPanel .task-header {
+    TaskPanel .task-title {
+        text-style: bold;
         color: $accent;
-        text-style: bold;
-        height: 1;
     }
 
-    TaskPanel .task-item {
-        height: 1;
+    TaskPanel .task-list {
+        height: auto;
+        max-height: 100%;
+        overflow-y: auto;
+    }
+
+    TaskPanel .task-entry {
         padding: 0 1;
+        height: auto;
     }
 
-    TaskPanel .task-item.-selected {
-        background: $accent 30%;
-        text-style: bold;
+    TaskPanel .task-entry.-selected {
+        background: $accent;
+        color: $text;
     }
 
-    TaskPanel .task-hint {
+    TaskPanel .hint {
         color: $text-muted;
         height: 1;
     }
     """
 
-    class TaskSelected(Message):
-        """Posted when user presses Enter on a task to view details."""
-
-        def __init__(self, task_id: str):
-            self.task_id = task_id
-            super().__init__()
-
     class TaskCancelled(Message):
-        """Posted when user deletes/cancels a task."""
-
         def __init__(self, task_id: str):
             self.task_id = task_id
             super().__init__()
@@ -77,79 +78,162 @@ class TaskPanel(Widget):
     class PanelClosed(Message):
         pass
 
-    selected_index = reactive(0)
+    selected_index: reactive[int] = reactive(0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._tasks: list[ScheduledTask] = []
+        self._tasks: list[ScheduledTask] = []  # all tasks from DB
+        self._expanded: set[int] = set()
+        self._list_widget: Static | None = None
+        self._show_all = True  # False = active only
         self.add_class("-hidden")
 
+    def compose(self) -> ComposeResult:
+        yield Static("", classes="task-title", id="task-title")
+        with Vertical(classes="task-list", id="task-list"):
+            yield Static("", id="task-list-content")
+        yield Static("", classes="hint", id="task-hint")
+
+    def on_mount(self) -> None:
+        self._list_widget = self.query_one("#task-list-content", Static)
+
+    @property
+    def _visible_tasks(self) -> list[ScheduledTask]:
+        if self._show_all:
+            return self._tasks
+        return [t for t in self._tasks if t.status in (TaskStatus.pending, TaskStatus.running)]
+
     def refresh_tasks(self, tasks: list[ScheduledTask]) -> None:
-        """Update the displayed task list."""
+        """Update the displayed task list, preserving UI state."""
+        old_ids = [t.id for t in self._tasks]
         self._tasks = list(tasks)
-        if not self._tasks:
-            self.add_class("-hidden")
-            return
-        self.remove_class("-hidden")
-        self.selected_index = min(self.selected_index, max(0, len(self._tasks) - 1))
-        self._rebuild()
+        new_ids = [t.id for t in self._tasks]
 
-    def _rebuild(self) -> None:
-        self.remove_children()
-        if not self._tasks:
+        # Only reset selection/expanded if the task list changed
+        if old_ids != new_ids:
+            self._expanded.clear()
+            visible = self._visible_tasks
+            self.selected_index = min(self.selected_index, max(0, len(visible) - 1))
+
+        self._render_all()
+
+    def _render_all(self) -> None:
+        if self._list_widget is None:
             return
 
-        active = sum(1 for t in self._tasks if t.status in (TaskStatus.pending, TaskStatus.running))
-        self.mount(
-            Static(
-                f"[bold]Tasks ({active} active / {len(self._tasks)} total)[/bold]"
-                "  [dim]↑↓ navigate  Enter details  Del cancel  Esc close[/dim]",
-                classes="task-header",
-            )
-        )
-        for i, task in enumerate(self._tasks):
-            icon = _STATUS_ICONS.get(task.status, "?")
-            time_str = task.scheduled_at.strftime("%H:%M")
-            recur = f" [dim]({task.recurrence})[/dim]" if task.recurrence else ""
-            desc = task.description[:40] + ("..." if len(task.description) > 40 else "")
-            cls = "task-item -selected" if i == self.selected_index else "task-item"
-            self.mount(
-                Static(
-                    f"  {icon} `{task.id}` {time_str}{recur} {desc}",
-                    id=f"task-{i}",
-                    classes=cls,
+        visible = self._visible_tasks
+        filter_label = "all" if self._show_all else "active"
+
+        # Title
+        try:
+            title = self.query_one("#task-title", Static)
+            if not self._tasks:
+                title.update("[bold $accent]Tasks[/bold $accent]  [dim]empty[/dim]")
+            else:
+                active = sum(
+                    1 for t in self._tasks if t.status in (TaskStatus.pending, TaskStatus.running)
                 )
+                title.update(
+                    f"[bold $accent]Tasks[/bold $accent]  "
+                    f"[dim]{active} active / {len(self._tasks)} total"
+                    f" · showing {filter_label}[/dim]"
+                )
+        except Exception:
+            pass
+
+        # List
+        if not visible:
+            msg = (
+                "[dim]No scheduled tasks. Use /schedule add <task> at <time> to create one.[/dim]"
+                if not self._tasks
+                else "[dim]No active tasks. Press Tab to show all.[/dim]"
             )
+            self._list_widget.update(msg)
+        else:
+            lines = []
+            for i, task in enumerate(visible):
+                entry = self._render_entry(i, task)
+                if i == self.selected_index:
+                    entry = f"[reverse]{entry}[/reverse]"
+                lines.append(entry)
+            self._list_widget.update("\n".join(lines))
+
+        # Hint
+        try:
+            hint = self.query_one("#task-hint", Static)
+            if self._tasks:
+                hint.update(
+                    "[dim]↑/↓ navigate · Enter expand/collapse · "
+                    "Tab filter · Del cancel · Esc close[/dim]"
+                )
+            else:
+                hint.update("[dim]Esc close[/dim]")
+        except Exception:
+            pass
+
+    def _render_entry(self, index: int, task: ScheduledTask) -> str:
+        icon = _STATUS_ICONS.get(task.status, "?")
+        arrow = "▼" if index in self._expanded else "▶"
+        time_str = task.scheduled_at.strftime("%Y-%m-%d %H:%M")
+        recur = f" [dim]({task.recurrence})[/dim]" if task.recurrence else ""
+        desc = task.description[:50] + ("..." if len(task.description) > 50 else "")
+
+        line = f"  {arrow} {icon} [bold]{desc}[/bold]{recur}  [dim]{time_str}[/dim]"
+
+        if index in self._expanded:
+            details = f"\n      Description: {task.description}"
+            details += f"\n      ID: {task.id}"
+            details += f"\n      Status: {task.status.value}"
+            details += f"\n      Scheduled: {time_str}"
+            details += f"\n      Created: {task.created_at.strftime('%Y-%m-%d %H:%M')}"
+            if task.recurrence:
+                details += f"\n      Recurrence: {task.recurrence}"
+            if task.result:
+                details += f"\n      Result: {task.result}"
+            if task.error:
+                details += f"\n      [red]Error: {task.error}[/red]"
+            line += details
+
+        return line
 
     def watch_selected_index(self, old: int, new: int) -> None:
-        try:
-            old_w = self.query_one(f"#task-{old}", Static)
-            old_w.remove_class("-selected")
-        except Exception as exc:
-            logger.debug("Failed to deselect task item #task-%d: %s", old, exc)
-        try:
-            new_w = self.query_one(f"#task-{new}", Static)
-            new_w.add_class("-selected")
-        except Exception as exc:
-            logger.debug("Failed to select task item #task-%d: %s", new, exc)
+        self._render_all()
 
     def on_key(self, event) -> None:
-        if not self._tasks:
-            return
         event.stop()
         event.prevent_default()
+
+        if event.key == "escape":
+            self.post_message(self.PanelClosed())
+            return
+
+        if event.key == "tab":
+            self._show_all = not self._show_all
+            self._expanded.clear()
+            visible = self._visible_tasks
+            self.selected_index = min(self.selected_index, max(0, len(visible) - 1))
+            self._render_all()
+            return
+
+        visible = self._visible_tasks
+        if not visible:
+            return
 
         if event.key == "up":
             self.selected_index = max(0, self.selected_index - 1)
         elif event.key == "down":
-            self.selected_index = min(len(self._tasks) - 1, self.selected_index + 1)
-        elif event.key in ("delete", "backspace"):
-            if 0 <= self.selected_index < len(self._tasks):
-                task = self._tasks[self.selected_index]
-                if task.status in (TaskStatus.pending, TaskStatus.running):
-                    self.post_message(self.TaskCancelled(task.id))
+            self.selected_index = min(len(visible) - 1, self.selected_index + 1)
         elif event.key == "enter":
-            if 0 <= self.selected_index < len(self._tasks):
-                self.post_message(self.TaskSelected(self._tasks[self.selected_index].id))
-        elif event.key == "escape":
-            self.post_message(self.PanelClosed())
+            self._toggle_expand()
+        elif event.key in ("delete", "backspace") and 0 <= self.selected_index < len(visible):
+            task = visible[self.selected_index]
+            if task.status in (TaskStatus.pending, TaskStatus.running):
+                self.post_message(self.TaskCancelled(task.id))
+
+    def _toggle_expand(self) -> None:
+        idx = self.selected_index
+        if idx in self._expanded:
+            self._expanded.discard(idx)
+        else:
+            self._expanded.add(idx)
+        self._render_all()

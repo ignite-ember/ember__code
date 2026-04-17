@@ -53,7 +53,6 @@ class TestParseTime:
         result = parse_time("tomorrow")
         assert result is not None
         assert result.date() == (datetime.now() + timedelta(days=1)).date()
-        assert result.hour == 9  # default 9am
 
     def test_tomorrow_at(self):
         result = parse_time("tomorrow at 3pm")

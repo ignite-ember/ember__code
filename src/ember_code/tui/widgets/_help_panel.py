@@ -82,8 +82,7 @@ HELP_SECTIONS = [
         "Schedule tasks for later or recurring execution.\n\n"
         + "\n".join(
             [
-                _row("/schedule", "list pending tasks"),
-                _row("/schedule all", "include completed/cancelled"),
+                _row("/schedule", "open task panel"),
                 _row("/schedule add <desc> at <time>", "one-shot task"),
                 _row("/schedule add <desc> in <dur>", "relative time"),
                 _row("/schedule add <desc> every <n>", "recurring task"),

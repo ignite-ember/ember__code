@@ -116,6 +116,24 @@ def format_tool_args(tool_args: dict | None, tool_name: str = "") -> str:
     return ", ".join(parts)
 
 
+def _format_edit_diff(tool: Any) -> str | None:
+    """Format an Edit tool's old_string/new_string as a colored diff."""
+    args = getattr(tool, "tool_args", None)
+    if not args or not isinstance(args, dict):
+        return None
+    old = args.get("old_string", "")
+    new = args.get("new_string", "")
+    if not old and not new:
+        return None
+
+    lines = []
+    for line in old.splitlines():
+        lines.append(f"[red]- {line}[/red]")
+    for line in new.splitlines():
+        lines.append(f"[green]+ {line}[/green]")
+    return "\n".join(lines)
+
+
 def extract_result(event: Any) -> tuple[str, str]:
     """Extract (summary, full_result) from a tool completion event."""
     tool = getattr(event, "tool", None)
@@ -129,9 +147,9 @@ def extract_result(event: Any) -> tuple[str, str]:
                 timing = f"{duration:.2f}s"
 
     result = getattr(tool, "result", None) if tool else None
+    tool_name = getattr(tool, "tool_name", "?") if tool else "?"
 
     # Debug: log raw tool result
-    tool_name = getattr(tool, "tool_name", "?") if tool else "?"
     logger.debug(
         "extract_result [%s]: result type=%s, is_none=%s, len=%d",
         tool_name,
@@ -139,6 +157,15 @@ def extract_result(event: Any) -> tuple[str, str]:
         result is None,
         len(str(result)) if result is not None else 0,
     )
+
+    # For Edit tools, show a colored diff instead of "Successfully edited"
+    if tool_name == "edit_file" and tool:
+        diff = _format_edit_diff(tool)
+        if diff:
+            summary_msg = str(result).strip() if result else "Edited"
+            if timing:
+                summary_msg = f"{summary_msg}, {timing}"
+            return summary_msg, diff
 
     full_text = str(result).strip() if result else ""
     # MCP tools may return literal "None"/"null" for empty responses
