@@ -84,23 +84,23 @@ class TestUpdateStatusBar:
         session = MagicMock()
         session.settings.models.default = "test-model"
         session.cloud_connected = True
-        session.cloud_org_id = "org-123"
+        session.cloud_org_name = "My Org"
         tracker._app.session = session
         tracker.update_status_bar()
         bar.update_model.assert_called_once_with("test-model")
-        bar.set_cloud_status.assert_called_once_with(True, "org-123")
+        bar.set_cloud_status.assert_called_once_with(True, "My Org")
 
     def test_no_session(self):
         tracker = _make_tracker(bar=MagicMock())
         tracker._app.session = None
         tracker.update_status_bar()  # should not raise
 
-    def test_cloud_org_id_none(self):
+    def test_cloud_org_name_none(self):
         bar = MagicMock()
         tracker = _make_tracker(bar=bar)
         session = MagicMock()
         session.cloud_connected = False
-        session.cloud_org_id = None
+        session.cloud_org_name = None
         tracker._app.session = session
         tracker.update_status_bar()
         bar.set_cloud_status.assert_called_once_with(False, "")

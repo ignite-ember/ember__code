@@ -5,6 +5,7 @@ import logging
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown, Static, Tree
 
@@ -195,33 +196,50 @@ class StreamingMessageWidget(Widget):
     }
     """
 
+    # Throttle markdown re-renders to keep the UI responsive during streaming.
+    # Chunks are buffered and flushed at most every RENDER_INTERVAL seconds.
+    RENDER_INTERVAL = 0.10  # seconds
+
     def __init__(self, css_class: str = ""):
         super().__init__()
         if css_class:
             self.add_class(f"-{css_class}")
         self._chunks: list[str] = []
+        self._dirty = False
+        self._render_timer: Timer | None = None
+        self._timer_running = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="message-row"):
             yield Static("[bold]● [/bold]", classes="role-label")
             yield Markdown("", classes="stream-content")
 
+    def on_mount(self) -> None:
+        self._render_timer = self.set_interval(self.RENDER_INTERVAL, self._flush_render, pause=True)
+
     @property
     def text(self) -> str:
         return "".join(self._chunks)
 
     def append_chunk(self, chunk: str) -> None:
-        """Append a text chunk and re-render.
-
-        Handles both delta-based streaming (chunk = new text only) and
-        cumulative streaming (chunk = all previous text + new text) by
-        detecting if the chunk starts with the current accumulated text.
-        """
+        """Append a text chunk. The actual render is throttled."""
         current = self.text
         if current and chunk.startswith(current) and len(chunk) > len(current):
-            # Cumulative chunk — extract only the new part
             chunk = chunk[len(current) :]
         self._chunks.append(chunk)
+        self._dirty = True
+        if self._render_timer and not self._timer_running:
+            self._render_timer.resume()
+            self._timer_running = True
+
+    def _flush_render(self) -> None:
+        """Render accumulated chunks to the Markdown widget."""
+        if not self._dirty:
+            if self._render_timer:
+                self._render_timer.pause()
+                self._timer_running = False
+            return
+        self._dirty = False
         try:
             md = self.query_one(".stream-content", Markdown)
             md.update(self.text)
@@ -229,7 +247,12 @@ class StreamingMessageWidget(Widget):
             logger.debug("Failed to update streaming content: %s", exc)
 
     def finalize(self) -> str:
-        """Return the full text."""
+        """Flush any pending content and return the full text."""
+        if self._render_timer:
+            self._render_timer.pause()
+            self._timer_running = False
+        if self._dirty:
+            self._flush_render()
         return self.text
 
 

@@ -54,7 +54,7 @@ class StatusTracker:
         bar = self._bar()
         if bar:
             bar.update_model(session.settings.models.default)
-            bar.set_cloud_status(session.cloud_connected, session.cloud_org_id or "")
+            bar.set_cloud_status(session.cloud_connected, session.cloud_org_name or "")
 
     def add_context_tokens(self, input_tokens: int) -> None:
         """Track main conversation input tokens for context % calculation.

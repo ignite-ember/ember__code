@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CREDENTIALS_PATH = "~/.ember/credentials.json"
 
-# JWT default lifetime: 7 days
-DEFAULT_TOKEN_TTL = 7 * 24 * 3600
+# JWT default lifetime: 30 days (matches server-issued tokens)
+DEFAULT_TOKEN_TTL = 30 * 24 * 3600
 
 
 class Credentials(BaseModel):

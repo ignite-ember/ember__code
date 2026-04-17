@@ -12,6 +12,7 @@ from ember_code.config.defaults import DEFAULT_CONFIG
 class ModelsConfig(BaseModel):
     default: str = "MiniMax-M2.7"
     max_context_window: int = 200_000
+    max_run_timeout: int = 300  # total timeout for a single arun() call (seconds)
     registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 

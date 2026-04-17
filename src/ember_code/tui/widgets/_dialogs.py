@@ -1,6 +1,7 @@
 """Modal/overlay widgets: permission dialog, session picker, model picker, login."""
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 
@@ -488,10 +489,10 @@ class ModelPickerWidget(Widget):
 
 
 class LoginWidget(Widget):
-    """Bottom-docked device-flow login dialog.
+    """Bottom-docked login dialog with automatic browser callback.
 
-    Opens the Ember portal in the browser, then polls until
-    the user completes authentication.
+    Starts a local HTTP server, opens the portal in the browser,
+    and automatically receives the token when the user authenticates.
     """
 
     can_focus = True
@@ -515,12 +516,10 @@ class LoginWidget(Widget):
 
     LoginWidget .login-status {
         color: $text-muted;
-        margin-top: 1;
     }
 
     LoginWidget .hint {
         color: $text-muted;
-        margin-top: 1;
     }
     """
 
@@ -539,76 +538,88 @@ class LoginWidget(Widget):
     def __init__(self, api_url: str = "https://api.ignite-ember.sh"):
         super().__init__()
         self._api_url = api_url
-        self._poll_task: asyncio.Task | None = None
+        self._login_task: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("[bold $accent]Login to Ember Cloud[/bold $accent]", classes="login-title")
-        yield Static("Opening browser...", classes="login-status", id="login-status")
+        yield Static("Starting...", classes="login-status", id="login-status")
         yield Static("[dim]Esc to cancel[/dim]", classes="hint")
 
     def on_mount(self) -> None:
-        self._poll_task = asyncio.create_task(self._device_flow())
+        self._login_task = asyncio.create_task(self._login_flow())
 
     def on_key(self, event) -> None:
+        event.stop()
+        event.prevent_default()
+
         if event.key == "escape":
-            event.stop()
-            event.prevent_default()
-            if self._poll_task:
-                self._poll_task.cancel()
+            if self._login_task:
+                self._login_task.cancel()
             self.post_message(self.Cancelled())
             self.remove()
 
-    async def _device_flow(self) -> None:
-        """Run the full device-auth flow."""
+    async def _login_flow(self) -> None:
+        """Run the full browser-callback login flow."""
         import webbrowser
 
         status = self.query_one("#login-status", Static)
 
         try:
-            from ember_code.auth.client import poll_for_token, request_device_code
-            from ember_code.auth.credentials import save_credentials, save_model_credentials
+            from ember_code.auth.client import (
+                get_login_url,
+                start_callback_server,
+                validate_token,
+                wait_for_token,
+            )
+            from ember_code.auth.credentials import save_credentials
 
-            # Step 1: Get device code and login URL
-            device = await request_device_code(self._api_url)
-            login_url = device.get("login_url", "")
-            device_code = device.get("device_code", "")
-
-            if not login_url or not device_code:
-                status.update("[red]Error: invalid response from server[/red]")
-                return
+            # Step 1: Start local callback server
+            status.update("Starting local server...")
+            server, callback_url = start_callback_server()
+            # Extract port from callback_url for the portal's /cli-auth page
+            port = int(callback_url.split(":")[2].split("/")[0])
+            login_url = get_login_url(port)
 
             # Step 2: Open browser
-            webbrowser.open(login_url)
+            with contextlib.suppress(Exception):
+                webbrowser.open(login_url)
+
             status.update(
-                f"Waiting for login in browser...\n"
-                f"[dim]If the browser didn't open, go to: {login_url}[/dim]"
+                "Waiting for login in browser...\n"
+                "[dim]If the browser didn't open, go to:[/dim]\n"
+                f"[dim]{login_url}[/dim]"
             )
 
-            # Step 3: Poll until user completes login
-            result = await poll_for_token(device_code, self._api_url)
-
-            token = result.get("access_token", "")
-            email = result.get("email", "")
-            if not token:
-                status.update("[red]Error: no token received[/red]")
+            # Step 3: Wait for callback token
+            try:
+                token = await wait_for_token(server, timeout=300)
+            except TimeoutError:
+                status.update("[red]Login timed out. Try /login again.[/red]")
                 return
 
-            # Step 4: Save platform credentials
-            save_credentials(token, email)
+            # Step 4: Get user info and save
+            status.update("Fetching user info...")
+            user_info = await validate_token(token, self._api_url)
+            email = user_info.get("email", "") if user_info else ""
 
-            # Step 5: Save model credentials to config
-            model_api_key = result.get("model_api_key", "")
-            model_url = result.get("model_url", "")
-            if model_api_key and model_url:
-                model_name = result.get("model_name", "MiniMax-M2.7")
-                save_model_credentials(model_api_key, model_url, model_name)
+            # Read expiry from JWT claims for accurate TTL
+            from ember_code.auth.credentials import decode_jwt_claims
+
+            claims = decode_jwt_claims(token)
+            if claims.get("exp"):
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
+                exp = datetime.fromtimestamp(claims["exp"], tz=timezone.utc)
+                ttl = max(int((exp - now).total_seconds()), 0)
+                save_credentials(token, email, ttl=ttl)
+            else:
+                save_credentials(token, email)
 
             self.post_message(self.LoggedIn(email))
             self.remove()
 
         except asyncio.CancelledError:
             pass
-        except TimeoutError:
-            status.update("[red]Login timed out. Please try again with /login[/red]")
         except Exception as e:
             status.update(f"[red]Error: {e}[/red]")

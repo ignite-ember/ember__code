@@ -2,4 +2,4 @@
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-AUTO_SCROLL_THRESHOLD = 3
+AUTO_SCROLL_THRESHOLD = 10

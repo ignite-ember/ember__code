@@ -6,6 +6,7 @@ HITLHandler. This is the only place where Agno events meet Textual widgets.
 """
 
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +92,11 @@ class RunController:
         self._run_input_tokens = 0
         self._run_output_tokens = 0
         self._streamed = False
+
+        # Learning extraction runs every N turns (or before compaction)
+        self._turn_count = 0
+        self._learning_interval = 10
+        self._pending_learn_messages: list = []  # accumulated since last extraction
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -233,9 +239,68 @@ class RunController:
         self._run_input_tokens = len(self._tokenizer.encode(message))
 
         try:
-            async for event in team.arun(message, stream=True, **media_kwargs):
-                await self._dispatch(event, team)
+            # Total run timeout — prevents indefinite hangs even when
+            # keepalive data keeps the underlying connection alive.
+            run_timeout = self._session.settings.models.max_run_timeout
+            _llm_log = logging.getLogger("ember_code.llm_calls")
+            _llm_log.info("RUN START | msg_len=%d | timeout=%ds", len(message), run_timeout)
+            _run_t0 = __import__("time").monotonic()
+            _chunk_count = 0
+            _content_count = 0
+            _last_chunk_time = _run_t0
+
+            async with asyncio.timeout(run_timeout):
+                async for event in team.arun(message, stream=True, **media_kwargs):
+                    _chunk_count += 1
+                    _now = __import__("time").monotonic()
+                    _gap = _now - _last_chunk_time
+                    _last_chunk_time = _now
+
+                    etype = type(event).__name__
+                    has_content = bool(getattr(event, "content", None))
+                    if has_content:
+                        _content_count += 1
+
+                    # Log slow gaps (>5s between chunks) and every 50th chunk
+                    if _gap > 5.0 or _chunk_count <= 3 or _chunk_count % 50 == 0:
+                        _llm_log.info(
+                            "RUN CHUNK #%d | type=%s | content=%s | gap=%.1fs | elapsed=%.1fs",
+                            _chunk_count,
+                            etype,
+                            has_content,
+                            _gap,
+                            _now - _run_t0,
+                        )
+
+                    await self._dispatch(event, team)
+
+            _elapsed = __import__("time").monotonic() - _run_t0
+            _llm_log.info(
+                "RUN DONE | chunks=%d | content_chunks=%d | elapsed=%.1fs",
+                _chunk_count,
+                _content_count,
+                _elapsed,
+            )
+        except TimeoutError:
+            _elapsed = __import__("time").monotonic() - _run_t0
+            _llm_log.error(
+                "RUN TIMEOUT | chunks=%d | content_chunks=%d | elapsed=%.1fs | last_gap=%.1fs",
+                _chunk_count,
+                _content_count,
+                _elapsed,
+                __import__("time").monotonic() - _last_chunk_time,
+            )
+            self._conversation.append_error(
+                "Request timed out — the model took too long to respond. Try again."
+            )
         except Exception as e:
+            _elapsed = __import__("time").monotonic() - _run_t0
+            _llm_log.error(
+                "RUN ERROR | chunks=%d | elapsed=%.1fs | error=%s",
+                _chunk_count,
+                _elapsed,
+                e,
+            )
             self._conversation.append_error(f"Error: {e}")
             logger.exception("Run error: %s", e)
 
@@ -267,11 +332,23 @@ class RunController:
         self._ui_finalized = False
         self._status.record_turn()
 
+        # Accumulate messages for batched learning extraction
+        self._turn_count += 1
+        from agno.models.message import Message as AgnoMessage
+
+        self._pending_learn_messages.append(AgnoMessage(role="user", content=original_message))
+        if self._run_output_text:
+            self._pending_learn_messages.append(
+                AgnoMessage(role="assistant", content="".join(self._run_output_text))
+            )
+
         # Compact history if approaching context limit
         ctx_tokens = self._status._context_input_tokens
         max_ctx = self._status.max_context_tokens
         compacted = await self._session.compact_if_needed(ctx_tokens, max_ctx)
         if compacted:
+            # Extract learnings before context is lost
+            self._flush_learnings()
             # Clear the visual conversation and show summary
             await self._conversation.container.remove_children()
             self._conversation.append_info("Context compacted — older messages summarized.")
@@ -300,19 +377,9 @@ class RunController:
         if not stop_result.should_continue and stop_result.message:
             self._conversation.append_info(stop_result.message)
 
-        # Fire-and-forget learning extraction as async task.
-        # Build messages from what we captured during the run — don't rely
-        # on DB which may not have been written yet.
-        learning = self._session._learning
-        if learning is not None:
-            from agno.models.message import Message as AgnoMessage
-
-            run_messages = [AgnoMessage(role="user", content=original_message)]
-            if self._run_output_text:
-                run_messages.append(
-                    AgnoMessage(role="assistant", content="".join(self._run_output_text))
-                )
-            asyncio.create_task(self._extract_learnings(learning, run_messages))
+        # Extract learnings every N turns
+        if self._turn_count % self._learning_interval == 0:
+            self._flush_learnings()
 
         # Clean up hook
         self._processing = False
@@ -320,6 +387,16 @@ class RunController:
 
         # Drain queue
         await self._drain_queue()
+
+    def _flush_learnings(self) -> None:
+        """Send accumulated messages to learning extraction and reset buffer."""
+        learning = self._session._learning
+        if learning is None or not self._pending_learn_messages:
+            return
+        messages = self._pending_learn_messages[:]
+        self._pending_learn_messages.clear()
+        task = asyncio.create_task(self._extract_learnings(learning, messages))
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     async def _drain_queue(self) -> None:
         if self._queue:
@@ -330,7 +407,6 @@ class RunController:
     async def _extract_learnings(self, learning: Any, messages: list) -> None:
         """Fire-and-forget learning extraction in a background thread."""
 
-        # TODO: Evaluate if this is a good approach
         def _run():
             import asyncio as _aio
 
@@ -343,12 +419,20 @@ class RunController:
                         session_id=self._session.session_id,
                     )
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging
+
+                logging.getLogger("ember_code.llm_calls").warning(
+                    "Learning extraction failed: %s", exc
+                )
             finally:
+                # Suppress "Event loop is closed" from httpx/asyncio cleanup
+                with contextlib.suppress(Exception):
+                    loop.run_until_complete(loop.shutdown_asyncgens())
                 loop.close()
 
-        await asyncio.to_thread(_run)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_run)
 
     # ── Event dispatch ────────────────────────────────────────────
 
@@ -820,7 +904,7 @@ class RunController:
     def _auto_scroll(self) -> None:
         c = self._conversation.container
         if c.max_scroll_y - c.scroll_y < AUTO_SCROLL_THRESHOLD:
-            c.scroll_end(animate=True)
+            c.scroll_end(animate=False)
 
     def _sync_queue_panel(self) -> None:
         try:

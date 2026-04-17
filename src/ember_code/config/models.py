@@ -1,5 +1,6 @@
 """Model registry — maps model names to Agno model instances."""
 
+import inspect
 import logging
 import os
 from typing import Any
@@ -11,8 +12,76 @@ from ember_code.config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+# Dedicated LLM call logger — always writes to ~/.ember/llm_calls.log
+_llm_logger = logging.getLogger("ember_code.llm_calls")
+if not _llm_logger.handlers:
+    _llm_log_path = os.path.expanduser("~/.ember/llm_calls.log")
+    os.makedirs(os.path.dirname(_llm_log_path), exist_ok=True)
+    _llm_handler = logging.FileHandler(_llm_log_path)
+    _llm_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+    _llm_logger.addHandler(_llm_handler)
+    _llm_logger.setLevel(logging.INFO)
+    _llm_logger.propagate = False  # don't duplicate to root
+
 
 DEFAULT_CONTEXT_WINDOW = 128_000
+
+
+def _caller_context(depth: int = 4) -> str:
+    """Walk the call stack to find the meaningful caller (skip Agno internals)."""
+    for frame_info in inspect.stack()[depth : depth + 8]:
+        module = frame_info.filename
+        if "/agno/" in module or "/openai/" in module or "/httpx/" in module:
+            continue
+        # Found an ember_code frame
+        short = module.rsplit("ember_code/", 1)[-1] if "ember_code/" in module else module
+        return f"{short}:{frame_info.lineno} ({frame_info.function})"
+    return "unknown"
+
+
+class _LoggingModel(OpenAILike):
+    """Thin wrapper that logs every LLM API call with caller info."""
+
+    def invoke(self, *args, **kwargs):
+        self._log_call("invoke", args, stream=False, kwargs=kwargs)
+        return super().invoke(*args, **kwargs)
+
+    async def ainvoke(self, *args, **kwargs):
+        self._log_call("ainvoke", args, stream=False, kwargs=kwargs)
+        return await super().ainvoke(*args, **kwargs)
+
+    def invoke_stream(self, *args, **kwargs):
+        self._log_call("invoke_stream", args, stream=True, kwargs=kwargs)
+        yield from super().invoke_stream(*args, **kwargs)
+
+    async def ainvoke_stream(self, *args, **kwargs):
+        self._log_call("ainvoke_stream", args, stream=True, kwargs=kwargs)
+        async for chunk in super().ainvoke_stream(*args, **kwargs):
+            yield chunk
+
+    def _log_call(self, method: str, args: tuple, stream: bool, kwargs: dict | None = None) -> None:
+        n_messages = len(args[0]) if args else len((kwargs or {}).get("messages", []))
+        url = getattr(self, "base_url", None) or "default"
+        # Build a short stack trace showing ember_code frames
+        frames = []
+        for fi in inspect.stack()[2:15]:
+            mod = fi.filename
+            if "/agno/" in mod or "/openai/" in mod or "/httpx/" in mod or "/asyncio/" in mod:
+                continue
+            short = (
+                mod.rsplit("ember_code/", 1)[-1] if "ember_code/" in mod else os.path.basename(mod)
+            )
+            frames.append(f"{short}:{fi.lineno}({fi.function})")
+        caller = " <- ".join(frames[:4]) or "unknown"
+        _llm_logger.info(
+            "LLM call: %s | model=%s | messages=%d | stream=%s | url=%s | caller=%s",
+            method,
+            self.id,
+            n_messages,
+            stream,
+            url,
+            caller,
+        )
 
 
 class ContextWindowResolver:
@@ -107,6 +176,12 @@ class ModelRegistry:
         self.settings = settings
         self.context_windows = ContextWindowResolver()
 
+        # Resolve cloud credentials for inference routing
+        from ember_code.auth.credentials import get_access_token
+
+        self._cloud_token = get_access_token(settings.auth.credentials_file)
+        self._cloud_server_url = settings.auth.server_url if self._cloud_token else None
+
     def get_model(self, name: str | None = None) -> OpenAILike:
         """Get an Agno model instance by registry name."""
         if name is None:
@@ -143,7 +218,13 @@ class ModelRegistry:
         # OpenAI-like providers
         kwargs = {"id": entry["model_id"]}
 
-        if "url" in entry:
+        # When authenticated with Ember Cloud, route inference through the
+        # Ember API gateway — this enables usage tracking, quotas, and
+        # key pooling on the server side.
+        if self._cloud_token and self._cloud_server_url:
+            kwargs["api_key"] = self._cloud_token
+            kwargs["base_url"] = f"{self._cloud_server_url.rstrip('/')}/v1/"
+        elif "url" in entry:
             kwargs["api_key"] = api_key or "not-set"
             kwargs["base_url"] = entry["url"]
         elif api_key:
@@ -154,7 +235,13 @@ class ModelRegistry:
         if "max_tokens" in entry:
             kwargs["max_tokens"] = entry["max_tokens"]
 
-        return provider_cls(**kwargs)
+        # Request timeout — prevents indefinite hangs when the server or
+        # upstream provider stops responding.  Configurable per model via
+        # ``timeout`` in the registry entry; defaults to 120s.
+        kwargs["timeout"] = entry.get("timeout", 120)
+
+        # Use logging wrapper to trace all LLM API calls
+        return _LoggingModel(**kwargs)
 
     def get_context_window(self, name: str | None = None) -> int:
         """Get the context window size for a model (synchronous)."""
