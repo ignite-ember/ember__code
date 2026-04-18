@@ -22,11 +22,11 @@
 - [x] Streaming — responses appear token-by-token (not all at once)
 
 ### End-to-end coding workflows
-- [ ] "Add tests for [module]" — agent reads code, writes test file, runs tests
-- [ ] "Fix the bug in [file]" — agent reads, edits, verifies
-- [ ] "Refactor [function]" — agent reads, edits multiple files, runs tests
+- [x] "Add tests for [module]" — agent reads code, writes test file, runs tests
+- [x] "Fix the bug in [file]" — agent reads, edits, verifies
+- [x] "Refactor [function]" — agent reads, edits multiple files, runs tests
 - [x] Multi-agent task — orchestrator delegates to specialist agents
-- [ ] Agent uses multiple tools in sequence (Read → Edit → Bash)
+- [x] Agent uses multiple tools in sequence (Read → Edit → Bash)
 
 ### Error recovery & resilience
 - [x] Model API timeout — graceful error message, session continues
