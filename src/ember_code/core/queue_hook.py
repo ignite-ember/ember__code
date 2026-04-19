@@ -40,9 +40,13 @@ class QueueInjectorHook:
         on_inject: Callable[[str], None] | None = None,
         on_queue_changed: Callable[[], None] | None = None,
     ):
+        import asyncio
         import inspect
 
-        inspect.markcoroutinefunction(self)
+        if hasattr(inspect, "markcoroutinefunction"):
+            inspect.markcoroutinefunction(self)
+        else:
+            self._is_coroutine = asyncio.coroutines._is_coroutine
         self._queue = queue
         self._on_inject = on_inject
         self._on_queue_changed = on_queue_changed

@@ -6,6 +6,7 @@ wraps them in the async chain and our hook properly handles both sync
 and async ``func`` via ``inspect.isawaitable``.
 """
 
+import asyncio
 import fnmatch
 import inspect
 import logging
@@ -52,7 +53,11 @@ class ToolEventHook:
         blocked_commands: list[str] | None = None,
     ):
         # Mark instance as coroutine function so Agno uses aexecute() path
-        inspect.markcoroutinefunction(self)
+        if hasattr(inspect, "markcoroutinefunction"):
+            inspect.markcoroutinefunction(self)
+        else:
+            # Python 3.11 fallback — set the flag manually
+            self._is_coroutine = asyncio.coroutines._is_coroutine
         self._executor = executor
         self._session_id = session_id
         self._protected_paths = protected_paths or []
