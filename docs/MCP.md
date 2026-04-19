@@ -8,7 +8,7 @@ Ember Code connects to external MCP servers at session start and makes their too
 
 To add an MCP server, create or edit `.mcp.json` in your project root (see below).
 
-> **Note:** Currently only the **stdio** transport is fully supported. HTTP and SSE transports are planned.
+> **Note:** Both **stdio** and **SSE** transports are supported. Set `"type": "sse"` with a `"url"` field for SSE servers.
 
 ## Configuration (.mcp.json)
 

@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
         "session_db": "~/.ember/sessions.db",
         "memory_db": "~/.ember/memory.db",
         "audit_log": "~/.ember/audit.log",
-        "max_history_runs": 10,
+        "max_history_runs": 10000,
     },
     "rules": {
         "cross_tool_support": True,
@@ -78,14 +78,14 @@ DEFAULT_CONFIG = {
     "orchestration": {
         "max_nesting_depth": 5,
         "max_total_agents": 20,
-        "sub_team_timeout": 120,
+        "sub_team_timeout": 600,
         "max_task_iterations": 10,
         "generate_ephemeral": True,
         "max_ephemeral_per_session": 5,
         "auto_cleanup": True,
     },
     "learning": {
-        "enabled": False,
+        "enabled": True,
         "user_profile": True,
         "user_memory": True,
         "session_context": True,

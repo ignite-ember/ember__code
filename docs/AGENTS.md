@@ -139,9 +139,11 @@ By default, the agent pool loads from **Ember Code directories only**:
 | Project | `.ember/agents/` (committed) | `.md` with YAML frontmatter |
 | Project | `.ember/agents.local/` (gitignored) | `.md` with YAML frontmatter |
 | Global | `~/.ember/agents/` | `.md` with YAML frontmatter |
-| Built-in | `<install>/agents/` | `.md` with YAML frontmatter |
+| Ephemeral | `.ember/agents.tmp/` (session-scoped) | `.md` with YAML frontmatter |
 
-**Merging rule:** All agents are combined into one pool. The only conflict is when two agents share the same `name` — in that case, **project-level always wins over global, and global always wins over built-in**. Agents with different names never conflict — they all coexist in the pool.
+> **Built-in agents** are copied from the package into `.ember/agents/` on first project init (checksum-merged on subsequent runs). They appear as project-level agents.
+
+**Merging rule:** All agents are combined into one pool. The only conflict is when two agents share the same `name` — in that case, **project-level always wins over global**. Agents with different names never conflict — they all coexist in the pool.
 
 ### Cross-Tool Support (on by default)
 

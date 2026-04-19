@@ -6,7 +6,7 @@ Ember Code is configured through a layered system of config files, environment v
 
 (Highest priority first)
 
-1. **CLI flags** — `--model`, `--no-web`, `--sandbox`, etc.
+1. **CLI flags** — `--model`, `--no-web`, etc.
 2. **Project local config** — `.ember/config.local.yaml` (gitignored, personal overrides)
 3. **Project config** — `.ember/config.yaml` (committed to repo, shared with team)
 4. **User config** — `~/.ember/config.yaml` (global, generated on first run)
@@ -199,14 +199,13 @@ permissions:
   file_read: "allow"
   shell_execute: "ask"
   shell_restricted: "allow"       # read-only commands (rg, find, tree)
-  web_search: "deny"
-  web_fetch: "deny"
+  web_search: "allow"
+  web_fetch: "allow"
   git_push: "ask"
   git_destructive: "ask"          # force-push, reset --hard, etc.
 
 # Safety
 safety:
-  sandbox_shell: false             # Run shell commands in sandbox
   protected_paths:                 # Paths that cannot be written to
     - ".env"
     - ".env.*"
@@ -236,16 +235,7 @@ storage:
   # backend: "postgres"
   # db_url: "postgresql://user:pass@host:5432/ember_code"
   audit_log: "~/.ember/audit.log"      # Tool execution log
-  max_history_runs: 10                 # Conversation turns to keep in context
-
-# Session behavior
-session:
-  compress_tool_results: true          # Compress tool outputs to save tokens
-  enable_session_summaries: true       # Generate session summaries for /sessions list
-  add_history_to_context: true         # Include past turns in agent context
-  read_chat_history: true              # Allow agents to read full chat history
-  enable_agentic_memory: true          # Give agents an update_user_memory tool
-  add_memories_to_context: true        # Include user memories in agent context
+  max_history_runs: 10000              # Effectively unlimited (auto-compact handles context)
 
 # Context compression
 #
@@ -300,7 +290,7 @@ context:
 orchestration:
   max_nesting_depth: 5             # Max recursive sub-team depth
   max_total_agents: 20             # Max agents per request
-  sub_team_timeout: 120            # Seconds before sub-team times out
+  sub_team_timeout: 600            # Seconds before sub-team times out
   max_task_iterations: 10          # Max iterations for tasks-mode teams
 
 # Task scheduling (background jobs)
@@ -338,7 +328,7 @@ skills:
 # Embeddings — BYOM registry (same pattern as models.registry)
 # Resolution: user registry → built-in → provider:model_id
 embeddings:
-  default: "ember"                 # Default embedder name
+  default: "local"                 # Default embedder name
   registry:
     # Example: use Voyage AI
     # voyage:
@@ -364,18 +354,18 @@ embeddings:
 
 # Knowledge base (requires: pip install ember-code[knowledge])
 knowledge:
-  enabled: false                   # Enable ChromaDB knowledge base
+  enabled: true                    # Enable ChromaDB knowledge base
   collection_name: "ember_knowledge"  # ChromaDB collection name
   chroma_db_path: "~/.ember/chromadb" # Path to ChromaDB storage
   max_results: 10                  # Max search results returned
-  embedder: "ember"                # Embedder registry name (or provider:model_id)
+  embedder: "local"                # Embedder registry name (or provider:model_id)
   share: true                      # Sync knowledge to a git-friendly YAML file
   share_file: ".ember/knowledge.yaml"  # Knowledge file path (relative to project)
   auto_sync: true                  # Auto-sync on session start/end
 
 # Learning
 learning:
-  enabled: false                   # Enable learning across sessions
+  enabled: true                    # Enable learning across sessions
   user_profile: true               # Build user preference profiles
   user_memory: true                # Persist user-specific memories
   session_context: true            # Carry session context forward
@@ -390,7 +380,7 @@ reasoning:
 
 # Guardrails
 guardrails:
-  pii_detection: false             # Detect PII in prompts (pre-hook)
+  pii_detection: true              # Detect PII in prompts (pre-hook)
   prompt_injection: false          # Detect injection attempts (pre-hook)
   moderation: false                # OpenAI moderation API (pre-hook)
 
@@ -425,7 +415,6 @@ ignite-ember --model MiniMax-M2.7-highspeed  # faster variant
 ignite-ember --model gpt-4o                  # use OpenAI
 
 # Safety modes
-ignite-ember --sandbox               # sandbox all shell commands
 ignite-ember --no-web                # disable web access
 ignite-ember --read-only             # no file modifications
 
@@ -440,7 +429,6 @@ ignite-ember --no-tui                # disable TUI, use plain Rich CLI output
 # Session
 ignite-ember --resume                # resume last session
 ignite-ember --resume <session-id>   # resume specific session
-ignite-ember --no-memory             # disable persistent memory
 
 # Direct execution
 ignite-ember -m "add tests for auth module"   # non-interactive single task

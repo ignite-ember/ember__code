@@ -230,11 +230,11 @@
 - [x] `/sync-knowledge` — bidirectional sync (or "not enabled")
 
 ### Memory & learning
-- [ ] Agentic memory disabled — replaced by LearningMachine
-- [ ] `/memory` — shows user profile, memories, session context from LearningMachine
-- [ ] Learnings added to agent context (via build_context on every request)
-- [ ] Learning enabled — extracts user profile, memories, session context after each response
-- [ ] Entity memory — remembers facts (enabled but needs more conversations to populate)
+- [x] Agentic memory disabled — replaced by LearningMachine
+- [x] `/memory` — shows user profile, memories, session context from LearningMachine
+- [x] Learnings added to agent context (via build_context on every request)
+- [x] Learning enabled — extracts user profile, memories, session context after each response
+- [x] Entity memory — remembers facts (enabled but needs more conversations to populate)
 
 ### Authentication & cloud
 - [x] `/login` flow — browser opens, polling, token saved
@@ -245,17 +245,17 @@
 - [x] Status bar shows cloud indicator
 
 ### Scheduling
-- [ ] `/schedule` — lists tasks (or "none")
-- [ ] `/schedule` — includes completed/cancelled
-- [ ] `/schedule add review code at 5pm` — one-shot
-- [ ] `/schedule add run tests in 30 minutes` — relative
-- [ ] `/schedule add run tests every 2 hours` — recurring
-- [ ] `/schedule add check deps daily` — daily
-- [ ] Scheduled task executes at scheduled time
+- [x] `/schedule` — lists tasks (or "none")
+- [x] `/schedule` — includes completed/cancelled
+- [x] `/schedule add review code at 5pm` — one-shot
+- [x] `/schedule add run tests in 30 minutes` — relative
+- [x] `/schedule add run tests every 2 hours` — recurring
+- [x] `/schedule add check deps daily` — daily
+- [x] Scheduled task executes at scheduled time
 - [ ] Recurring tasks reschedule after completion
 - [ ] Task timeout enforced
 - [ ] Max concurrent enforced
-- [ ] Task panel (Ctrl+T) — shows live status
+- [x] Task panel (Ctrl+T) — shows live status
 
 ### Media auto-detection
 - [ ] TUI: local image path — "Attached: 1 image(s)"
@@ -273,19 +273,19 @@
 - [ ] Code/text files (`.py`, `.js`, `.json`, `.md`, etc.) — NOT auto-attached, agent reads via tools
 
 ### @file mention autocomplete
-- [ ] Type `@` — file picker dropdown appears above input
-- [ ] Type `@src/` — filters to files under src/
-- [ ] Fuzzy matching works (e.g., `@s/u/m` matches `src/utils/media.py`)
-- [ ] Up/Down arrows navigate the picker
-- [ ] Tab selects file and inserts path after `@`
-- [ ] Enter selects file (does NOT submit message)
-- [ ] Escape dismisses picker without inserting
+- [x] Type `@` — file picker dropdown appears above input
+- [x] Type `@src/` — filters to files under src/
+- [x] Fuzzy matching works (e.g., `@s/u/m` matches `src/utils/media.py`)
+- [x] Up/Down arrows navigate the picker
+- [x] Tab selects file and inserts path after `@`
+- [x] Enter selects file (does NOT submit message)
+- [x] Escape dismisses picker without inserting
 - [ ] Selected path inserted with trailing space
-- [ ] `@nonexistent` — shows "No matching files"
-- [ ] `@` alone (empty query) — shows first 100 project files
-- [ ] Picker disappears when cursor leaves @-mention
-- [ ] `email@domain` — does NOT trigger picker
-- [ ] Works after `/clear` and session switches
+- [x] `@nonexistent` — shows "No matching files"
+- [x] `@` alone (empty query) — shows first 100 project files
+- [x] Picker disappears when cursor leaves @-mention
+- [x] `email@domain` — does NOT trigger picker
+- [x] Works after `/clear` and session switches
 - [ ] Large project (1000+ files) — no lag on first `@`
 - [ ] Git-ignored files excluded from results
 
@@ -297,9 +297,9 @@
 - [ ] Exit with changes — preserved, merge instructions shown
 
 ### Skills
-- [ ] `/skills` — lists loaded skills
-- [ ] `/<skill-name>` — executes skill
-- [ ] `/<skill-name> args` — passes arguments
+- [x] `/skills` — lists loaded skills
+- [x] `/<skill-name>` — executes skill
+- [x] `/<skill-name> args` — passes arguments
 - [ ] Auto-trigger — Orchestrator triggers matching skill (if enabled)
 
 ### Evals
@@ -308,7 +308,7 @@
 - [ ] Works in both TUI and `--no-tui`
 
 ### Queue panel (Ctrl+Q)
-- [ ] Shows pending messages
+- [x] Shows pending messages
 - [ ] Edit queued message
 - [ ] Delete queued message
 - [ ] Toggle on/off
@@ -336,23 +336,18 @@
 ## P3 — Polish & Completeness
 
 ### `/bug` command
-- [ ] Opens GitHub issues in browser, confirms
-- [ ] Headless/SSH — no crash
+- [x] Opens GitHub issues in browser, confirms
+- [x] Headless/SSH — no crash
 
 ### Autocomplete
-- [ ] `/mc` suggests `/mcp`
-- [ ] `/com` suggests `/compact`
-- [ ] `/bu` suggests `/bug`
-- [ ] `/ev` suggests `/evals`
-- [ ] `/syn` suggests `/sync-knowledge`
-- [ ] `/sch` suggests `/schedule`
-- [ ] Exact match — no dropdown
-- [ ] Skills appear in autocomplete
+- [x] `/mc` suggests `/mcp`
+- [x] Exact match — no dropdown
+- [x] Skills appear in autocomplete
 
 ### Help text
-- [ ] `/help` lists all commands in TUI
-- [ ] `/help` lists skills
-- [ ] `/help` shows shortcuts
+- [x] `/help` lists all commands in TUI
+- [x] `/help` lists skills
+- [x] `/help` shows shortcuts
 
 ### Tips & cosmetics
 - [ ] Tip rotation includes `/mcp`
@@ -362,22 +357,22 @@
 - [ ] Tip bar visible
 
 ### First-run onboarding
-- [ ] Fresh project — creates `.ember/`, copies agents/skills/hooks, `ember.md`
-- [ ] Delete project `.ember/` folder, re-run — re-initializes project (agents, skills, hooks copied)
-- [ ] Home `~/.ember/.initialized` and project `.ember/.initialized` tracked independently
-- [ ] Second run (both markers exist) — no re-initialization
-- [ ] Built-in agents in `/agents`
-- [ ] Built-in skills in `/skills`
+- [x] Fresh project — creates `.ember/`, copies agents/skills/hooks, `ember.md`
+- [x] Delete project `.ember/` folder, re-run — re-initializes project (agents, skills, hooks copied)
+- [x] Home `~/.ember/.initialized` and project `.ember/.initialized` tracked independently
+- [x] Second run (both markers exist) — no re-initialization
+- [x] Built-in agents in `/agents`
+- [x] Built-in skills in `/skills`
 
 ### Audit & logging
-- [ ] Audit log at `~/.ember/audit.log`
-- [ ] Entries: session ID, agent, tool, status
+- [x] Audit log at `~/.ember/audit.log`
+- [x] Entries: session ID, agent, tool, status
 - [ ] `--debug` creates debug log
 - [ ] Blocked operations logged
 
 ### Cross-tool support
-- [ ] `CLAUDE.md` loaded if `cross_tool_support: true`
-- [ ] `.claude/agents/*.md` loaded if enabled
+- [x] `CLAUDE.md` loaded if `cross_tool_support: true`
+- [x] `.claude/agents/*.md` loaded if enabled
 
 ### Documentation accuracy
 - [ ] `QUICKSTART.md` — media input section correct

@@ -64,11 +64,9 @@ ember-code/
 │       │   ├── __init__.py
 │       │   ├── client.py              # Device-flow authentication (browser login + polling)
 │       │   └── credentials.py         # Credential storage (~/.ember/credentials.json + config)
-│       ├── orchestrator.py            # Orchestrator: task analysis → TeamPlan
 │       ├── pool.py                    # AgentPool: load/parse .md agent definitions
-│       ├── team_builder.py            # Build Agno Teams/Agents from TeamPlan
-│       │                              # AgnoFeatures: knowledge, learning, reasoning,
-│       │                              # guardrails, compression, HITL
+│       ├── learn.py                   # LearningMachine integration
+│       ├── init.py                    # Project initialization (copy agents, skills, hooks)
 │       ├── config/
 │       │   ├── __init__.py
 │       │   ├── settings.py            # Settings (Pydantic), KnowledgeConfig,
@@ -116,6 +114,10 @@ ember-code/
 │       │   ├── config.py              # .mcp.json loading
 │       │   ├── transport.py           # Transport layer (stdio, HTTP)
 │       │   └── approval.py           # First-use MCP server approval
+│       ├── backend/
+│       │   ├── __main__.py            # Backend entry point
+│       │   ├── server.py              # Backend server
+│       │   └── command_handler.py     # CommandHandler — slash command dispatch
 │       ├── tui/
 │       │   ├── __init__.py            # Exports EmberApp
 │       │   ├── app.py                 # EmberApp — thin Textual shell, scheduler integration
@@ -124,8 +126,9 @@ ember-code/
 │       │   ├── status_tracker.py      # StatusTracker — tokens, context, status bar
 │       │   ├── hitl_handler.py        # HITLHandler — confirmation/input dialogs
 │       │   ├── session_manager.py     # SessionManager — session picker, switching
-│       │   ├── command_handler.py     # CommandHandler — slash command dispatch
 │       │   ├── input_handler.py       # InputHandler — history, autocomplete
+│       │   ├── backend_client.py      # BackendClient — communicates with backend server
+│       │   ├── process_manager.py     # ProcessManager — backend process lifecycle
 │       │   └── widgets/               # Custom Textual widgets
 │       │       ├── __init__.py
 │       │       ├── _chrome.py         # StatusBar, SpinnerWidget, QueuePanel, TipBar, etc.
@@ -161,8 +164,8 @@ ember-code/
 ├── tests/
 │   ├── conftest.py                    # Shared fixtures
 │   ├── test_pool.py                   # Agent pool and .md parsing
-│   ├── test_orchestrator.py           # Orchestrator and TeamPlan
-│   ├── test_team_builder.py           # Team building and AgnoFeatures
+│   ├── test_backend_server.py          # BackendServer commands, protocol
+│   ├── test_permission_flows.py       # HITL flows, permission persistence
 │   ├── test_tools.py                  # Tool registry, edit, search, glob
 │   ├── test_knowledge.py              # Knowledge, embedder, learning, reasoning, guardrails
 │   ├── test_hooks.py                  # Hook events, loader, executor
@@ -255,47 +258,17 @@ class AgentPool:
     def _load_all(self, config: Settings):
         # Load in priority order (highest last, so they overwrite)
         dirs = [
-            (Path(__file__).parent.parent / "agents", 0),  # built-in
-            (Path.home() / ".ember-code" / "agents", 1),   # user global
-            (Path(".ember/agents.local"), 2),               # project local
-            (Path(".ember/agents"), 3),                     # project shared
+            (Path.home() / ".ember" / "agents", 0),        # user global
+            (Path(".ember/agents.local"), 1),               # project local
+            (Path(".ember/agents"), 2),                     # project shared
         ]
 ```
 
-### 2. Orchestrator (orchestrator.py)
+### 2. Orchestration (tools/orchestrate.py)
 
-The Orchestrator is the only hardcoded agent. It analyzes each task and outputs a `TeamPlan`:
+The main agent has `OrchestrateTools` which provides `spawn_agent()`, `spawn_team()`, and `create_agent()`. There is no separate orchestrator — the main agent itself decides when to delegate via tool calls. Sub-teams are built from the `AgentPool` with all Agno features (session persistence, compression, knowledge, learning, guardrails) applied by `Session._build_main_agent()`.
 
-```python
-class TeamPlan(BaseModel):
-    team_name: str
-    team_mode: Literal["single", "route", "coordinate", "broadcast", "tasks"]
-    agent_names: list[str]
-    team_instructions: list[str]
-    reasoning: str
-```
-
-### 3. Team Builder (team_builder.py)
-
-`AgnoFeatures` encapsulates all Agno-native capabilities applied to agents and teams:
-
-```python
-class AgnoFeatures:
-    """Configuration for Agno-native features."""
-    # Session persistence (db, session_id, user_id)
-    # History management
-    # Agentic memory
-    # Compression & summaries
-    # Knowledge (ChromaDB + embeddings)
-    # Learning (LearningMachine)
-    # Reasoning tools (think, analyze)
-    # Guardrails (PII, injection, moderation)
-    # HITL hooks
-```
-
-The `apply_to_agent()` and `apply_to_team()` methods wire all features consistently.
-
-### 4. Knowledge System (knowledge/)
+### 3. Knowledge System (knowledge/)
 
 The knowledge system uses a custom `EmberEmbedder` that calls the Ember server's `/v1/embeddings` endpoint (proxying to CodeIndex's text2vec-transformers model, 384 dimensions):
 
@@ -320,7 +293,6 @@ The TUI follows a clean separation of concerns:
 | `StatusTracker` | `status_tracker.py` | Token/context tracking, status bar |
 | `HITLHandler` | `hitl_handler.py` | Confirmation dialogs, user input |
 | `SessionManager` | `session_manager.py` | Session picker, switching, clearing |
-| `CommandHandler` | `command_handler.py` | Slash command dispatch |
 | `InputHandler` | `input_handler.py` | History, autocomplete |
 
 ### 6. Model Resolver (config/models.py)

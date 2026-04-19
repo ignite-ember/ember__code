@@ -140,8 +140,35 @@ def _build_rpc_table(backend: Any, transport: Any) -> dict[str, Any]:
         },
         "check_for_update": lambda args: _check_update(),
         "get_skill_definitions": _get_skill_definitions,
-        "start_scheduler": lambda args: None,  # handled specially
+        "start_scheduler": lambda args: _start_scheduler_with_push(backend, transport),
     }
+
+
+def _start_scheduler_with_push(backend: Any, transport: Any) -> None:
+    """Start the scheduler with push notification callbacks."""
+    from ember_code.protocol import messages as msg
+
+    def on_started(task_id: str, description: str) -> None:
+        asyncio.ensure_future(
+            transport.send(
+                msg.PushNotification(
+                    channel="scheduler_started",
+                    payload={"task_id": task_id, "description": description},
+                )
+            )
+        )
+
+    def on_completed(task_id: str, description: str, result: str) -> None:
+        asyncio.ensure_future(
+            transport.send(
+                msg.PushNotification(
+                    channel="scheduler_completed",
+                    payload={"task_id": task_id, "description": description, "result": result},
+                )
+            )
+        )
+
+    backend.start_scheduler(on_task_started=on_started, on_task_completed=on_completed)
 
 
 # ── Main loop ──────────────────────────────────────────────────────

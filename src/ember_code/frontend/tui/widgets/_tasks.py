@@ -3,7 +3,7 @@
 import logging
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import ScrollableContainer
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -47,8 +47,8 @@ class TaskPanel(Widget):
     }
 
     TaskPanel .task-list {
-        height: auto;
-        max-height: 100%;
+        height: 1fr;
+        max-height: 20;
         overflow-y: auto;
     }
 
@@ -88,7 +88,7 @@ class TaskPanel(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static("", classes="task-title", id="task-title")
-        with Vertical(classes="task-list", id="task-list"):
+        with ScrollableContainer(classes="task-list", id="task-list"):
             yield Static("", id="task-list-content")
         yield Static("", classes="hint", id="task-hint")
 
@@ -207,6 +207,24 @@ class TaskPanel(Widget):
 
     def watch_selected_index(self, old: int, new: int) -> None:
         self._render_all()
+        self._scroll_to_selected()
+
+    def _scroll_to_selected(self) -> None:
+        """Scroll the task list so the selected entry is visible."""
+        try:
+            container = self.query_one("#task-list", ScrollableContainer)
+            visible = self._visible_tasks
+            if not visible:
+                return
+            # Estimate line height per entry (1 line collapsed, more if expanded)
+            y = 0
+            for i in range(self.selected_index):
+                y += 1
+                if i in self._expanded:
+                    y += 7  # approximate expanded height
+            container.scroll_to(0, y, animate=False)
+        except Exception:
+            pass
 
     def on_key(self, event) -> None:
         event.stop()

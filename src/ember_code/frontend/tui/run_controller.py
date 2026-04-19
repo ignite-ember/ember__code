@@ -263,33 +263,41 @@ class RunController:
         self._ui_finalized = False
         self._status.record_turn()
 
-        # ── Learning extraction (via backend) ──
+        # Clean up — mark as not processing so user can send next message
+        self._processing = False
+        self._current_task = None
+
+        # ── Background post-run work (non-blocking) ──
         self._turn_count += 1
         assistant_text = "".join(self._run_output_text) if self._run_output_text else ""
         self._pending_learn_messages.append((original_message, assistant_text))
         if self._turn_count % self._learning_interval == 0:
             self._flush_learnings()
 
-        # ── Compaction (via backend) ──
-        ctx_tokens = self._status._context_input_tokens
-        max_ctx = self._status.max_context_tokens
-        backend = self._app.backend
-        result = await backend.compact_if_needed(ctx_tokens, max_ctx)
-        if result:
-            self._flush_learnings()
-            self._conversation.append_info("Context auto-compacted — older messages summarized.")
-            if result.summary:
-                self._conversation.append_info(f"Summary: {result.summary}")
-            self._status._context_input_tokens = 0
-            bar = self._status._bar()
-            if bar:
-                bar.set_context_usage(0, self._status.max_context_tokens)
-                bar.set_run_tokens(0, 0)
-
-        # Clean up
-        self._processing = False
-        self._current_task = None
+        asyncio.create_task(self._post_run_compaction())
         await self._drain_queue()
+
+    async def _post_run_compaction(self) -> None:
+        """Check compaction in background — doesn't block next message."""
+        try:
+            ctx_tokens = self._status._context_input_tokens
+            max_ctx = self._status.max_context_tokens
+            backend = self._app.backend
+            result = await backend.compact_if_needed(ctx_tokens, max_ctx)
+            if result:
+                self._flush_learnings()
+                self._conversation.append_info(
+                    "Context auto-compacted — older messages summarized."
+                )
+                if result.summary:
+                    self._conversation.append_info(f"Summary: {result.summary}")
+                self._status._context_input_tokens = 0
+                bar = self._status._bar()
+                if bar:
+                    bar.set_context_usage(0, self._status.max_context_tokens)
+                    bar.set_run_tokens(0, 0)
+        except Exception as e:
+            logger.debug("Post-run compaction failed: %s", e)
 
     def _flush_learnings(self) -> None:
         """Send accumulated messages to learning extraction via backend."""

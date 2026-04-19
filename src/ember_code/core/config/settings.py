@@ -64,7 +64,7 @@ class StorageConfig(BaseModel):
     session_db: str = "~/.ember/sessions.db"
     memory_db: str = "~/.ember/memory.db"
     audit_log: str = "~/.ember/audit.log"
-    max_history_runs: int = 3
+    max_history_runs: int = 10000
 
 
 class RulesConfig(BaseModel):

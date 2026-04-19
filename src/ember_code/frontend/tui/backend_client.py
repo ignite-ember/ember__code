@@ -352,7 +352,10 @@ class BackendClient:
         return result if isinstance(result, msg.Info) else msg.Info(text=str(result or ""))
 
     async def get_scheduled_tasks(self, include_done: bool = True) -> list:
-        return await self._rpc("get_scheduled_tasks", include_done=include_done) or []
+        from types import SimpleNamespace
+
+        tasks = await self._rpc("get_scheduled_tasks", include_done=include_done) or []
+        return [SimpleNamespace(**t) if isinstance(t, dict) else t for t in tasks]
 
     # ── Sync properties (cached) ─────────────────────────────────
 

@@ -170,7 +170,7 @@ Claude Code has no equivalent — it's always "single agent decides everything, 
 | Aspect | Claude Code | Ember Code |
 |---|---|---|
 | **Permission model** | Pattern-based per-tool | Category tiers (allow/ask/deny) |
-| **Sandboxing** | macOS sandbox-exec, Linux containers | `safety.sandbox_shell: true` (configurable) |
+| **Command safety** | macOS sandbox-exec, Linux containers | Blocked patterns, confirmation prompts |
 | **PII detection** | No | Yes (Agno pre-hook, opt-in) |
 | **Prompt injection** | Flags suspicious tool results | Yes (Agno pre-hook, opt-in) |
 | **Content moderation** | No | Yes (OpenAI moderation API, opt-in) |
