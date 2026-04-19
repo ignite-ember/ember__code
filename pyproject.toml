@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Terminal-based AI coding assistant built on Agno"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "agno[openai,ddg,sqlite,mcp]~=2.5",
     "aiosqlite~=0.22",
