@@ -10,7 +10,7 @@ from ember_code.cli import _worktree_cleanup, cli
 def _patch_cli():
     """Return patches for the common CLI dependencies."""
     return (
-        patch("ember_code.config.settings.load_settings"),
+        patch("ember_code.core.config.settings.load_settings"),
         patch("ember_code.cli.asyncio.run"),
     )
 
@@ -27,7 +27,7 @@ class TestCLIFlags:
     def test_model_override(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
+            patch("ember_code.core.config.settings.load_settings") as mock_load,
             patch("ember_code.cli.asyncio.run"),
         ):
             mock_load.return_value = MagicMock()
@@ -38,7 +38,7 @@ class TestCLIFlags:
     def test_verbose_flag(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
+            patch("ember_code.core.config.settings.load_settings") as mock_load,
             patch("ember_code.cli.asyncio.run"),
         ):
             mock_load.return_value = MagicMock()
@@ -49,7 +49,7 @@ class TestCLIFlags:
     def test_quiet_flag(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
+            patch("ember_code.core.config.settings.load_settings") as mock_load,
             patch("ember_code.cli.asyncio.run"),
         ):
             mock_load.return_value = MagicMock()
@@ -60,7 +60,7 @@ class TestCLIFlags:
     def test_read_only_flag(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
+            patch("ember_code.core.config.settings.load_settings") as mock_load,
             patch("ember_code.cli.asyncio.run"),
         ):
             mock_load.return_value = MagicMock()
@@ -72,7 +72,7 @@ class TestCLIFlags:
     def test_auto_approve_flag(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
+            patch("ember_code.core.config.settings.load_settings") as mock_load,
             patch("ember_code.cli.asyncio.run"),
         ):
             mock_load.return_value = MagicMock()
@@ -84,19 +84,18 @@ class TestCLIFlags:
     def test_strict_flag(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
+            patch("ember_code.core.config.settings.load_settings") as mock_load,
             patch("ember_code.cli.asyncio.run"),
         ):
             mock_load.return_value = MagicMock()
             runner.invoke(cli, ["--strict", "-m", "hi"], catch_exceptions=False)
             overrides = mock_load.call_args[1].get("cli_overrides", {})
             assert overrides["permissions"]["file_write"] == "deny"
-            assert overrides["safety"]["sandbox_shell"] is True
 
     def test_no_web_flag(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings") as mock_load,
+            patch("ember_code.core.config.settings.load_settings") as mock_load,
             patch("ember_code.cli.asyncio.run"),
         ):
             mock_load.return_value = MagicMock()
@@ -112,7 +111,7 @@ class TestCLIModes:
     def test_message_mode_calls_run_single_message(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings", return_value=MagicMock()),
+            patch("ember_code.core.config.settings.load_settings", return_value=MagicMock()),
             patch("ember_code.cli.asyncio.run") as mock_run,
         ):
             runner.invoke(cli, ["-m", "hello world"], catch_exceptions=False)
@@ -121,7 +120,7 @@ class TestCLIModes:
     def test_pipe_mode_reads_stdin(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings", return_value=MagicMock()),
+            patch("ember_code.core.config.settings.load_settings", return_value=MagicMock()),
             patch("ember_code.cli.asyncio.run") as mock_run,
         ):
             runner.invoke(cli, ["--pipe"], input="test input", catch_exceptions=False)
@@ -129,14 +128,14 @@ class TestCLIModes:
 
     def test_pipe_mode_no_input_errors(self):
         runner = CliRunner()
-        with patch("ember_code.config.settings.load_settings", return_value=MagicMock()):
+        with patch("ember_code.core.config.settings.load_settings", return_value=MagicMock()):
             result = runner.invoke(cli, ["--pipe"], input="", catch_exceptions=False)
             assert result.exit_code != 0
 
     def test_pipe_mode_combines_message_and_stdin(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings", return_value=MagicMock()),
+            patch("ember_code.core.config.settings.load_settings", return_value=MagicMock()),
             patch("ember_code.cli.asyncio.run") as mock_run,
         ):
             runner.invoke(
@@ -146,7 +145,7 @@ class TestCLIModes:
 
     def test_no_tui_disabled(self):
         runner = CliRunner()
-        with patch("ember_code.config.settings.load_settings", return_value=MagicMock()):
+        with patch("ember_code.core.config.settings.load_settings", return_value=MagicMock()):
             result = runner.invoke(cli, ["--no-tui"])
             assert result.exit_code == 1
             assert "temporarily disabled" in result.output
@@ -154,7 +153,7 @@ class TestCLIModes:
     def test_default_launches_tui(self):
         runner = CliRunner()
         with (
-            patch("ember_code.config.settings.load_settings", return_value=MagicMock()),
+            patch("ember_code.core.config.settings.load_settings", return_value=MagicMock()),
             patch("ember_code.cli._run_app") as mock_app,
         ):
             runner.invoke(cli, [], catch_exceptions=False)

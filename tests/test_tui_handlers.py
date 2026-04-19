@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ember_code.tui.command_handler import CommandHandler, CommandResult
-from ember_code.tui.format_helpers import format_tool_args
-from ember_code.tui.input_handler import (
+from ember_code.backend.command_handler import CommandHandler, CommandResult
+from ember_code.frontend.tui.format_helpers import format_tool_args
+from ember_code.frontend.tui.input_handler import (
     SHORTCUT_HELP,
     AutocompleteProvider,
     InputHandler,
@@ -433,7 +433,7 @@ class TestRunControllerQueue:
     """Tests for the message queue in RunController."""
 
     def _make_controller(self):
-        from ember_code.tui.run_controller import RunController
+        from ember_code.frontend.tui.run_controller import RunController
 
         ctrl = RunController.__new__(RunController)
         ctrl._queue = []
@@ -500,7 +500,7 @@ class TestQueueInjectorHook:
     """Tests for the tool hook that injects queued messages mid-run."""
 
     def _make_hook(self, queue=None, on_inject=None, on_queue_changed=None):
-        from ember_code.queue_hook import QueueInjectorHook
+        from ember_code.core.queue_hook import QueueInjectorHook
 
         return QueueInjectorHook(
             queue=queue if queue is not None else [],
@@ -591,7 +591,7 @@ class TestQueueInjectorHook:
         assert hook._has_injected is False
 
     def test_create_queue_hook_factory(self):
-        from ember_code.queue_hook import create_queue_hook
+        from ember_code.core.queue_hook import create_queue_hook
 
         queue = []
         hook = create_queue_hook(queue)

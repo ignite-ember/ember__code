@@ -4,7 +4,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from ember_code.utils.display import DisplayManager
+from ember_code.core.utils.display import DisplayManager
 
 
 class TestDisplayManager:

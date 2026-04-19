@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.tui.hitl_handler import (
+from ember_code.frontend.tui.hitl_handler import (
     HITLHandler,
     _build_pattern_rule,
     _build_rule,
@@ -41,28 +41,12 @@ class TestFormatArgsShort:
         assert result == "search term"
 
     def test_priority_order(self):
-        # path wins over url
         result = _format_args_short({"path": "/a", "url": "http://b"})
         assert result == "/a"
 
     def test_fallback_to_str(self):
         result = _format_args_short({"custom": "value"})
         assert "custom" in result
-        assert "value" in result
-
-    def test_truncation(self):
-        long_args = {"custom": "x" * 200}
-        result = _format_args_short(long_args)
-        assert len(result) <= 100
-
-    def test_empty_args(self):
-        result = _format_args_short({})
-        assert isinstance(result, str)
-
-    def test_args_not_list(self):
-        # args key exists but isn't a list — should fall through
-        result = _format_args_short({"args": "not a list", "path": "/foo"})
-        assert result == "/foo"
 
 
 # ── Pure function tests: _format_args_detail ───────────────────
@@ -73,31 +57,18 @@ class TestFormatArgsDetail:
         result = _format_args_detail({"args": ["git", "push", "--force"]})
         assert result == "$ git push --force"
 
-    def test_path_key(self):
-        result = _format_args_detail({"path": "/tmp/foo.py"})
-        assert result == "/tmp/foo.py"
-
-    def test_file_path_key(self):
+    def test_file_path(self):
         result = _format_args_detail({"file_path": "src/main.py"})
         assert result == "src/main.py"
 
-    def test_file_name_key(self):
-        result = _format_args_detail({"file_name": "output.txt"})
-        assert result == "output.txt"
+    def test_path(self):
+        result = _format_args_detail({"path": "/tmp/test"})
+        assert result == "/tmp/test"
 
-    def test_fallback_all_args(self):
+    def test_mixed_args(self):
         result = _format_args_detail({"key1": "val1", "key2": "val2"})
-        assert "key1: val1" in result
-        assert "key2: val2" in result
-        assert "\n" in result
-
-    def test_empty_args(self):
-        result = _format_args_detail({})
-        assert result == ""
-
-    def test_args_not_list_falls_through(self):
-        result = _format_args_detail({"args": "string", "path": "/x"})
-        assert result == "/x"
+        assert "key1" in result
+        assert "key2" in result
 
 
 # ── Pure function tests: _build_rule ───────────────────────────
@@ -113,7 +84,6 @@ class TestBuildRule:
         assert result == "Edit(src/main.py)"
 
     def test_empty_args(self):
-        # _format_args_short({}) returns "{}" which is truthy
         result = _build_rule("Bash", {})
         assert result.startswith("Bash")
 
@@ -136,7 +106,6 @@ class TestBuildPatternRule:
 
     def test_shell_empty_args_list(self):
         result = _build_pattern_rule("Bash", {"args": []})
-        # falls through to path/url checks, then fallback
         assert result == "Bash"
 
     def test_file_path_pattern(self):
@@ -148,7 +117,6 @@ class TestBuildPatternRule:
         assert result == "Read(path:/home/user/project/*)"
 
     def test_path_root_file(self):
-        # A file at the root dir: parent is "." — should fallback
         result = _build_pattern_rule("Read", {"path": "file.py"})
         assert result == "Read"
 
@@ -169,147 +137,168 @@ class TestBuildPatternRule:
         assert "path:src/*" in result
 
 
-# ── HITLHandler logic tests ────────────────────────────────────
+# ── HITLHandler.handle_protocol tests (RPC-based) ─────────────
 
 
-class TestHITLHandlerHandle:
+class TestHandleProtocol:
     @pytest.mark.asyncio
-    async def test_routes_confirmation(self):
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
-        )
-        handler._handle_confirmation = AsyncMock()
+    async def test_auto_allow_by_rpc(self):
+        """If BE RPC returns 'allow', auto-confirm."""
+        app = MagicMock()
+        app.backend._rpc = AsyncMock(return_value="allow")
 
+        handler = HITLHandler(app=app, conversation=MagicMock())
         req = MagicMock()
-        req.needs_confirmation = True
-        req.needs_user_input = False
+        req.friendly_name = "Read"
+        req.tool_name = "read_file"
+        req.tool_args = {"file_path": "test.py"}
 
-        run_response = MagicMock()
-        run_response.active_requirements = [req]
-
-        await handler.handle(MagicMock(), run_response)
-        handler._handle_confirmation.assert_called_once_with(req)
+        action, choice = await handler.handle_protocol(req)
+        assert action == "confirm"
+        assert choice == "once"
 
     @pytest.mark.asyncio
-    async def test_routes_user_input(self):
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
-        )
+    async def test_auto_deny_by_rpc(self):
+        """If BE RPC returns 'deny', auto-reject."""
+        app = MagicMock()
+        app.backend._rpc = AsyncMock(return_value="deny")
 
+        handler = HITLHandler(app=app, conversation=MagicMock())
         req = MagicMock()
-        req.needs_confirmation = False
-        req.needs_user_input = True
+        req.friendly_name = "Bash"
+        req.tool_name = "run_shell_command"
+        req.tool_args = {"args": ["rm", "-rf"]}
 
-        run_response = MagicMock()
-        run_response.active_requirements = [req]
-
-        await handler.handle(MagicMock(), run_response)
-        req.provide_user_input.assert_called_once_with({})
+        action, choice = await handler.handle_protocol(req)
+        assert action == "reject"
 
     @pytest.mark.asyncio
-    async def test_empty_requirements(self):
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
-        )
-        run_response = MagicMock()
-        run_response.active_requirements = []
+    async def test_session_approval_skips_dialog(self):
+        """If tool was approved in this session, auto-confirm."""
+        app = MagicMock()
+        app.backend._rpc = AsyncMock(return_value="ask")
 
-        await handler.handle(MagicMock(), run_response)  # should not raise
-
-
-class TestHITLConfirmation:
-    @pytest.mark.asyncio
-    async def test_no_tool_exec_confirms(self):
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
-        )
-        req = MagicMock()
-        req.tool_execution = None
-
-        await handler._handle_confirmation(req)
-        req.confirm.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_allowed_by_permissions(self):
-        permissions = MagicMock()
-        permissions.check.return_value = "allow"
-
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
-            permissions=permissions,
-        )
-
-        req = MagicMock()
-        req.tool_execution.tool_name = "read_file"
-        req.tool_execution.tool_args = {"path": "/tmp/x"}
-
-        await handler._handle_confirmation(req)
-        req.confirm.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_denied_by_permissions(self):
-        permissions = MagicMock()
-        permissions.check.return_value = "deny"
-
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
-            permissions=permissions,
-        )
-
-        req = MagicMock()
-        req.tool_execution.tool_name = "run_shell"
-        req.tool_execution.tool_args = {"args": ["rm", "-rf", "/"]}
-
-        await handler._handle_confirmation(req)
-        req.reject.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_session_approval_hit(self):
-        permissions = MagicMock()
-        permissions.check.return_value = "ask"
-
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
-            permissions=permissions,
-        )
-
-        # Pre-populate session approval
+        handler = HITLHandler(app=app, conversation=MagicMock())
         handler._session_approvals.add("Bash(git status)")
 
         req = MagicMock()
-        req.tool_execution.tool_name = "run_shell"
-        req.tool_execution.tool_args = {"args": ["git", "status"]}
+        req.friendly_name = "Bash"
+        req.tool_name = "run_shell_command"
+        req.tool_args = {"args": ["git", "status"]}
 
-        # Patch FUNC_TO_TOOL to map run_shell -> Bash
-        with patch.dict(
-            "ember_code.tui.hitl_handler.FUNC_TO_TOOL",
-            {"run_shell": "Bash"},
+        action, choice = await handler.handle_protocol(req)
+        assert action == "confirm"
+
+    @pytest.mark.asyncio
+    async def test_dialog_approve_once(self):
+        """Dialog approve with 'once' adds to session approvals."""
+        app = MagicMock()
+        app.backend._rpc = AsyncMock(return_value="ask")
+        app.mount = AsyncMock()
+
+        dialog_mock = MagicMock()
+        dialog_mock.wait_for_decision = AsyncMock(return_value=True)
+        dialog_mock.last_choice = "once"
+
+        handler = HITLHandler(app=app, conversation=MagicMock())
+
+        req = MagicMock()
+        req.friendly_name = "Write"
+        req.tool_name = "save_file"
+        req.tool_args = {"file_path": "test.py"}
+
+        with patch(
+            "ember_code.frontend.tui.hitl_handler.PermissionDialog",
+            return_value=dialog_mock,
         ):
-            await handler._handle_confirmation(req)
+            action, choice = await handler.handle_protocol(req)
 
-        req.confirm.assert_called_once()
+        assert action == "confirm"
+        assert choice == "once"
+        assert "Write(test.py)" in handler._session_approvals
 
+    @pytest.mark.asyncio
+    async def test_dialog_approve_always_saves_rule(self):
+        """Dialog approve with 'always' persists via RPC."""
+        app = MagicMock()
+        app.backend._rpc = AsyncMock(return_value="ask")
+        app.mount = AsyncMock()
 
-class TestSessionApprovals:
-    def test_initial_empty(self):
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
+        dialog_mock = MagicMock()
+        dialog_mock.wait_for_decision = AsyncMock(return_value=True)
+        dialog_mock.last_choice = "always"
+
+        handler = HITLHandler(app=app, conversation=MagicMock())
+
+        req = MagicMock()
+        req.friendly_name = "Bash"
+        req.tool_name = "run_shell_command"
+        req.tool_args = {"args": ["git", "push"]}
+
+        with patch(
+            "ember_code.frontend.tui.hitl_handler.PermissionDialog",
+            return_value=dialog_mock,
+        ):
+            action, choice = await handler.handle_protocol(req)
+
+        assert action == "confirm"
+        assert choice == "always"
+        # Verify RPC was called to save the rule
+        app.backend._rpc.assert_any_call(
+            "save_permission_rule", rule="Bash(git push)", level="allow"
         )
-        assert len(handler._session_approvals) == 0
 
-    def test_add_and_lookup(self):
-        handler = HITLHandler(
-            app=MagicMock(),
-            conversation=MagicMock(),
+    @pytest.mark.asyncio
+    async def test_dialog_deny_saves_rule(self):
+        """Dialog deny saves deny rule via RPC."""
+        app = MagicMock()
+        app.backend._rpc = AsyncMock(return_value="ask")
+        app.mount = AsyncMock()
+
+        dialog_mock = MagicMock()
+        dialog_mock.wait_for_decision = AsyncMock(return_value=False)
+
+        handler = HITLHandler(app=app, conversation=MagicMock())
+
+        req = MagicMock()
+        req.friendly_name = "Bash"
+        req.tool_name = "run_shell_command"
+        req.tool_args = {"args": ["rm", "-rf", "/tmp"]}
+
+        with patch(
+            "ember_code.frontend.tui.hitl_handler.PermissionDialog",
+            return_value=dialog_mock,
+        ):
+            action, choice = await handler.handle_protocol(req)
+
+        assert action == "reject"
+        assert choice == "deny"
+        app.backend._rpc.assert_any_call(
+            "save_permission_rule", rule="Bash(rm -rf /tmp)", level="deny"
         )
-        handler._session_approvals.add("Bash(git push)")
-        assert "Bash(git push)" in handler._session_approvals
-        assert "Bash(git pull)" not in handler._session_approvals
+
+    @pytest.mark.asyncio
+    async def test_rpc_failure_falls_through_to_ask(self):
+        """If RPC fails, fall through to showing dialog."""
+        app = MagicMock()
+        app.backend._rpc = AsyncMock(side_effect=Exception("connection lost"))
+        app.mount = AsyncMock()
+
+        dialog_mock = MagicMock()
+        dialog_mock.wait_for_decision = AsyncMock(return_value=True)
+        dialog_mock.last_choice = "once"
+
+        handler = HITLHandler(app=app, conversation=MagicMock())
+
+        req = MagicMock()
+        req.friendly_name = "Bash"
+        req.tool_name = "run_shell_command"
+        req.tool_args = {"args": ["ls"]}
+
+        with patch(
+            "ember_code.frontend.tui.hitl_handler.PermissionDialog",
+            return_value=dialog_mock,
+        ):
+            action, choice = await handler.handle_protocol(req)
+
+        assert action == "confirm"

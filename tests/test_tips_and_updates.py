@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.config.settings import GuardrailsConfig, KnowledgeConfig, Settings
-from ember_code.utils.tips import CONTEXTUAL_TIPS, GENERAL_TIPS, get_tip, random_tip
-from ember_code.utils.update_checker import (
+from ember_code.core.config.settings import GuardrailsConfig, KnowledgeConfig, Settings
+from ember_code.core.utils.tips import CONTEXTUAL_TIPS, GENERAL_TIPS, get_tip, random_tip
+from ember_code.core.utils.update_checker import (
     UpdateInfo,
     _is_newer,
     _parse_version,
@@ -65,7 +65,7 @@ class TestTips:
         (tmp_path / "ember.md").write_text("# test")
         (tmp_path / ".ember" / "agents").mkdir(parents=True)
         (tmp_path / ".ember" / "agents" / "custom.md").write_text("---\nname: custom\n---")
-        from ember_code.config.settings import PermissionsConfig
+        from ember_code.core.config.settings import PermissionsConfig
 
         settings = Settings(
             knowledge=KnowledgeConfig(enabled=True, share=True),
@@ -151,7 +151,7 @@ class TestUpdateInfo:
 class TestCache:
     def test_write_and_read(self, tmp_path):
         cache_file = tmp_path / ".update-check"
-        with patch("ember_code.utils.update_checker.CACHE_FILE", cache_file):
+        with patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file):
             data = {"latest_version": "0.2.0"}
             _write_cache(data)
             result = _read_cache(ttl=86400)
@@ -160,7 +160,7 @@ class TestCache:
 
     def test_expired_cache(self, tmp_path):
         cache_file = tmp_path / ".update-check"
-        with patch("ember_code.utils.update_checker.CACHE_FILE", cache_file):
+        with patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file):
             data = {"latest_version": "0.2.0", "checked_at": time.time() - 86401}
             cache_file.write_text(json.dumps(data))
             result = _read_cache(ttl=86400)
@@ -168,7 +168,7 @@ class TestCache:
 
     def test_missing_cache(self, tmp_path):
         cache_file = tmp_path / "nonexistent"
-        with patch("ember_code.utils.update_checker.CACHE_FILE", cache_file):
+        with patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file):
             result = _read_cache(ttl=86400)
             assert result is None
 
@@ -197,9 +197,11 @@ class TestCheckForUpdate:
             {"latest_version": "0.1.0", "release_notes": "", "download_url": ""}
         )
         with (
-            patch("ember_code.utils.update_checker.CACHE_FILE", cache_file),
-            patch("ember_code.utils.update_checker.__version__", "0.1.0"),
-            patch("ember_code.utils.update_checker.httpx.AsyncClient", return_value=mock_client),
+            patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file),
+            patch("ember_code.core.utils.update_checker.__version__", "0.1.0"),
+            patch(
+                "ember_code.core.utils.update_checker.httpx.AsyncClient", return_value=mock_client
+            ),
         ):
             info = await check_for_update()
             assert info.available is False
@@ -215,9 +217,11 @@ class TestCheckForUpdate:
             }
         )
         with (
-            patch("ember_code.utils.update_checker.CACHE_FILE", cache_file),
-            patch("ember_code.utils.update_checker.__version__", "0.1.0"),
-            patch("ember_code.utils.update_checker.httpx.AsyncClient", return_value=mock_client),
+            patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file),
+            patch("ember_code.core.utils.update_checker.__version__", "0.1.0"),
+            patch(
+                "ember_code.core.utils.update_checker.httpx.AsyncClient", return_value=mock_client
+            ),
         ):
             info = await check_for_update()
             assert info.available is True
@@ -233,9 +237,11 @@ class TestCheckForUpdate:
         mock_client.get = AsyncMock(side_effect=Exception("timeout"))
 
         with (
-            patch("ember_code.utils.update_checker.CACHE_FILE", cache_file),
-            patch("ember_code.utils.update_checker.__version__", "0.1.0"),
-            patch("ember_code.utils.update_checker.httpx.AsyncClient", return_value=mock_client),
+            patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file),
+            patch("ember_code.core.utils.update_checker.__version__", "0.1.0"),
+            patch(
+                "ember_code.core.utils.update_checker.httpx.AsyncClient", return_value=mock_client
+            ),
         ):
             info = await check_for_update()
             assert info.available is False
@@ -253,8 +259,8 @@ class TestCheckForUpdate:
         cache_file.write_text(json.dumps(cached_data))
 
         with (
-            patch("ember_code.utils.update_checker.CACHE_FILE", cache_file),
-            patch("ember_code.utils.update_checker.__version__", "0.1.0"),
+            patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file),
+            patch("ember_code.core.utils.update_checker.__version__", "0.1.0"),
         ):
             # Should NOT hit the network — cache is fresh
             info = await check_for_update()

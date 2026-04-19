@@ -1,0 +1,405 @@
+"""BackendClient — FE-side proxy that communicates with BackendServer over Unix socket.
+
+Exposes the same interface as BackendServer so all FE code
+(RunController, SessionManager, App) works unchanged.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import uuid
+from collections.abc import AsyncIterator, Callable
+from typing import Any
+
+from ember_code.protocol import messages as msg
+from ember_code.protocol.messages import Message
+from ember_code.transport.unix_socket import UnixSocketClientTransport
+
+logger = logging.getLogger(__name__)
+
+
+class RemoteSkillPool:
+    """Thin wrapper over serialized skill definitions for autocomplete."""
+
+    def __init__(self, definitions: list[dict]):
+        self._definitions = definitions
+
+    def list_skills(self) -> list[Any]:
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(**d) for d in self._definitions]
+
+    def match_user_command(self, text: str) -> Any | None:
+        return None  # Commands handled on BE
+
+
+class BackendClient:
+    """FE-side proxy for BackendServer over Unix socket.
+
+    Provides the same public interface as BackendServer.
+    All calls are serialized to protocol messages and sent over the socket.
+    """
+
+    def __init__(self, socket_path: str):
+        self._socket_path = socket_path
+        self._transport = UnixSocketClientTransport(socket_path)
+        self._pending: dict[str, asyncio.Future] = {}
+        self._pending_streams: dict[str, asyncio.Queue] = {}
+        self._push_handlers: dict[str, Callable] = {}
+        self._reader_task: asyncio.Task | None = None
+        self._connected = False
+
+        # Cached sync properties
+        self._cached_processing = False
+        self._cached_session_id = ""
+        self._cached_run_timeout = 300
+        self._cached_skill_names: list[str] = []
+        self._cached_skill_pool: RemoteSkillPool | None = None
+        self._cached_settings: Any = None
+        self._cached_status: msg.StatusUpdate = msg.StatusUpdate()
+
+    # ── Connection ────────────────────────────────────────────────
+
+    async def connect(self) -> None:
+        """Connect to the BE socket and start the reader loop."""
+        await self._transport.connect(timeout=30.0)
+        self._connected = True
+        self._reader_task = asyncio.create_task(self._reader_loop())
+
+    async def _reader_loop(self) -> None:
+        """Background task: read messages from BE, dispatch by correlation ID."""
+        try:
+            async for message in self._transport.receive():
+                msg_id = message.id
+
+                # StreamEnd → signal end of streaming response
+                if isinstance(message, msg.StreamEnd):
+                    queue = self._pending_streams.pop(msg_id, None)
+                    if queue:
+                        await queue.put(None)  # sentinel
+                    continue
+
+                # Push notification → dispatch to handler
+                if isinstance(message, msg.PushNotification):
+                    handler = self._push_handlers.get(message.channel)
+                    if handler:
+                        try:
+                            handler(message.payload)
+                        except Exception as exc:
+                            logger.debug("Push handler error (%s): %s", message.channel, exc)
+                    continue
+
+                # Streaming response → put in queue
+                if msg_id and msg_id in self._pending_streams:
+                    await self._pending_streams[msg_id].put(message)
+                    continue
+
+                # Request/response → resolve future
+                if msg_id and msg_id in self._pending:
+                    self._pending.pop(msg_id).set_result(message)
+                    continue
+
+                logger.debug("Unmatched message: %s (id=%s)", type(message).__name__, msg_id)
+
+        except Exception as exc:
+            logger.error("Reader loop error: %s", exc)
+            # Fail all pending futures
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(ConnectionError("BE connection lost"))
+            for queue in self._pending_streams.values():
+                await queue.put(None)
+
+    async def _rpc(self, method: str, **args: Any) -> Any:
+        """Send an RPC request and wait for the response."""
+        req_id = uuid.uuid4().hex[:8]
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[req_id] = future
+        await self._transport.send(msg.RPCRequest(id=req_id, method=method, args=args))
+        response = await asyncio.wait_for(future, timeout=60.0)
+        if isinstance(response, msg.RPCResponse):
+            if response.error:
+                raise RuntimeError(response.error)
+            return response.result
+        # Direct message response (e.g., Info, StatusUpdate)
+        return response
+
+    async def _send_and_wait(self, message: Message) -> Message:
+        """Send a typed message and wait for one response."""
+        req_id = uuid.uuid4().hex[:8]
+        message = message.model_copy(update={"id": req_id})
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[req_id] = future
+        await self._transport.send(message)
+        return await asyncio.wait_for(future, timeout=60.0)
+
+    async def _stream(self, message: Message) -> AsyncIterator[Message]:
+        """Send a message and yield streaming responses until StreamEnd."""
+        req_id = uuid.uuid4().hex[:8]
+        message = message.model_copy(update={"id": req_id})
+        queue: asyncio.Queue = asyncio.Queue()
+        self._pending_streams[req_id] = queue
+        await self._transport.send(message)
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+
+    # ── Refresh cached state ──────────────────────────────────────
+
+    async def refresh_cache(self) -> None:
+        """Fetch initial state from BE after connecting."""
+        self._cached_session_id = await self._rpc("get_session_id")
+        self._cached_run_timeout = await self._rpc("get_run_timeout")
+        self._cached_skill_names = await self._rpc("get_skill_names") or []
+        skill_defs = await self._rpc("get_skill_definitions")
+        self._cached_skill_pool = RemoteSkillPool(skill_defs or [])
+        # Cache status for sync get_status() calls
+        status_data = await self._rpc("get_status")
+        if isinstance(status_data, dict):
+            self._cached_status = msg.StatusUpdate(**status_data)
+        elif isinstance(status_data, msg.StatusUpdate):
+            self._cached_status = status_data
+        else:
+            self._cached_status = msg.StatusUpdate()
+
+    # ── Streaming methods ────────────────────────────────────────
+
+    async def run_message(self, text: str, media: dict | None = None) -> AsyncIterator[Message]:
+        self._cached_processing = True
+        try:
+            async for proto in self._stream(msg.UserMessage(text=text, file_contents=media or {})):
+                yield proto
+        finally:
+            self._cached_processing = False
+
+    async def resolve_hitl(
+        self, requirement_id: str, action: str, choice: str = "once"
+    ) -> AsyncIterator[Message]:
+        async for proto in self._stream(
+            msg.HITLResponse(requirement_id=requirement_id, action=action, choice=choice)
+        ):
+            yield proto
+
+    # ── Command ──────────────────────────────────────────────────
+
+    async def handle_command(self, text: str) -> msg.CommandResult:
+        result = await self._send_and_wait(msg.Command(text=text))
+        if isinstance(result, msg.CommandResult):
+            return result
+        return msg.CommandResult(kind="error", content=str(result), action="")
+
+    # ── Session management ───────────────────────────────────────
+
+    async def list_sessions(self) -> msg.SessionListResult:
+        result = await self._send_and_wait(msg.SessionList())
+        if isinstance(result, msg.SessionListResult):
+            return result
+        return msg.SessionListResult()
+
+    async def switch_session(self, session_id: str) -> msg.Info:
+        result = await self._send_and_wait(msg.SessionSwitch(session_id=session_id))
+        self._cached_session_id = session_id
+        return result
+
+    async def get_chat_history(self, session_id: str) -> list[dict]:
+        return await self._rpc("get_chat_history", session_id=session_id) or []
+
+    # ── Model ────────────────────────────────────────────────────
+
+    def switch_model(self, model_name: str) -> msg.Info:
+        # Fire-and-forget — the response comes async
+        asyncio.ensure_future(self._send_and_wait(msg.ModelSwitch(model_name=model_name)))
+        return msg.Info(text=f"Switching to {model_name}")
+
+    # ── MCP ──────────────────────────────────────────────────────
+
+    async def ensure_mcp(self) -> None:
+        await self._rpc("ensure_mcp")
+
+    async def toggle_mcp(self, server_name: str, connect: bool) -> msg.Info:
+        result = await self._send_and_wait(msg.MCPToggle(server_name=server_name, connect=connect))
+        return result
+
+    async def mcp_connect(self, server_name: str) -> msg.Info:
+        result = await self._rpc("mcp_connect", server_name=server_name)
+        return result if isinstance(result, msg.Info) else msg.Info(text=str(result))
+
+    async def mcp_disconnect(self, server_name: str) -> msg.Info:
+        result = await self._rpc("mcp_disconnect", server_name=server_name)
+        return result if isinstance(result, msg.Info) else msg.Info(text=str(result))
+
+    def get_mcp_status(self) -> list[tuple[str, bool]]:
+        # Sync call — use cached or fire async
+        fut = asyncio.ensure_future(self._rpc("get_mcp_status"))
+        try:
+            if fut.done():
+                return fut.result() or []
+        except Exception:
+            pass
+        return []
+
+    def get_mcp_server_details(self) -> list[dict]:
+        fut = asyncio.ensure_future(self._rpc("get_mcp_server_details"))
+        try:
+            if fut.done():
+                return fut.result() or []
+        except Exception:
+            pass
+        return []
+
+    def get_mcp_servers(self) -> list[dict]:
+        fut = asyncio.ensure_future(self._rpc("get_mcp_servers"))
+        try:
+            if fut.done():
+                return fut.result() or []
+        except Exception:
+            pass
+        return []
+
+    # ── Status ───────────────────────────────────────────────────
+
+    def get_status(self) -> msg.StatusUpdate:
+        return getattr(self, "_cached_status", msg.StatusUpdate())
+
+    # ── Cloud auth ───────────────────────────────────────────────
+
+    async def login(self, on_status: Callable | None = None) -> tuple[bool, str]:
+        if on_status:
+            self._push_handlers["login_status"] = lambda p: on_status(p.get("text", ""))
+        try:
+            result = await self._rpc("login")
+            return result.get("success", False), result.get("result", "")
+        finally:
+            self._push_handlers.pop("login_status", None)
+
+    def reload_cloud_credentials(self) -> msg.StatusUpdate:
+        fut = asyncio.ensure_future(self._rpc("reload_cloud_credentials"))
+        try:
+            if fut.done():
+                result = fut.result()
+                if isinstance(result, msg.StatusUpdate):
+                    return result
+                if isinstance(result, dict):
+                    return msg.StatusUpdate(**result)
+        except Exception:
+            pass
+        return msg.StatusUpdate()
+
+    def clear_cloud_credentials(self) -> msg.StatusUpdate:
+        fut = asyncio.ensure_future(self._rpc("clear_cloud_credentials"))
+        try:
+            if fut.done():
+                result = fut.result()
+                if isinstance(result, msg.StatusUpdate):
+                    return result
+                if isinstance(result, dict):
+                    return msg.StatusUpdate(**result)
+        except Exception:
+            pass
+        return msg.StatusUpdate()
+
+    # ── Compaction / Learning ────────────────────────────────────
+
+    async def compact_if_needed(self, ctx_tokens: int, max_ctx: int) -> msg.SessionCleared | None:
+        result = await self._rpc("compact_if_needed", ctx_tokens=ctx_tokens, max_ctx=max_ctx)
+        if result is None or result is False:
+            return None
+        if isinstance(result, msg.SessionCleared):
+            return result
+        if isinstance(result, dict):
+            return msg.SessionCleared(**result)
+        return None
+
+    async def extract_learnings(self, user_msg: str, assistant_msg: str) -> None:
+        await self._rpc("extract_learnings", user_msg=user_msg, assistant_msg=assistant_msg)
+
+    # ── Knowledge ────────────────────────────────────────────────
+
+    async def auto_sync_knowledge(self) -> str | None:
+        return await self._rpc("auto_sync_knowledge")
+
+    # ── Hooks ────────────────────────────────────────────────────
+
+    async def fire_session_start_hook(self) -> None:
+        await self._rpc("fire_session_start_hook")
+
+    # ── Scheduler ────────────────────────────────────────────────
+
+    def start_scheduler(
+        self,
+        on_task_started: Callable | None = None,
+        on_task_completed: Callable | None = None,
+    ) -> None:
+        if on_task_started:
+            self._push_handlers["scheduler_started"] = lambda p: on_task_started(
+                p.get("task_id", ""), p.get("description", "")
+            )
+        if on_task_completed:
+            self._push_handlers["scheduler_completed"] = lambda p: on_task_completed(
+                p.get("task_id", ""), p.get("description", ""), p.get("result", "")
+            )
+        asyncio.ensure_future(self._rpc("start_scheduler"))
+
+    async def execute_scheduled_task(self, description: str) -> str:
+        return await self._rpc("execute_scheduled_task", description=description) or ""
+
+    async def cancel_scheduled_task(self, task_id: str) -> msg.Info:
+        result = await self._rpc("cancel_scheduled_task", task_id=task_id)
+        return result if isinstance(result, msg.Info) else msg.Info(text=str(result or ""))
+
+    async def get_scheduled_tasks(self, include_done: bool = True) -> list:
+        return await self._rpc("get_scheduled_tasks", include_done=include_done) or []
+
+    # ── Sync properties (cached) ─────────────────────────────────
+
+    @property
+    def processing(self) -> bool:
+        return self._cached_processing
+
+    @property
+    def session_id(self) -> str:
+        return self._cached_session_id
+
+    @property
+    def settings(self) -> Any:
+        return self._cached_settings
+
+    @property
+    def run_timeout(self) -> int:
+        return self._cached_run_timeout
+
+    @property
+    def skill_names(self) -> list[str]:
+        return self._cached_skill_names
+
+    def get_skill_pool(self) -> RemoteSkillPool:
+        return self._cached_skill_pool or RemoteSkillPool([])
+
+    # ── Control ──────────────────────────────────────────────────
+
+    def cancel_run(self) -> None:
+        asyncio.ensure_future(self._transport.send(msg.Cancel()))
+
+    def toggle_verbose(self) -> bool:
+        asyncio.ensure_future(self._rpc("toggle_verbose"))
+        return True
+
+    def wire_queue_hook(self, queue: list) -> None:
+        # No-op in multi-process mode — queue lives on BE
+        pass
+
+    def wire_orchestrate_progress(self, callback: Callable) -> None:
+        self._push_handlers["orchestrate_progress"] = lambda p: callback(p.get("line", ""))
+
+    # ── Shutdown ─────────────────────────────────────────────────
+
+    async def shutdown(self) -> None:
+        with contextlib.suppress(Exception):
+            await self._transport.send(msg.Shutdown())
+        if self._reader_task and not self._reader_task.done():
+            self._reader_task.cancel()
+        await self._transport.close()

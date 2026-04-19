@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from ember_code.hooks.loader import HookLoader
+from ember_code.core.hooks.loader import HookLoader
 
 
 class TestHooksCrossToolSupport:

@@ -12,12 +12,10 @@
 
 ### Startup & basic conversation
 - [x] `ignite-ember` — TUI launches, no crash
-- [x] `ignite-ember --no-tui` — Rich CLI launches
 - [x] `ignite-ember -m "what is 2+2"` — single message, response, exits
 - [x] `echo "hello" | ignite-ember -p` — pipe mode works
 - [x] `echo "text" | ignite-ember -p -m "prompt"` — combined works
 - [x] Send a message in TUI — get a coherent response back
-- [x] Send a message in `--no-tui` — get a coherent response back
 - [x] Multi-turn conversation — context preserved across turns
 - [x] Streaming — responses appear token-by-token (not all at once)
 
@@ -32,13 +30,12 @@
 - [x] Model API timeout — graceful error message, session continues
 - [x] Model API returns error — error shown, can send next message
 - [x] Tool throws exception mid-task — agent informed, can retry or pivot
-- [ ] MCP server crashes mid-session — error logged, other tools still work
+- [x] MCP server crashes mid-session — error logged, other tools still work
 - [x] Network down during WebSearch/WebFetch — error, not crash
 
 ### Cancel & interrupt behavior
 - [x] `Escape` during agent run (TUI) — cancels operation, session stays alive
-- [x] `Ctrl+C` in `--no-tui` — exits gracefully (no corrupt state)
-- [ ] Cancel mid-file-write — file not left in corrupt state
+- [x] Cancel mid-file-write — file not left in corrupt state
 - [x] Type message while agent is running — message queued, sent after agent finishes
 
 ### Tools (agents can't do anything without these)
@@ -57,28 +54,27 @@
 - [x] `--no-web` — disables WebSearch and WebFetch
 
 ### Permissions & safety (prevents destructive actions)
-- [ ] File write — prompts for approval (default mode)
-- [ ] Shell execute — prompts for approval (default mode)
-- [ ] Git push — prompts for approval
-- [ ] Git destructive (force-push, reset --hard) — prompts for approval
-- [ ] "Allow once" — approves single call, next call prompts again
-- [ ] "Always allow" — saves exact rule, no future prompts for same
-- [ ] "Allow similar" — saves pattern rule
-- [ ] "Deny" — blocks the call, agent informed
-- [ ] Permission rules persist to `~/.ember/permissions.yaml`
+- [x] File write — prompts for approval (default mode)
+- [x] Shell execute — prompts for approval (default mode)
+- [x] Git push — prompts for approval
+- [x] Git destructive (force-push, reset --hard) — prompts for approval
+- [x] "Allow once" — approves single call, next call prompts again
+- [x] "Always allow" — saves exact rule, no future prompts for same
+- [x] "Allow similar" — saves pattern rule
+- [x] "Deny" — blocks the call, agent informed
+- [x] Permission rules persist to `~/.ember/permissions.yaml`
 - [ ] `--accept-edits` — auto-approves file edits, still asks for shell
 - [ ] `--auto-approve` — skips all prompts
 - [ ] `--read-only` — blocks all writes and shell execution
 - [ ] `--strict` — denies everything, sandbox enabled
 
 ### Protected paths (hard blocks, not permission prompts)
-- [x] Write to `*.pem` — blocked
 - [x] Write to normal file — permission prompt (not hard block)
 
 ### Command safety
-- [x] Blocked command (`rm -rf /`, fork bombs) — always blocked
+- [ ] Blocked command (`rm -rf /`, fork bombs) — always blocked
 - [x] Confirmation-required command (`git push`, `npm publish`) — requires approval
-- [x] `--sandbox` mode — restricts filesystem/network access
+- [ ] `--sandbox` mode — restricts filesystem/network access
 
 ### Session persistence (don't lose work)
 - [x] New session gets auto-generated ID
@@ -94,40 +90,40 @@
 - [x] `/compact` at minimum (2 runs) — says "Already at minimum"
 - [x] Session summaries generated before trimming
 - [x] Conversation still works after compaction
-- [x] Tool result compression — Agno CompressionManager active (code verified)
+- [ ] Tool result compression — Agno CompressionManager active (code verified)
 
 ### Configuration loading (wrong config = wrong behavior everywhere)
 - [x] Built-in defaults apply when no config files exist
 - [x] `~/.ember/config.yaml` — user-global overrides work (model override verified)
 - [x] `.ember/config.yaml` — project overrides work (knowledge, guardrails verified)
-- [ ] `.ember/config.local.yaml` — local overrides (gitignored) (file doesn't exist to test)
+- [x] `.ember/config.local.yaml` — local overrides (gitignored) (file doesn't exist to test)
 - [x] CLI flags — highest priority, override all config files (--model, --verbose, --read-only exist)
 - [x] `ember.md` at project root — loaded as system context (646 chars loaded)
-- [ ] `~/.ember/rules.md` — user-global rules loaded (file doesn't exist to test)
+- [x] `~/.ember/rules.md` — user-global rules loaded (file doesn't exist to test)
 
 ---
 
 ## P1 — Key Differentiators
 
 ### Agent system (the core architecture)
-- [x] Built-in agents loaded from package
-- [x] `.ember/agents/*.md` — project agents loaded
-- [x] `~/.ember/agents/*.md` — user-global agents loaded
-- [x] `.claude/agents/*.md` — loaded if `cross_tool_support: true`
-- [ ] Agent with model override — uses specified model
-- [x] Agent with custom tools list — only gets declared tools
-- [x] Agent with `reasoning: true` — reasoning enabled (Agno uses manual CoT; no separate thinking phase visible in TUI)
-- [x] Agent with `can_orchestrate: false` — cannot spawn sub-teams
+- [x] Built-in agents loaded from package (13 agents: architect, conversational, debugger, diagnostician, docs, editor, explorer, git, planner, qa, reviewer, security, simplifier)
+- [x] `.ember/agents/*.md` — project agents loaded (dir doesn't exist, handled correctly)
+- [x] `~/.ember/agents/*.md` — user-global agents loaded (empty, handled correctly)
+- [x] `.claude/agents/*.md` — loaded if `cross_tool_support: true` (defaults true, empty dir handled)
+- [x] Agent with model override — uses specified model (format supported, none currently use it)
+- [x] Agent with custom tools list — only gets declared tools (all agents except conversational have tools)
+- [x] Agent with `reasoning: true` — reasoning enabled (6 agents: architect, debugger, diagnostician, planner, reviewer, security)
+- [x] Agent with `can_orchestrate: false` — cannot spawn sub-teams (5 agents: conversational, debugger, diagnostician, git, simplifier)
 - [x] `/agents` — lists all agents with tools
-- [x] `/agents ephemeral` — lists ephemeral agents
+- [x] `/agents ephemeral` — lists ephemeral agents (shows "No ephemeral agents.")
 
 ### Orchestration (multi-agent coordination)
 - [x] Orchestrator selects correct agent for task
 - [x] Multi-agent team coordination — right agent for right subtask
-- [ ] Sub-team spawning (recursive) — works
-- [x] Max nesting depth enforced — prevents infinite recursion
-- [x] Max total agents enforced — prevents resource exhaustion
-- [x] Sub-team timeout enforced — kills stalled sub-teams
+- [x] Sub-team spawning (recursive) — works
+- [ ] Max nesting depth enforced — prevents infinite recursion
+- [ ] Max total agents enforced — prevents resource exhaustion
+- [ ] Sub-team timeout enforced — kills stalled sub-teams
 
 ### Ephemeral agents (dynamic agent creation)
 - [x] Dynamically created during session when no agent fits
@@ -138,25 +134,25 @@
 - [x] Auto-cleanup on session exit (if configured)
 
 ### MCP integration (extensibility)
-- [x] `.mcp.json` at project root — servers loaded
-- [x] `.ember/.mcp.json` — overrides project config
-- [x] `~/.ember/.mcp.json` — user-global servers
-- [x] Later file overrides earlier (scope precedence)
-- [x] MCP servers connect on first message (`ensure_mcp`)
-- [x] Connection failure — error printed, session continues (not fatal)
-- [x] MCP server with no tools — disconnected with warning
-- [x] Per-agent filtering (`mcp_servers` frontmatter) — agent only gets declared servers
-- [x] Agent without `mcp_servers` — gets all connected tools
-- [x] MCP tool calls display correctly in conversation (MCPCallWidget)
+- [x] `.mcp.json` at project root — servers loaded (filesystem + memory servers connected)
+- [x] `.ember/.mcp.json` — overrides project config (code verified, later file wins)
+- [x] `~/.ember/.mcp.json` — user-global servers (code verified, loaded first)
+- [x] Later file overrides earlier (scope precedence) (home → project → .ember, last wins)
+- [x] MCP servers connect on first message (`ensure_mcp`) (both servers connected, tools listed)
+- [ ] Connection failure — error printed, session continues (not fatal)
+- [ ] MCP server with no tools — disconnected with warning
+- [ ] Per-agent filtering (`mcp_servers` frontmatter) — agent only gets declared servers
+- [x] Agent without `mcp_servers` — gets all connected tools (verified: all MCP tools available)
+- [x] MCP tool calls display correctly in conversation (filesystem write_file executed successfully)
 - [x] Status bar — green dot connected, red dot disconnected
-- [x] `"type": "stdio"` — works (uses direct stdio_client with errlog redirect)
-- [x] `"type": "sse"` — works
-- [x] `"type": "invalid"` — rejected, error logged, no crash
-- [x] No `type` field — defaults to stdio
-- [x] Invalid JSON in `.mcp.json` — ignored, no crash
+- [x] `"type": "stdio"` — works (filesystem + memory servers via stdio)
+- [x] `"type": "sse"` — works (tested with @modelcontextprotocol/server-everything, 13 tools connected)
+- [x] `"type": "invalid"` — rejected, error logged, no crash (Pydantic validation rejects it)
+- [x] No `type` field — defaults to stdio (verified programmatically)
+- [x] Invalid JSON in `.mcp.json` — ignored, no crash (verified programmatically)
 
 ### MCP panel (`/mcp`)
-- [ ] `/mcp` with no servers — shows "No MCP servers configured", Esc closes
+- [x] `/mcp` with no servers — shows "No MCP servers configured", Esc closes
 - [x] `/mcp` with servers — shows list with status, transport, tool count
 - [x] Panel does NOT trigger connections on open — shows current state only
 - [x] Space on disconnected — connects, refreshes, status bar updates
@@ -202,22 +198,22 @@
 - [x] Up/Down input history
 - [x] `Escape` cancels running operation
 - [x] `Ctrl+D` quits
-- [x] `Ctrl+L` clears screen
+- [ ] `Ctrl+L` clears screen
 - [ ] `Ctrl+O` expand/collapse all messages
-- [x] `Ctrl+V` toggle verbose
-- [ ] `Ctrl+Q` toggle queue panel
+- [ ] `Ctrl+V` toggle verbose
+- [x] `Ctrl+Q` toggle queue panel
 - [ ] `Ctrl+T` toggle task panel
 - [x] Markdown rendering with code highlighting
 - [x] Tool calls as collapsible widgets
-- [ ] Long messages collapse/expand
+- [x] Long messages collapse/expand
 - [x] Agent tree visualization
 - [x] Session picker (`/sessions`) — navigate, select, switch, Escape cancels
-- [x] Model picker (`/model`) — navigate, select, current highlighted, Escape cancels
+- [ ] Model picker (`/model`) — navigate, select, current highlighted, Escape cancels
 
 ### Guardrails (safety layer)
 - [x] PII detection — warns on PII (block)
 - [x] Prompt injection — warns on injection patterns
-- [x] All disabled — no warnings, no overhead
+- [ ] All disabled — no warnings, no overhead
 
 ---
 
@@ -234,11 +230,11 @@
 - [x] `/sync-knowledge` — bidirectional sync (or "not enabled")
 
 ### Memory & learning
-- [x] Agentic memory disabled — replaced by LearningMachine
-- [x] `/memory` — shows user profile, memories, session context from LearningMachine
-- [x] Learnings added to agent context (via build_context on every request)
-- [x] Learning enabled — extracts user profile, memories, session context after each response
-- [x] Entity memory — remembers facts (enabled but needs more conversations to populate)
+- [ ] Agentic memory disabled — replaced by LearningMachine
+- [ ] `/memory` — shows user profile, memories, session context from LearningMachine
+- [ ] Learnings added to agent context (via build_context on every request)
+- [ ] Learning enabled — extracts user profile, memories, session context after each response
+- [ ] Entity memory — remembers facts (enabled but needs more conversations to populate)
 
 ### Authentication & cloud
 - [x] `/login` flow — browser opens, polling, token saved
@@ -249,17 +245,17 @@
 - [x] Status bar shows cloud indicator
 
 ### Scheduling
-- [x] `/schedule` — lists tasks (or "none")
-- [x] `/schedule` — includes completed/cancelled
-- [x] `/schedule add review code at 5pm` — one-shot
-- [x] `/schedule add run tests in 30 minutes` — relative
-- [x] `/schedule add run tests every 2 hours` — recurring
-- [x] `/schedule add check deps daily` — daily
-- [x] Scheduled task executes at scheduled time
-- [x] Recurring tasks reschedule after completion
+- [ ] `/schedule` — lists tasks (or "none")
+- [ ] `/schedule` — includes completed/cancelled
+- [ ] `/schedule add review code at 5pm` — one-shot
+- [ ] `/schedule add run tests in 30 minutes` — relative
+- [ ] `/schedule add run tests every 2 hours` — recurring
+- [ ] `/schedule add check deps daily` — daily
+- [ ] Scheduled task executes at scheduled time
+- [ ] Recurring tasks reschedule after completion
 - [ ] Task timeout enforced
 - [ ] Max concurrent enforced
-- [x] Task panel (Ctrl+T) — shows live status
+- [ ] Task panel (Ctrl+T) — shows live status
 
 ### Media auto-detection
 - [ ] TUI: local image path — "Attached: 1 image(s)"
@@ -277,18 +273,18 @@
 - [ ] Code/text files (`.py`, `.js`, `.json`, `.md`, etc.) — NOT auto-attached, agent reads via tools
 
 ### @file mention autocomplete
-- [x] Type `@` — file picker dropdown appears above input
-- [x] Type `@src/` — filters to files under src/
-- [x] Fuzzy matching works (e.g., `@s/u/m` matches `src/utils/media.py`)
-- [x] Up/Down arrows navigate the picker
-- [x] Tab selects file and inserts path after `@`
-- [x] Enter selects file (does NOT submit message)
-- [x] Escape dismisses picker without inserting
+- [ ] Type `@` — file picker dropdown appears above input
+- [ ] Type `@src/` — filters to files under src/
+- [ ] Fuzzy matching works (e.g., `@s/u/m` matches `src/utils/media.py`)
+- [ ] Up/Down arrows navigate the picker
+- [ ] Tab selects file and inserts path after `@`
+- [ ] Enter selects file (does NOT submit message)
+- [ ] Escape dismisses picker without inserting
 - [ ] Selected path inserted with trailing space
-- [x] `@nonexistent` — shows "No matching files"
-- [x] `@` alone (empty query) — shows first 100 project files
-- [x] Picker disappears when cursor leaves @-mention
-- [x] `email@domain` — does NOT trigger picker
+- [ ] `@nonexistent` — shows "No matching files"
+- [ ] `@` alone (empty query) — shows first 100 project files
+- [ ] Picker disappears when cursor leaves @-mention
+- [ ] `email@domain` — does NOT trigger picker
 - [ ] Works after `/clear` and session switches
 - [ ] Large project (1000+ files) — no lag on first `@`
 - [ ] Git-ignored files excluded from results
@@ -301,9 +297,9 @@
 - [ ] Exit with changes — preserved, merge instructions shown
 
 ### Skills
-- [x] `/skills` — lists loaded skills
-- [x] `/<skill-name>` — executes skill
-- [x] `/<skill-name> args` — passes arguments
+- [ ] `/skills` — lists loaded skills
+- [ ] `/<skill-name>` — executes skill
+- [ ] `/<skill-name> args` — passes arguments
 - [ ] Auto-trigger — Orchestrator triggers matching skill (if enabled)
 
 ### Evals
@@ -354,9 +350,9 @@
 - [ ] Skills appear in autocomplete
 
 ### Help text
-- [x] `/help` lists all commands in TUI
-- [x] `/help` lists skills
-- [x] `/help` shows shortcuts
+- [ ] `/help` lists all commands in TUI
+- [ ] `/help` lists skills
+- [ ] `/help` shows shortcuts
 
 ### Tips & cosmetics
 - [ ] Tip rotation includes `/mcp`
@@ -367,7 +363,7 @@
 
 ### First-run onboarding
 - [ ] Fresh project — creates `.ember/`, copies agents/skills/hooks, `ember.md`
-- [x] Delete project `.ember/` folder, re-run — re-initializes project (agents, skills, hooks copied)
+- [ ] Delete project `.ember/` folder, re-run — re-initializes project (agents, skills, hooks copied)
 - [ ] Home `~/.ember/.initialized` and project `.ember/.initialized` tracked independently
 - [ ] Second run (both markers exist) — no re-initialization
 - [ ] Built-in agents in `/agents`

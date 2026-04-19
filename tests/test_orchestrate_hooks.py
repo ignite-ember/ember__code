@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.hooks.executor import HookExecutor
-from ember_code.tools.orchestrate import OrchestrateTools
+from ember_code.core.hooks.executor import HookExecutor
+from ember_code.core.tools.orchestrate import OrchestrateTools
 
 
 def _settings():
@@ -47,7 +47,7 @@ class TestSubagentStartStop:
         t = OrchestrateTools(pool=p, settings=_settings(), hook_executor=executor, session_id="s1")
 
         with patch(
-            "ember_code.tools.orchestrate._run_agent_streaming",
+            "ember_code.core.tools.orchestrate._run_agent_streaming",
             new=AsyncMock(return_value=("done", [])),
         ):
             result = await t.spawn_agent(task="code", agent_name="coder")
@@ -69,7 +69,7 @@ class TestSubagentStartStop:
         t = OrchestrateTools(pool=p, settings=_settings(), hook_executor=executor, session_id="s1")
 
         with patch(
-            "ember_code.tools.orchestrate._run_agent_streaming",
+            "ember_code.core.tools.orchestrate._run_agent_streaming",
             new=AsyncMock(side_effect=RuntimeError("crash")),
         ):
             result = await t.spawn_agent(task="stuff", agent_name="buggy")
@@ -81,7 +81,7 @@ class TestSubagentStartStop:
         agent.name = "coder"
         t = OrchestrateTools(pool=_pool(agent), settings=_settings())
         with patch(
-            "ember_code.tools.orchestrate._run_agent_streaming",
+            "ember_code.core.tools.orchestrate._run_agent_streaming",
             new=AsyncMock(return_value=("ok", [])),
         ):
             result = await t.spawn_agent(task="code", agent_name="coder")
@@ -101,9 +101,9 @@ class TestSubagentStartStop:
 
         with (
             patch("agno.team.team.Team"),
-            patch("ember_code.config.models.ModelRegistry") as MockReg,
+            patch("ember_code.core.config.models.ModelRegistry") as MockReg,
             patch(
-                "ember_code.tools.orchestrate._run_team_streaming",
+                "ember_code.core.tools.orchestrate._run_team_streaming",
                 new=AsyncMock(return_value=("team done", [])),
             ),
         ):

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ember_code.tools.custom_loader import CustomToolkit, load_custom_tools
+from ember_code.core.tools.custom_loader import CustomToolkit, load_custom_tools
 
 
 @pytest.fixture

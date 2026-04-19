@@ -1,14 +1,14 @@
 """Tests for learning integration — LearningMachine creation from config."""
 
-from ember_code.config.settings import Settings
-from ember_code.learn import create_learning_machine
+from ember_code.core.config.settings import Settings
+from ember_code.core.learn import create_learning_machine
 
 
 class TestCreateLearningMachine:
     def test_disabled_returns_none(self):
         """When learning.enabled is False, returns None."""
         s = Settings()
-        assert s.learning.enabled is False
+        s.learning.enabled = False
         assert create_learning_machine(s) is None
 
     def test_enabled_no_db_returns_none(self):

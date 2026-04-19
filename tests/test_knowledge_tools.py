@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ember_code.knowledge.models import (
+from ember_code.core.knowledge.models import (
     KnowledgeAddResult,
     KnowledgeSearchResponse,
     KnowledgeSearchResult,
     KnowledgeStatus,
 )
-from ember_code.tools.knowledge import KnowledgeTools
+from ember_code.core.tools.knowledge import KnowledgeTools
 
 
 def _make_mgr():

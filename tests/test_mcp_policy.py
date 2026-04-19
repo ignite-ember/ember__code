@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from ember_code.mcp.config import MCPPolicy
+from ember_code.core.mcp.config import MCPPolicy
 
 
 class TestMCPPolicy:
@@ -56,14 +56,14 @@ class TestFromManagedSettings:
 
     def test_returns_empty_policy_when_no_file(self):
         with (
-            patch("ember_code.mcp.config.platform.system", return_value="Darwin"),
-            patch("ember_code.mcp.config.Path.exists", return_value=False),
+            patch("ember_code.core.mcp.config.platform.system", return_value="Darwin"),
+            patch("ember_code.core.mcp.config.Path.exists", return_value=False),
         ):
             policy = MCPPolicy.from_managed_settings()
         assert policy == MCPPolicy()
 
     def test_returns_empty_policy_on_unsupported_platform(self):
-        with patch("ember_code.mcp.config.platform.system", return_value="Windows"):
+        with patch("ember_code.core.mcp.config.platform.system", return_value="Windows"):
             policy = MCPPolicy.from_managed_settings()
         assert policy == MCPPolicy()
 
@@ -87,8 +87,8 @@ class TestFromManagedSettings:
             return Path(path_str)
 
         with (
-            patch("ember_code.mcp.config.platform.system", return_value="Darwin"),
-            patch("ember_code.mcp.config.Path", side_effect=fake_path),
+            patch("ember_code.core.mcp.config.platform.system", return_value="Darwin"),
+            patch("ember_code.core.mcp.config.Path", side_effect=fake_path),
         ):
             policy = MCPPolicy.from_managed_settings()
 
@@ -107,8 +107,8 @@ class TestFromManagedSettings:
             return Path(path_str)
 
         with (
-            patch("ember_code.mcp.config.platform.system", return_value="Darwin"),
-            patch("ember_code.mcp.config.Path", side_effect=fake_path),
+            patch("ember_code.core.mcp.config.platform.system", return_value="Darwin"),
+            patch("ember_code.core.mcp.config.Path", side_effect=fake_path),
         ):
             policy = MCPPolicy.from_managed_settings()
 
@@ -124,8 +124,8 @@ class TestFromManagedSettings:
             return Path(path_str)
 
         with (
-            patch("ember_code.mcp.config.platform.system", return_value="Darwin"),
-            patch("ember_code.mcp.config.Path", side_effect=fake_path),
+            patch("ember_code.core.mcp.config.platform.system", return_value="Darwin"),
+            patch("ember_code.core.mcp.config.Path", side_effect=fake_path),
         ):
             policy = MCPPolicy.from_managed_settings()
 
@@ -146,8 +146,8 @@ class TestFromManagedSettingsIntegration:
             return Path(path_str)
 
         with (
-            patch("ember_code.mcp.config.platform.system", return_value="Darwin"),
-            patch("ember_code.mcp.config.Path", side_effect=fake_path_init),
+            patch("ember_code.core.mcp.config.platform.system", return_value="Darwin"),
+            patch("ember_code.core.mcp.config.Path", side_effect=fake_path_init),
         ):
             policy = MCPPolicy.from_managed_settings()
 
@@ -165,8 +165,8 @@ class TestFromManagedSettingsIntegration:
             return Path(path_str)
 
         with (
-            patch("ember_code.mcp.config.platform.system", return_value="Linux"),
-            patch("ember_code.mcp.config.Path", side_effect=fake_path_init),
+            patch("ember_code.core.mcp.config.platform.system", return_value="Linux"),
+            patch("ember_code.core.mcp.config.Path", side_effect=fake_path_init),
         ):
             policy = MCPPolicy.from_managed_settings()
 

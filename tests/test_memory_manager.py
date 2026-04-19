@@ -2,8 +2,8 @@
 
 from unittest.mock import patch
 
-from ember_code.config.settings import Settings
-from ember_code.memory.manager import StorageManager, setup_db, setup_memory
+from ember_code.core.config.settings import Settings
+from ember_code.core.memory.manager import StorageManager, setup_db, setup_memory
 
 
 class TestStorageManager:

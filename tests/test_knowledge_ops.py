@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ember_code.config.settings import Settings
-from ember_code.session.knowledge_ops import SessionKnowledgeManager
+from ember_code.core.config.settings import Settings
+from ember_code.core.session.knowledge_ops import SessionKnowledgeManager
 
 
 class TestShareEnabled:

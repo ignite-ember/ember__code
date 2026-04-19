@@ -17,7 +17,6 @@ from ember_code import __version__
     "--continue", "-c", "continue_session", is_flag=True, help="Resume the most recent session"
 )
 @click.option("--session-id", default=None, help="Resume a specific session by ID")
-@click.option("--sandbox", is_flag=True, help="Sandbox shell commands")
 @click.option("--read-only", is_flag=True, help="No file modifications")
 @click.option("--accept-edits", is_flag=True, help="Auto-approve file edits")
 @click.option("--auto-approve", is_flag=True, help="Auto-approve everything")
@@ -47,7 +46,6 @@ def cli(
     message,
     continue_session,
     session_id,
-    sandbox,
     read_only,
     accept_edits,
     auto_approve,
@@ -97,8 +95,6 @@ def cli(
                 "show_routing": False,
             }
         )
-    if sandbox:
-        cli_overrides.setdefault("safety", {})["sandbox_shell"] = True
     if read_only:
         cli_overrides.setdefault("permissions", {}).update(
             {
@@ -133,10 +129,9 @@ def cli(
                 "git_destructive": "deny",
             }
         )
-        cli_overrides.setdefault("safety", {})["sandbox_shell"] = True
 
     # Load settings
-    from ember_code.config.settings import load_settings
+    from ember_code.core.config.settings import load_settings
 
     settings = load_settings(cli_overrides=cli_overrides if cli_overrides else None)
     ctx.obj["settings"] = settings
@@ -149,9 +144,9 @@ def cli(
     if session_id:
         resume_session_id = session_id
     elif continue_session:
-        from ember_code.config.settings import load_settings as _ls
-        from ember_code.memory.manager import setup_db
-        from ember_code.session.persistence import SessionPersistence
+        from ember_code.core.config.settings import load_settings as _ls
+        from ember_code.core.memory.manager import setup_db
+        from ember_code.core.session.persistence import SessionPersistence
 
         _s = _ls(cli_overrides=cli_overrides if cli_overrides else None)
         _db = setup_db(_s)
@@ -173,7 +168,7 @@ def cli(
     if worktree:
         from pathlib import Path
 
-        from ember_code.worktree import WorktreeManager
+        from ember_code.core.worktree import WorktreeManager
 
         wm = WorktreeManager(Path.cwd())
         wt_info = wm.create(session_id=resume_session_id)
@@ -203,7 +198,7 @@ def cli(
         if not text:
             click.echo("Error: no input provided via stdin or -m", err=True)
             raise SystemExit(1)
-        from ember_code.session import run_single_message
+        from ember_code.core.session import run_single_message
 
         asyncio.run(
             run_single_message(
@@ -219,7 +214,7 @@ def cli(
 
     # -- Single message mode (non-interactive) --
     if message:
-        from ember_code.session import run_single_message
+        from ember_code.core.session import run_single_message
 
         asyncio.run(
             run_single_message(
@@ -239,60 +234,14 @@ def cli(
         click.echo("This will be revisited in a future release.")
         raise SystemExit(1)
     else:
-        # Load knowledge synchronously before Textual starts.
-        # SentenceTransformer spawns subprocesses that crash inside Textual's
-        # restricted fd env.  On first run (model not cached), show progress.
-        # On subsequent runs (model cached), suppress all output.
-        pre_knowledge = None
-        if settings.knowledge.enabled:
-            import os
-            from pathlib import Path
-
-            from ember_code.knowledge.manager import KnowledgeManager
-
-            _pdir = project_dir or Path.cwd()
-
-            # Check if the embedding model is already cached
-            _hf_cache = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-            _model_cached = (
-                _hf_cache / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2"
-            ).exists()
-
-            if _model_cached:
-                # Model cached — suppress all native output (BertModel LOAD REPORT)
-                _devnull = os.open(os.devnull, os.O_WRONLY)
-                _saved_stdout = os.dup(1)
-                _saved_stderr = os.dup(2)
-                try:
-                    os.dup2(_devnull, 1)
-                    os.dup2(_devnull, 2)
-                    pre_knowledge = KnowledgeManager(settings, _pdir).create_knowledge()
-                except Exception:
-                    pass
-                finally:
-                    os.dup2(_saved_stdout, 1)
-                    os.dup2(_saved_stderr, 2)
-                    os.close(_saved_stdout)
-                    os.close(_saved_stderr)
-                    os.close(_devnull)
-            else:
-                # First run — show progress while model downloads
-                click.echo("Downloading embedding model (one-time setup)...", nl=False)
-                try:
-                    pre_knowledge = KnowledgeManager(settings, _pdir).create_knowledge()
-                    click.echo(" done.")
-                except Exception:
-                    click.echo(" failed.")
-                    pass
-
-        from ember_code.tui import EmberApp
+        from ember_code.frontend.tui import EmberApp
 
         app = EmberApp(
             settings=settings,
             resume_session_id=resume_session_id,
             project_dir=project_dir,
             additional_dirs=additional_dirs,
-            pre_knowledge=pre_knowledge,
+            debug=debug,
         )
         _run_app(app)
         _worktree_cleanup(worktree_manager)
@@ -300,6 +249,11 @@ def cli(
 
 def _run_app(app):
     """Run the Textual app. SSE cleanup errors are silenced in on_unmount."""
+    import sys
+
+    # Clear terminal before Textual takes over — prevents flash of previous session
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
     app.run()
 
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from ember_code.config.settings import load_settings
+from ember_code.core.config.settings import load_settings
 
 
 @pytest.fixture

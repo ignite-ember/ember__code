@@ -2,8 +2,8 @@
 
 import json
 
-from ember_code.config.settings import Settings
-from ember_code.utils.audit import AuditLogger
+from ember_code.core.config.settings import Settings
+from ember_code.core.utils.audit import AuditLogger
 
 
 class TestAuditLogger:

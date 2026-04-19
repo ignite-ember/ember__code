@@ -1,6 +1,6 @@
 """Tests for mcp/transport.py — stdio transport for MCP servers."""
 
-from ember_code.mcp.transport import StdioTransport
+from ember_code.core.mcp.transport import StdioTransport
 
 
 class TestStdioTransport:

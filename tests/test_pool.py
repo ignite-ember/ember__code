@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ember_code.pool import AgentDefinition, AgentPool, build_agent, parse_agent_file
+from ember_code.core.pool import AgentDefinition, AgentPool, build_agent, parse_agent_file
 
 
 class TestAgentParser:
@@ -186,9 +186,9 @@ class TestAgentPool:
 class TestBuildAgentMCPFiltering:
     """Tests for MCP server filtering based on agent's mcp_servers field."""
 
-    @patch("ember_code.pool.Agent")
-    @patch("ember_code.pool.ModelRegistry")
-    @patch("ember_code.pool.ToolRegistry")
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
     def test_all_mcp_when_no_filter(
         self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings
     ):
@@ -210,9 +210,9 @@ class TestBuildAgentMCPFiltering:
         assert pg_client in kwargs["tools"]
         assert redis_client in kwargs["tools"]
 
-    @patch("ember_code.pool.Agent")
-    @patch("ember_code.pool.ModelRegistry")
-    @patch("ember_code.pool.ToolRegistry")
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
     def test_filtered_mcp_servers(
         self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings
     ):
@@ -234,9 +234,9 @@ class TestBuildAgentMCPFiltering:
         assert pg_client in kwargs["tools"]
         assert redis_client not in kwargs["tools"]
 
-    @patch("ember_code.pool.Agent")
-    @patch("ember_code.pool.ModelRegistry")
-    @patch("ember_code.pool.ToolRegistry")
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
     def test_mcp_instruction_reflects_filter(
         self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings
     ):
@@ -257,9 +257,9 @@ class TestBuildAgentMCPFiltering:
         assert "postgres" in instructions_text
         assert "redis" not in instructions_text
 
-    @patch("ember_code.pool.Agent")
-    @patch("ember_code.pool.ModelRegistry")
-    @patch("ember_code.pool.ToolRegistry")
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
     def test_no_mcp_clients(self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings):
         mock_model_cls.return_value.get_model.return_value = MagicMock()
         mock_registry_cls.return_value.resolve.return_value = [MagicMock()]

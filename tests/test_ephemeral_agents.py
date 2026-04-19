@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ember_code.pool import AgentPool
+from ember_code.core.pool import AgentPool
 
 
 class TestEphemeralInit:
@@ -33,7 +33,7 @@ class TestRegisterEphemeral:
         p.init_ephemeral(tmp_path)
         return p
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_register_creates_md_file(self, mock_build, pool, tmp_path):
         mock_build.return_value = MagicMock()
         pool.register_ephemeral(
@@ -48,7 +48,7 @@ class TestRegisterEphemeral:
         assert "description: A helper agent" in content
         assert "You help with things." in content
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_register_adds_to_definitions(self, mock_build, pool):
         mock_build.return_value = MagicMock()
         pool.register_ephemeral(
@@ -58,7 +58,7 @@ class TestRegisterEphemeral:
         )
         assert "helper" in pool.agent_names
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_register_with_custom_tools(self, mock_build, pool, tmp_path):
         mock_build.return_value = MagicMock()
         pool.register_ephemeral(
@@ -71,7 +71,7 @@ class TestRegisterEphemeral:
         content = md_path.read_text()
         assert "Read, Grep, Glob" in content
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_register_with_model(self, mock_build, pool, tmp_path):
         mock_build.return_value = MagicMock()
         pool.register_ephemeral(
@@ -84,7 +84,7 @@ class TestRegisterEphemeral:
         content = md_path.read_text()
         assert "model: gpt-4o" in content
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_register_duplicate_raises(self, mock_build, pool):
         mock_build.return_value = MagicMock()
         pool.register_ephemeral(name="dup", description="d", system_prompt="p")
@@ -97,7 +97,7 @@ class TestRegisterEphemeral:
         with pytest.raises(RuntimeError, match="not initialized"):
             pool.register_ephemeral(name="x", description="d", system_prompt="p")
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_register_respects_limit(self, mock_build, pool):
         mock_build.return_value = MagicMock()
         pool._max_ephemeral = 2
@@ -110,7 +110,7 @@ class TestRegisterEphemeral:
 class TestListEphemeral:
     """AgentPool.list_ephemeral() returns only ephemeral agent definitions."""
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_list_ephemeral_agents(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -140,7 +140,7 @@ class TestListEphemeral:
 class TestPromoteEphemeral:
     """AgentPool.promote_ephemeral() moves agent from tmp to permanent."""
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_promote_moves_file(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -155,7 +155,7 @@ class TestPromoteEphemeral:
         assert dest.exists()
         assert not (tmp_path / ".ember" / "agents.tmp" / "promo.md").exists()
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_promote_decrements_count(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -175,7 +175,7 @@ class TestPromoteEphemeral:
         with pytest.raises(KeyError, match="not found"):
             pool.promote_ephemeral("ghost", tmp_path)
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_promote_non_ephemeral_raises(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -198,7 +198,7 @@ class TestPromoteEphemeral:
 class TestDiscardEphemeral:
     """AgentPool.discard_ephemeral() deletes an ephemeral agent."""
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_discard_removes_file_and_definition(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -215,7 +215,7 @@ class TestDiscardEphemeral:
         assert not md_path.exists()
         assert "temp" not in pool.agent_names
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_discard_decrements_count(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -235,7 +235,7 @@ class TestDiscardEphemeral:
         with pytest.raises(KeyError, match="not found"):
             pool.discard_ephemeral("ghost")
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_discard_non_ephemeral_raises(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -263,7 +263,7 @@ class TestDiscardEphemeral:
 class TestCleanupEphemeral:
     """AgentPool.cleanup_ephemeral() removes all ephemeral agents."""
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_cleanup_removes_all(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -283,7 +283,7 @@ class TestCleanupEphemeral:
         assert "e1" not in pool.agent_names
         assert "e2" not in pool.agent_names
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_cleanup_leaves_permanent_agents(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -312,7 +312,7 @@ class TestCleanupEphemeral:
 class TestCreateAgentTool:
     """OrchestrateTools.create_agent() creates ephemeral agents at runtime."""
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_create_agent_returns_confirmation(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -320,7 +320,7 @@ class TestCreateAgentTool:
         pool._base_dir = str(tmp_path)
         pool.init_ephemeral(tmp_path)
 
-        from ember_code.tools.orchestrate import OrchestrateTools
+        from ember_code.core.tools.orchestrate import OrchestrateTools
 
         tools = OrchestrateTools(
             pool=pool,
@@ -338,7 +338,7 @@ class TestCreateAgentTool:
         assert "debugger" in result
         assert "debugger" in pool.agent_names
 
-    @patch("ember_code.pool.build_agent")
+    @patch("ember_code.core.pool.build_agent")
     def test_create_agent_error_on_limit(self, mock_build, tmp_path, settings):
         mock_build.return_value = MagicMock()
         pool = AgentPool()
@@ -346,7 +346,7 @@ class TestCreateAgentTool:
         pool._base_dir = str(tmp_path)
         pool.init_ephemeral(tmp_path, max_ephemeral=0)
 
-        from ember_code.tools.orchestrate import OrchestrateTools
+        from ember_code.core.tools.orchestrate import OrchestrateTools
 
         tools = OrchestrateTools(pool=pool, settings=settings)
 

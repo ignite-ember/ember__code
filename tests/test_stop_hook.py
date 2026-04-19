@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.config.settings import Settings
+from ember_code.core.config.settings import Settings
 
 # Reuse the shared patching infrastructure from test_session
 from tests.test_session import _session_patches, _start_patches, _stop_patches
@@ -18,7 +18,7 @@ class TestStopHookBlocking:
         patches = _session_patches()
         _start_patches(patches)
 
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         s = Session(Settings(), project_dir=tmp_path)
 
@@ -42,7 +42,9 @@ class TestStopHookBlocking:
     @pytest.mark.asyncio
     async def test_stop_hook_allows_response(self, session):
         """When Stop hook allows, response is returned normally."""
-        with patch("ember_code.session.core.extract_response_text", return_value="Good response"):
+        with patch(
+            "ember_code.core.session.core.extract_response_text", return_value="Good response"
+        ):
             result = await session.handle_message("Hi")
             assert result == "Good response"
 
@@ -68,7 +70,7 @@ class TestStopHookBlocking:
             call_count += 1
             return result
 
-        with patch("ember_code.session.core.extract_response_text", side_effect=fake_extract):
+        with patch("ember_code.core.session.core.extract_response_text", side_effect=fake_extract):
             result = await session.handle_message("test")
             assert result == "Clean response"
             # Agent should have been called twice: original + retry
@@ -87,7 +89,7 @@ class TestStopHookBlocking:
         # UserPromptSubmit allows, then Stop blocks 3 times
         session.hook_executor.execute = AsyncMock(side_effect=[allowed, blocked, blocked, blocked])
 
-        with patch("ember_code.session.core.extract_response_text", return_value="response"):
+        with patch("ember_code.core.session.core.extract_response_text", return_value="response"):
             result = await session.handle_message("test")
             # After 3 blocks, the loop exits and returns the last response
             assert result == "response"
@@ -106,7 +108,7 @@ class TestStopHookBlocking:
 
         session.hook_executor.execute = AsyncMock(side_effect=[allowed, blocked, allowed])
 
-        with patch("ember_code.session.core.extract_response_text", return_value="ok"):
+        with patch("ember_code.core.session.core.extract_response_text", return_value="ok"):
             await session.handle_message("test")
             # Second call should be the retry with system message
             retry_call = session.main_team.arun.call_args_list[1]

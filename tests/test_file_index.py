@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from ember_code.tui.file_index import FileIndex, _fallback_list, _git_ls_files, _score_match
+from ember_code.frontend.tui.file_index import (
+    FileIndex,
+    _fallback_list,
+    _git_ls_files,
+    _score_match,
+)
 
 # ── _score_match ─────────────────────────────────────────────────
 

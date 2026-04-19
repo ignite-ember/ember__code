@@ -2,8 +2,8 @@
 
 import pytest
 
-from ember_code.config.settings import Settings
-from ember_code.hooks.schemas import HookDefinition
+from ember_code.core.config.settings import Settings
+from ember_code.core.hooks.schemas import HookDefinition
 
 # Reuse the shared patching infrastructure
 from tests.test_session import _session_patches, _start_patches, _stop_patches
@@ -17,7 +17,7 @@ class TestHooksReload:
         patches = _session_patches()
         _start_patches(patches)
 
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         s = Session(Settings(), project_dir=tmp_path)
         yield s
@@ -68,14 +68,14 @@ class TestHooksReloadCommand:
         patches = _session_patches()
         _start_patches(patches)
 
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         session = Session(Settings(), project_dir=tmp_path)
         session._hook_loader.load.return_value = {
             "PreToolUse": [HookDefinition(type="command", command="echo test")],
         }
 
-        from ember_code.tui.command_handler import CommandHandler
+        from ember_code.backend.command_handler import CommandHandler
 
         handler = CommandHandler(session)
         await handler.handle("/hooks reload")
@@ -90,12 +90,12 @@ class TestHooksReloadCommand:
         patches = _session_patches()
         _start_patches(patches)
 
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         session = Session(Settings(), project_dir=tmp_path)
         session.hooks_map = {}
 
-        from ember_code.tui.command_handler import CommandHandler
+        from ember_code.backend.command_handler import CommandHandler
 
         handler = CommandHandler(session)
         # Should not raise (just returns result)

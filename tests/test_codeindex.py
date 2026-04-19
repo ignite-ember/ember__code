@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.tools.codeindex import CodeIndexTools, _get_git_remote
+from ember_code.core.tools.codeindex import CodeIndexTools, _get_git_remote
 
 
 class TestGetGitRemote:

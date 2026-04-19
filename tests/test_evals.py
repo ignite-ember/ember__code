@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.evals.assertions import check_file_assertion, check_unexpected_tool_calls
-from ember_code.evals.loader import EvalCase, EvalSuite, load_eval_file
-from ember_code.evals.reporter import format_results
-from ember_code.evals.runner import CaseResult, SuiteResult, run_eval_case
+from ember_code.core.evals.assertions import check_file_assertion, check_unexpected_tool_calls
+from ember_code.core.evals.loader import EvalCase, EvalSuite, load_eval_file
+from ember_code.core.evals.reporter import format_results
+from ember_code.core.evals.runner import CaseResult, SuiteResult, run_eval_case
 
 # ── Loader tests ──────────────────────────────────────────────
 
@@ -394,7 +394,7 @@ class TestFormatResults:
 class TestEvalsCommand:
     @pytest.mark.asyncio
     async def test_evals_dispatch(self):
-        from ember_code.session.commands import dispatch
+        from ember_code.core.session.commands import dispatch
 
         session = MagicMock()
         session.pool = MagicMock()
@@ -405,7 +405,7 @@ class TestEvalsCommand:
             patch.object(
                 SuiteResult, "run_all", new_callable=AsyncMock, return_value=[]
             ) as mock_run,
-            patch("ember_code.session.commands.print_info"),
+            patch("ember_code.core.session.commands.print_info"),
         ):
             result = await dispatch(session, "/evals")
             assert result is True
@@ -413,7 +413,7 @@ class TestEvalsCommand:
 
     @pytest.mark.asyncio
     async def test_evals_with_agent_filter(self):
-        from ember_code.session.commands import dispatch
+        from ember_code.core.session.commands import dispatch
 
         session = MagicMock()
         session.pool = MagicMock()
@@ -424,7 +424,7 @@ class TestEvalsCommand:
             patch.object(
                 SuiteResult, "run_all", new_callable=AsyncMock, return_value=[]
             ) as mock_run,
-            patch("ember_code.session.commands.print_info"),
+            patch("ember_code.core.session.commands.print_info"),
         ):
             await dispatch(session, "/evals editor")
             mock_run.assert_called_once_with(
@@ -435,6 +435,6 @@ class TestEvalsCommand:
             )
 
     def test_evals_registered(self):
-        from ember_code.tui.command_handler import CommandHandler
+        from ember_code.backend.command_handler import CommandHandler
 
         assert "/evals" in CommandHandler._COMMANDS

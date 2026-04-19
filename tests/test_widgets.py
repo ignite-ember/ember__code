@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from ember_code.tui.widgets import (
+from ember_code.frontend.tui.widgets import (
     SPINNER_FRAMES,
     AgentTreeWidget,
     InputHistory,

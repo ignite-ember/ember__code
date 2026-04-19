@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ember_code.queue_hook import QueueInjectorHook, create_queue_hook
+from ember_code.core.queue_hook import QueueInjectorHook, create_queue_hook
 
 
 class TestQueueInjectorHook:

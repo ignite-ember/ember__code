@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.tools.web import WebTools, _extract_text_from_html
+from ember_code.core.tools.web import WebTools, _extract_text_from_html
 
 
 class TestWebTools:
@@ -31,7 +31,7 @@ class TestWebTools:
         mock_response.headers = {"content-type": "text/html"}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("ember_code.tools.web.httpx.AsyncClient") as MockClient:
+        with patch("ember_code.core.tools.web.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
             instance.get = AsyncMock(return_value=mock_response)
             instance.__aenter__ = AsyncMock(return_value=instance)
@@ -49,7 +49,7 @@ class TestWebTools:
         mock_response.headers = {"content-type": "text/plain"}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("ember_code.tools.web.httpx.AsyncClient") as MockClient:
+        with patch("ember_code.core.tools.web.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
             instance.get = AsyncMock(return_value=mock_response)
             instance.__aenter__ = AsyncMock(return_value=instance)
@@ -67,7 +67,7 @@ class TestWebTools:
         mock_response.headers = {"content-type": "application/json"}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("ember_code.tools.web.httpx.AsyncClient") as MockClient:
+        with patch("ember_code.core.tools.web.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
             instance.get = AsyncMock(return_value=mock_response)
             instance.__aenter__ = AsyncMock(return_value=instance)
@@ -81,7 +81,7 @@ class TestWebTools:
     async def test_fetch_url_error(self):
         tools = WebTools()
 
-        with patch("ember_code.tools.web.httpx.AsyncClient") as MockClient:
+        with patch("ember_code.core.tools.web.httpx.AsyncClient") as MockClient:
             instance = AsyncMock()
             instance.get = AsyncMock(side_effect=Exception("connection refused"))
             instance.__aenter__ = AsyncMock(return_value=instance)

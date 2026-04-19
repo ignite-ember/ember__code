@@ -2,8 +2,8 @@
 
 import pytest
 
-from ember_code.hooks.executor import HookExecutor
-from ember_code.hooks.tool_hook import ToolEventHook, _is_protected_path
+from ember_code.core.hooks.executor import HookExecutor
+from ember_code.core.hooks.tool_hook import ToolEventHook, _is_protected_path
 
 
 class TestIsProtectedPath:

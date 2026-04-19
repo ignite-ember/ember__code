@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.tools.orchestrate import OrchestrateTools
+from ember_code.core.tools.orchestrate import OrchestrateTools
 
 
 async def _mock_stream(content="agent response"):
@@ -78,9 +78,9 @@ class TestOrchestrateTools:
         t = OrchestrateTools(pool=_mock_pool(), settings=_settings())
         with (
             patch("agno.team.team.Team"),
-            patch("ember_code.config.models.ModelRegistry") as MockReg,
+            patch("ember_code.core.config.models.ModelRegistry") as MockReg,
             patch(
-                "ember_code.tools.orchestrate._run_team_streaming",
+                "ember_code.core.tools.orchestrate._run_team_streaming",
                 new=AsyncMock(return_value=("team result", [])),
             ),
         ):

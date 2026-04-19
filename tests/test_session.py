@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.config.settings import Settings
+from ember_code.core.config.settings import Settings
 
 
 def _session_patches(**overrides):
@@ -45,7 +45,7 @@ def _session_patches(**overrides):
 
     patches = []
     for name, rv in defaults.items():
-        target = f"ember_code.session.core.{name}"
+        target = f"ember_code.core.session.core.{name}"
         # For classes (uppercase first letter), don't set return_value so
         # the mock acts as a callable that returns a fresh MagicMock.
         if name[0].isupper():
@@ -84,7 +84,7 @@ class TestSessionConstruction:
         _stop_patches(patches)
 
     def test_creates_session_with_defaults(self, tmp_path, _patch_deps):
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         settings = Settings()
         session = Session(settings, project_dir=tmp_path)
@@ -95,14 +95,14 @@ class TestSessionConstruction:
         assert session.settings is settings
 
     def test_creates_session_with_resume_id(self, tmp_path, _patch_deps):
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         session = Session(Settings(), project_dir=tmp_path, resume_session_id="my-session")
         assert session.session_id == "my-session"
         assert session.session_named is True
 
     def test_creates_session_with_additional_dirs(self, tmp_path, _patch_deps):
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         extra = tmp_path / "extra"
         extra.mkdir()
@@ -111,7 +111,7 @@ class TestSessionConstruction:
         assert extra.resolve() in session.workspace.all_dirs
 
     def test_cloud_connected_false_by_default(self, tmp_path, _patch_deps):
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         session = Session(Settings(), project_dir=tmp_path)
         assert session.cloud_connected is False
@@ -126,7 +126,7 @@ class TestSessionConstruction:
         )
         _start_patches(patches)
         try:
-            from ember_code.session.core import Session
+            from ember_code.core.session.core import Session
 
             session = Session(Settings(), project_dir=tmp_path)
             assert session.cloud_connected is True
@@ -142,7 +142,7 @@ class TestSessionMessageHandling:
         patches = _session_patches()
         _start_patches(patches)
 
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         s = Session(Settings(), project_dir=tmp_path)
 
@@ -165,7 +165,7 @@ class TestSessionMessageHandling:
 
     @pytest.mark.asyncio
     async def test_handle_message_returns_response(self, session):
-        with patch("ember_code.session.core.extract_response_text", return_value="Hello!"):
+        with patch("ember_code.core.session.core.extract_response_text", return_value="Hello!"):
             result = await session.handle_message("Hi there")
             assert result == "Hello!"
             # Message includes a UTC timestamp prefix
@@ -197,7 +197,7 @@ class TestSessionCompaction:
         patches = _session_patches()
         _start_patches(patches)
 
-        from ember_code.session.core import Session
+        from ember_code.core.session.core import Session
 
         s = Session(Settings(), project_dir=tmp_path)
         yield s
@@ -228,10 +228,10 @@ class TestSessionLearning:
         patches = _session_patches()
         _start_patches(patches)
         try:
-            from ember_code.session.core import Session
+            from ember_code.core.session.core import Session
 
             settings = Settings()
-            assert settings.learning.enabled is False
+            settings.learning.enabled = False
             session = Session(settings, project_dir=tmp_path)
             assert session._learning is None
         finally:
@@ -242,7 +242,7 @@ class TestSessionLearning:
         patches = _session_patches(create_learning_machine=fake_lm)
         _start_patches(patches)
         try:
-            from ember_code.session.core import Session
+            from ember_code.core.session.core import Session
 
             settings = Settings()
             settings.learning.enabled = True
@@ -261,7 +261,7 @@ class TestSessionLearning:
         if "ModelRegistry" in mocks:
             mocks["ModelRegistry"].return_value.get_context_window.return_value = 128_000
         try:
-            from ember_code.session.core import Session
+            from ember_code.core.session.core import Session
 
             settings = Settings()
             settings.learning.enabled = True
@@ -286,7 +286,7 @@ class TestSessionLearning:
         if "ModelRegistry" in mocks:
             mocks["ModelRegistry"].return_value.get_context_window.return_value = 128_000
         try:
-            from ember_code.session.core import Session
+            from ember_code.core.session.core import Session
 
             settings = Settings()
             Session(settings, project_dir=tmp_path)

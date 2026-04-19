@@ -1,6 +1,6 @@
 """Tests for utils/context.py — hierarchical rules loading."""
 
-from ember_code.utils.context import (
+from ember_code.core.utils.context import (
     load_project_context,
     load_project_rules,
     load_subdirectory_rules,

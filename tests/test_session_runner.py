@@ -9,9 +9,9 @@ class TestRunSingleMessage:
     @pytest.mark.asyncio
     async def test_runs_message_and_prints_response(self, tmp_path):
         with (
-            patch("ember_code.session.runner.Session") as MockSession,
-            patch("ember_code.session.runner.print_response") as mock_print,
-            patch("ember_code.session.runner.print_run_stats"),
+            patch("ember_code.core.session.runner.Session") as MockSession,
+            patch("ember_code.core.session.runner.print_response") as mock_print,
+            patch("ember_code.core.session.runner.print_run_stats"),
         ):
             mock_session = MagicMock()
             mock_session.session_id = "test-123"
@@ -20,7 +20,7 @@ class TestRunSingleMessage:
             mock_session.handle_message = AsyncMock(return_value="Hello!")
             MockSession.return_value = mock_session
 
-            from ember_code.session.runner import run_single_message
+            from ember_code.core.session.runner import run_single_message
 
             settings = MagicMock()
             await run_single_message(settings, "Hi there")
@@ -31,9 +31,9 @@ class TestRunSingleMessage:
     @pytest.mark.asyncio
     async def test_fires_session_start_and_end_hooks(self, tmp_path):
         with (
-            patch("ember_code.session.runner.Session") as MockSession,
-            patch("ember_code.session.runner.print_response"),
-            patch("ember_code.session.runner.print_run_stats"),
+            patch("ember_code.core.session.runner.Session") as MockSession,
+            patch("ember_code.core.session.runner.print_response"),
+            patch("ember_code.core.session.runner.print_run_stats"),
         ):
             mock_session = MagicMock()
             mock_session.session_id = "s1"
@@ -42,7 +42,7 @@ class TestRunSingleMessage:
             mock_session.handle_message = AsyncMock(return_value="ok")
             MockSession.return_value = mock_session
 
-            from ember_code.session.runner import run_single_message
+            from ember_code.core.session.runner import run_single_message
 
             await run_single_message(MagicMock(), "test")
 
@@ -54,9 +54,9 @@ class TestRunSingleMessage:
     @pytest.mark.asyncio
     async def test_passes_project_dir_and_additional_dirs(self):
         with (
-            patch("ember_code.session.runner.Session") as MockSession,
-            patch("ember_code.session.runner.print_response"),
-            patch("ember_code.session.runner.print_run_stats"),
+            patch("ember_code.core.session.runner.Session") as MockSession,
+            patch("ember_code.core.session.runner.print_response"),
+            patch("ember_code.core.session.runner.print_run_stats"),
         ):
             mock_session = MagicMock()
             mock_session.session_id = "s1"
@@ -67,7 +67,7 @@ class TestRunSingleMessage:
 
             from pathlib import Path
 
-            from ember_code.session.runner import run_single_message
+            from ember_code.core.session.runner import run_single_message
 
             await run_single_message(
                 MagicMock(),

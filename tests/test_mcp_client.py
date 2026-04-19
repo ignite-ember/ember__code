@@ -4,20 +4,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.mcp.client import MCPClientManager
+from ember_code.core.mcp.client import MCPClientManager
 
 
 class TestMCPClientManager:
     def _make_manager(self, configs=None):
         with (
-            patch("ember_code.mcp.client.MCPConfigLoader") as MockLoader,
-            patch("ember_code.mcp.client.MCPApprovalManager") as MockApproval,
-            patch("ember_code.mcp.config.MCPPolicy.from_managed_settings") as mock_from,
+            patch("ember_code.core.mcp.client.MCPConfigLoader") as MockLoader,
+            patch("ember_code.core.mcp.client.MCPApprovalManager") as MockApproval,
+            patch("ember_code.core.mcp.config.MCPPolicy.from_managed_settings") as mock_from,
         ):
             MockLoader.return_value.load.return_value = configs or {}
             # Auto-approve everything in existing tests
             MockApproval.return_value.check_approval.return_value = True
-            from ember_code.mcp.config import MCPPolicy
+            from ember_code.core.mcp.config import MCPPolicy
 
             mock_from.return_value = MCPPolicy()
             return MCPClientManager(project_dir="/tmp/test")

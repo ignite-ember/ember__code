@@ -2,7 +2,7 @@
 
 import pytest
 
-from ember_code.prompts import PROMPTS_DIR, load_prompt
+from ember_code.core.prompts import PROMPTS_DIR, load_prompt
 
 
 class TestLoadPrompt:

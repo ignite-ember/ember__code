@@ -4,13 +4,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from ember_code.scheduler.models import ScheduledTask, TaskStatus
-from ember_code.scheduler.parser import (
+from ember_code.core.scheduler.models import ScheduledTask, TaskStatus
+from ember_code.core.scheduler.parser import (
     next_occurrence_from_recurrence,
     parse_recurrence,
     parse_time,
 )
-from ember_code.scheduler.store import TaskStore
+from ember_code.core.scheduler.store import TaskStore
 
 # ── Time parser ─────────────────────────────────────────────────
 

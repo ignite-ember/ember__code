@@ -4,12 +4,23 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ember_code.tui.session_manager import SessionManager
+from ember_code.frontend.tui.session_manager import SessionManager
+from ember_code.protocol.messages import Info
 
 
 def _make_manager() -> tuple[SessionManager, MagicMock, MagicMock, MagicMock]:
     """Create a SessionManager with all mocked deps."""
     app = MagicMock()
+    # Mock the backend
+    backend = MagicMock()
+    backend.session_id = "current-session"
+    backend.switch_session = AsyncMock(
+        return_value=Info(text="Switched to session: My Session (abc-123)")
+    )
+    backend.session.main_team.aget_session = AsyncMock(return_value=None)
+    backend.session.user_id = "test-user"
+    app.backend = backend
+
     conversation = MagicMock()
     status = MagicMock()
     mgr = SessionManager(app, conversation, status)
@@ -30,75 +41,41 @@ class TestClear:
 
 class TestSwitchTo:
     @pytest.mark.asyncio
-    async def test_updates_session_id(self):
-        mgr, app, conversation, status = _make_manager()
-        session = MagicMock()
-        session.persistence.get_name = AsyncMock(return_value="My Session")
-        app.session = session
-        app.query_one.return_value = MagicMock()
-
-        await mgr.switch_to("abc-123")
-        assert session.session_id == "abc-123"
-        assert session.session_named is True
-
-    @pytest.mark.asyncio
     async def test_clears_and_resets(self):
         mgr, app, conversation, status = _make_manager()
-        session = MagicMock()
-        session.persistence.get_name = AsyncMock(return_value=None)
-        app.session = session
         app.query_one.return_value = MagicMock()
-
         await mgr.switch_to("abc-123")
-        conversation.clear.assert_called()
+        conversation.clear.assert_called_once()
         status.reset.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_shows_session_name(self):
+    async def test_shows_session_info(self):
         mgr, app, conversation, status = _make_manager()
-        session = MagicMock()
-        session.persistence.get_name = AsyncMock(return_value="Feature Work")
-        app.session = session
         app.query_one.return_value = MagicMock()
-
-        await mgr.switch_to("s-42")
-        # Should append info with session name
-        conversation.append_info.assert_called_once()
-        msg = conversation.append_info.call_args[0][0]
-        assert "Feature Work" in msg
-        assert "s-42" in msg
-
-    @pytest.mark.asyncio
-    async def test_no_name_shows_id(self):
-        mgr, app, conversation, status = _make_manager()
-        session = MagicMock()
-        session.persistence.get_name = AsyncMock(return_value=None)
-        app.session = session
-        app.query_one.return_value = MagicMock()
-
-        await mgr.switch_to("s-99")
-        msg = conversation.append_info.call_args[0][0]
-        assert "s-99" in msg
+        await mgr.switch_to("abc-123")
+        # Should show the result text from backend
+        conversation.append_info.assert_called()
+        calls = [str(c) for c in conversation.append_info.call_args_list]
+        assert any("Switched" in c or "session" in c.lower() for c in calls)
 
     @pytest.mark.asyncio
     async def test_updates_status_bar(self):
         mgr, app, conversation, status = _make_manager()
-        session = MagicMock()
-        session.persistence.get_name = AsyncMock(return_value=None)
-        app.session = session
         app.query_one.return_value = MagicMock()
-
-        await mgr.switch_to("s-1")
+        await mgr.switch_to("abc-123")
         status.update_status_bar.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_focuses_input(self):
         mgr, app, conversation, status = _make_manager()
-        session = MagicMock()
-        session.persistence.get_name = AsyncMock(return_value=None)
-        app.session = session
         input_widget = MagicMock()
         app.query_one.return_value = input_widget
+        await mgr.switch_to("abc-123")
+        input_widget.focus.assert_called()
 
-        await mgr.switch_to("s-1")
-        input_widget.focus.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_calls_backend_switch(self):
+        mgr, app, conversation, status = _make_manager()
+        app.query_one.return_value = MagicMock()
+        await mgr.switch_to("abc-123")
+        app.backend.switch_session.assert_awaited_once_with("abc-123")

@@ -1,6 +1,6 @@
 """Tests for config/api_keys.py — API key resolution."""
 
-from ember_code.config.api_keys import resolve_api_key
+from ember_code.core.config.api_keys import resolve_api_key
 
 
 class TestResolveApiKey:

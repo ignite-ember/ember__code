@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ember_code.scheduler.runner import SchedulerRunner
+from ember_code.core.scheduler.runner import SchedulerRunner
 
 
 class TestSchedulerRunner:
@@ -46,7 +46,7 @@ class TestSchedulerRunner:
     async def test_executes_due_task(self):
         from datetime import datetime
 
-        from ember_code.scheduler.models import ScheduledTask, TaskStatus
+        from ember_code.core.scheduler.models import ScheduledTask, TaskStatus
 
         task = ScheduledTask(
             id="t1",
@@ -85,7 +85,7 @@ class TestSchedulerRunner:
     async def test_callbacks_called(self):
         from datetime import datetime
 
-        from ember_code.scheduler.models import ScheduledTask, TaskStatus
+        from ember_code.core.scheduler.models import ScheduledTask, TaskStatus
 
         task = ScheduledTask(
             id="t2",

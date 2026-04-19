@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ember_code.session.persistence import SessionPersistence
+from ember_code.core.session.persistence import SessionPersistence
 
 
 class TestSessionPersistence:

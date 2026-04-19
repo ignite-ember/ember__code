@@ -2,12 +2,12 @@
 
 import pytest
 
-from ember_code.config.settings import GuardrailsConfig, Settings
-from ember_code.guardrails.base import Guardrail, GuardrailResult
-from ember_code.guardrails.injection import PromptInjectionGuardrail
-from ember_code.guardrails.moderation import ModerationGuardrail
-from ember_code.guardrails.pii import PIIGuardrail
-from ember_code.guardrails.runner import GuardrailRunner
+from ember_code.core.config.settings import GuardrailsConfig, Settings
+from ember_code.core.guardrails.base import Guardrail, GuardrailResult
+from ember_code.core.guardrails.injection import PromptInjectionGuardrail
+from ember_code.core.guardrails.moderation import ModerationGuardrail
+from ember_code.core.guardrails.pii import PIIGuardrail
+from ember_code.core.guardrails.runner import GuardrailRunner
 
 # ── GuardrailResult model ────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.auth.client import (
+from ember_code.core.auth.client import (
     _CallbackHandler,
     _find_free_port,
     get_login_url,

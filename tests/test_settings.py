@@ -1,6 +1,6 @@
 """Tests for config/settings.py."""
 
-from ember_code.config.settings import (
+from ember_code.core.config.settings import (
     ModelsConfig,
     PermissionsConfig,
     Settings,
@@ -73,7 +73,6 @@ class TestSettings:
         assert s.models.default == "MiniMax-M2.7"
         assert s.permissions.file_read == "allow"
         assert s.permissions.file_write == "ask"
-        assert s.safety.sandbox_shell is False
         assert s.orchestration.max_nesting_depth == 5
         assert s.display.show_routing is False
 
@@ -89,9 +88,11 @@ class TestSettings:
 
     def test_protected_paths_default(self):
         s = Settings()
+        assert ".env" in s.safety.protected_paths
+        assert ".env.*" in s.safety.protected_paths
         assert "*.pem" in s.safety.protected_paths
         assert "*.key" in s.safety.protected_paths
-        assert ".env" not in s.safety.protected_paths
+        assert "credentials.*" in s.safety.protected_paths
 
 
 class TestLoadSettings:

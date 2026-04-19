@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
-from ember_code.config.settings import KnowledgeConfig, Settings
-from ember_code.knowledge.models import KnowledgeSyncResult
-from ember_code.knowledge.sync import KnowledgeSyncer
-from ember_code.knowledge.vector_store import VectorStoreAdapter
+from ember_code.core.config.settings import KnowledgeConfig, Settings
+from ember_code.core.knowledge.models import KnowledgeSyncResult
+from ember_code.core.knowledge.sync import KnowledgeSyncer
+from ember_code.core.knowledge.vector_store import VectorStoreAdapter
 
 # ── Helpers ─────────────────────────────────────────────────────────
 

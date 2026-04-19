@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ember_code.config.settings import (
+from ember_code.core.config.settings import (
     EmbeddingsConfig,
     GuardrailsConfig,
     KnowledgeConfig,
@@ -12,10 +12,10 @@ from ember_code.config.settings import (
     ReasoningConfig,
     Settings,
 )
-from ember_code.knowledge.embedder import EmberEmbedder
-from ember_code.knowledge.embedder_registry import EmbedderRegistry
-from ember_code.knowledge.manager import KnowledgeManager, _resolve_collection_name
-from ember_code.knowledge.models import (
+from ember_code.core.knowledge.embedder import EmberEmbedder
+from ember_code.core.knowledge.embedder_registry import EmbedderRegistry
+from ember_code.core.knowledge.manager import KnowledgeManager, _resolve_collection_name
+from ember_code.core.knowledge.models import (
     KnowledgeAddResult,
     KnowledgeFilter,
     KnowledgeSearchResponse,
@@ -248,7 +248,7 @@ class TestKnowledgeManager:
         embedder = manager._create_embedder(cfg)
         assert embedder is not None  # falls back to local
 
-    @patch("ember_code.knowledge.manager.KnowledgeManager._create_embedder")
+    @patch("ember_code.core.knowledge.manager.KnowledgeManager._create_embedder")
     def test_no_embedder_returns_none(self, mock_create):
         mock_create.return_value = None
         cfg = KnowledgeConfig(enabled=True)
@@ -352,7 +352,7 @@ class TestKnowledgeModels:
 class TestLearningConfig:
     def test_defaults(self):
         cfg = LearningConfig()
-        assert cfg.enabled is False
+        assert cfg.enabled is True
         assert cfg.user_profile is True
         assert cfg.user_memory is True
         assert cfg.session_context is True
@@ -388,7 +388,7 @@ class TestReasoningConfig:
         assert cfg.add_few_shot is False
 
     def test_reasoning_tools_created_from_settings(self):
-        from ember_code.session.core import _create_reasoning_tools
+        from ember_code.core.session.core import _create_reasoning_tools
 
         settings = Settings(reasoning=ReasoningConfig(enabled=True))
         tools = _create_reasoning_tools(settings)
@@ -396,7 +396,7 @@ class TestReasoningConfig:
         assert tools.name == "reasoning_tools"
 
     def test_reasoning_tools_not_created_when_disabled(self):
-        from ember_code.session.core import _create_reasoning_tools
+        from ember_code.core.session.core import _create_reasoning_tools
 
         settings = Settings(reasoning=ReasoningConfig(enabled=False))
         tools = _create_reasoning_tools(settings)
@@ -422,7 +422,7 @@ class TestGuardrailsConfig:
         assert cfg.moderation is False
 
     def test_guardrails_created_when_defaults(self):
-        from ember_code.session.core import _create_guardrails
+        from ember_code.core.session.core import _create_guardrails
 
         settings = Settings()
         result = _create_guardrails(settings)

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ember_code.session.commands import dispatch
+from ember_code.core.session.commands import dispatch
 
 
 def _make_session():
@@ -42,7 +42,7 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_known_command(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_markdown"):
+        with patch("ember_code.core.session.commands.print_markdown"):
             result = await dispatch(session, "/agents")
         assert result is True
 
@@ -55,14 +55,14 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_help(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_info"):
+        with patch("ember_code.core.session.commands.print_info"):
             result = await dispatch(session, "/help")
         assert result is True
 
     @pytest.mark.asyncio
     async def test_dispatch_help_with_topic(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_markdown") as mock_print:
+        with patch("ember_code.core.session.commands.print_markdown") as mock_print:
             result = await dispatch(session, "/help schedule")
         assert result is True
         printed = mock_print.call_args[0][0]
@@ -72,8 +72,8 @@ class TestDispatch:
     async def test_dispatch_config(self):
         session = _make_session()
         with (
-            patch("ember_code.auth.credentials.load_credentials", return_value=None),
-            patch("ember_code.session.commands.print_markdown") as mock_print,
+            patch("ember_code.core.auth.credentials.load_credentials", return_value=None),
+            patch("ember_code.core.session.commands.print_markdown") as mock_print,
         ):
             result = await dispatch(session, "/config")
         assert result is True
@@ -83,7 +83,7 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_clear(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_info"):
+        with patch("ember_code.core.session.commands.print_info"):
             result = await dispatch(session, "/clear")
         assert result is True
         # Session id should have changed
@@ -92,7 +92,7 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_mcp_action(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_info") as mock_print:
+        with patch("ember_code.core.session.commands.print_info") as mock_print:
             result = await dispatch(session, "/mcp")
         assert result is True
         printed = mock_print.call_args[0][0]
@@ -101,7 +101,7 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_dispatch_model_action(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_markdown") as mock_print:
+        with patch("ember_code.core.session.commands.print_markdown") as mock_print:
             result = await dispatch(session, "/model")
         assert result is True
         printed = mock_print.call_args[0][0]
@@ -113,7 +113,7 @@ class TestDispatch:
         session.force_compact = AsyncMock(
             return_value=("Context compacted.", "Summary of conversation")
         )
-        with patch("ember_code.session.commands.print_info"):
+        with patch("ember_code.core.session.commands.print_info"):
             result = await dispatch(session, "/compact")
         assert result is True
         session.force_compact.assert_called_once()
@@ -123,7 +123,7 @@ class TestDispatch:
         session = _make_session()
         with (
             patch("webbrowser.open") as mock_open,
-            patch("ember_code.session.commands.print_info"),
+            patch("ember_code.core.session.commands.print_info"),
         ):
             result = await dispatch(session, "/bug")
         assert result is True
@@ -135,7 +135,7 @@ class TestExtraCommands:
     @pytest.mark.asyncio
     async def test_sync_knowledge_not_enabled(self):
         session = _make_session()
-        with patch("ember_code.session.commands.print_info") as mock_print:
+        with patch("ember_code.core.session.commands.print_info") as mock_print:
             result = await dispatch(session, "/sync-knowledge")
         assert result is True
         assert "not enabled" in mock_print.call_args[0][0].lower()
@@ -146,7 +146,7 @@ class TestExtraCommands:
         session.knowledge_mgr.share_enabled.return_value = True
         r = MagicMock(direction="file_to_db", summary="Loaded 3 entries")
         session.knowledge_mgr.sync_bidirectional = AsyncMock(return_value=[r])
-        with patch("ember_code.session.commands.print_info"):
+        with patch("ember_code.core.session.commands.print_info"):
             result = await dispatch(session, "/sync-knowledge")
         assert result is True
         session.knowledge_mgr.sync_bidirectional.assert_called_once()

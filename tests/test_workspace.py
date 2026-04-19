@@ -2,7 +2,7 @@
 
 import pytest
 
-from ember_code.workspace import WorkspaceManager
+from ember_code.core.workspace import WorkspaceManager
 
 
 class TestWorkspaceManager:

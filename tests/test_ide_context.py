@@ -2,7 +2,7 @@
 
 import time
 
-from ember_code.session.ide_context import IDEContext, OpenFile
+from ember_code.core.session.ide_context import IDEContext, OpenFile
 
 
 class TestTrackFile:

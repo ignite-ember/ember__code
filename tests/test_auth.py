@@ -3,7 +3,7 @@
 import json
 import time
 
-from ember_code.auth.credentials import (
+from ember_code.core.auth.credentials import (
     Credentials,
     _credentials_path,
     clear_credentials,

@@ -5,7 +5,7 @@ import stat
 from pathlib import Path
 from unittest.mock import patch
 
-from ember_code.init import BUILT_IN_HOOKS, initialize_project
+from ember_code.core.init import BUILT_IN_HOOKS, initialize_project
 
 # All tests patch Path.home() so that ~/.ember/ writes go to tmp_path
 # instead of the real home directory.
@@ -65,7 +65,7 @@ class TestInitializeProject:
 
 class TestAgentCopy:
     def test_copies_builtin_agents(self, tmp_path):
-        import ember_code.init as init_mod
+        import ember_code.core.init as init_mod
 
         original = init_mod.PACKAGE_ROOT
 
@@ -91,7 +91,7 @@ class TestAgentCopy:
             init_mod.PACKAGE_ROOT = original
 
     def test_does_not_overwrite_existing_agents(self, tmp_path):
-        import ember_code.init as init_mod
+        import ember_code.core.init as init_mod
 
         original = init_mod.PACKAGE_ROOT
 
@@ -117,7 +117,7 @@ class TestAgentCopy:
 
 class TestSkillCopy:
     def test_copies_builtin_skills(self, tmp_path):
-        import ember_code.init as init_mod
+        import ember_code.core.init as init_mod
 
         original = init_mod.PACKAGE_ROOT
 
@@ -144,7 +144,7 @@ class TestSkillCopy:
             init_mod.PACKAGE_ROOT = original
 
     def test_ignores_non_skill_directories(self, tmp_path):
-        import ember_code.init as init_mod
+        import ember_code.core.init as init_mod
 
         original = init_mod.PACKAGE_ROOT
 
@@ -178,8 +178,8 @@ class TestHookProvisioning:
     def test_registers_hooks_in_settings(self, tmp_path):
         with _patch_home(tmp_path):
             initialize_project(tmp_path)
-        # Settings now written to ~/.ember/settings.json
-        settings = json.loads((tmp_path / "home" / ".ember" / "settings.json").read_text())
+        # Settings written to project .ember/settings.json
+        settings = json.loads((tmp_path / ".ember" / "settings.json").read_text())
         assert "hooks" in settings
         assert "PreToolUse" in settings["hooks"]
         assert any(
@@ -187,13 +187,15 @@ class TestHookProvisioning:
         )
 
     def test_preserves_existing_settings(self, tmp_path):
-        home_ember = tmp_path / "home" / ".ember"
-        home_ember.mkdir(parents=True)
-        (home_ember / "settings.json").write_text(json.dumps({"permissions": {"allow": ["Read"]}}))
+        project_ember = tmp_path / ".ember"
+        project_ember.mkdir(parents=True)
+        (project_ember / "settings.json").write_text(
+            json.dumps({"permissions": {"allow": ["Read"]}})
+        )
 
         with _patch_home(tmp_path):
             initialize_project(tmp_path)
-        settings = json.loads((home_ember / "settings.json").read_text())
+        settings = json.loads((project_ember / "settings.json").read_text())
         assert settings["permissions"]["allow"] == ["Read"]
         assert "hooks" in settings
 
@@ -217,7 +219,7 @@ class TestChecksumUpdate:
     """Tests for checksum-based update of built-in agents/skills."""
 
     def _setup_fake_root(self, tmp_path, agent_content="v1 content"):
-        import ember_code.init as init_mod
+        import ember_code.core.init as init_mod
 
         fake_root = tmp_path / "fake_root"
         (fake_root / "agents").mkdir(parents=True)

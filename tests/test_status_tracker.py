@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from ember_code.tui.status_tracker import StatusTracker
+from ember_code.frontend.tui.status_tracker import StatusTracker
 
 
 def _make_tracker(bar: MagicMock | None = None) -> StatusTracker:
@@ -79,29 +79,36 @@ class TestSetRunTokens:
 
 class TestUpdateStatusBar:
     def test_delegates_model_and_cloud(self):
+        from ember_code.protocol.messages import StatusUpdate
+
         bar = MagicMock()
         tracker = _make_tracker(bar=bar)
-        session = MagicMock()
-        session.settings.models.default = "test-model"
-        session.cloud_connected = True
-        session.cloud_org_name = "My Org"
-        tracker._app.session = session
+        backend = MagicMock()
+        backend.get_status.return_value = StatusUpdate(
+            model="test-model", cloud_connected=True, cloud_org="My Org"
+        )
+        tracker._app._backend = backend
         tracker.update_status_bar()
         bar.update_model.assert_called_once_with("test-model")
         bar.set_cloud_status.assert_called_once_with(True, "My Org")
 
-    def test_no_session(self):
+    def test_no_backend(self):
         tracker = _make_tracker(bar=MagicMock())
-        tracker._app.session = None
+        # No _backend attribute
+        if hasattr(tracker._app, "_backend"):
+            del tracker._app._backend
         tracker.update_status_bar()  # should not raise
 
-    def test_cloud_org_name_none(self):
+    def test_cloud_org_empty(self):
+        from ember_code.protocol.messages import StatusUpdate
+
         bar = MagicMock()
         tracker = _make_tracker(bar=bar)
-        session = MagicMock()
-        session.cloud_connected = False
-        session.cloud_org_name = None
-        tracker._app.session = session
+        backend = MagicMock()
+        backend.get_status.return_value = StatusUpdate(
+            model="test-model", cloud_connected=False, cloud_org=""
+        )
+        tracker._app._backend = backend
         tracker.update_status_bar()
         bar.set_cloud_status.assert_called_once_with(False, "")
 

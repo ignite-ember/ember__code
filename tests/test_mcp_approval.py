@@ -3,7 +3,7 @@
 import json
 from unittest.mock import patch
 
-from ember_code.mcp.approval import _USER_GLOBAL_MCP, MCPApprovalManager
+from ember_code.core.mcp.approval import _USER_GLOBAL_MCP, MCPApprovalManager
 
 
 class TestMCPApprovalManager:
@@ -81,7 +81,7 @@ class TestMCPApprovalManager:
     def test_check_approval_prompts_and_approves(self, tmp_path):
         mgr = MCPApprovalManager(approval_path=tmp_path / "approved.json")
 
-        with patch("ember_code.mcp.approval.Confirm.ask", return_value=True):
+        with patch("ember_code.core.mcp.approval.Confirm.ask", return_value=True):
             result = mgr.check_approval("new-server", "/project/custom-mcp.json")
 
         assert result is True
@@ -90,7 +90,7 @@ class TestMCPApprovalManager:
     def test_check_approval_prompts_and_denies(self, tmp_path):
         mgr = MCPApprovalManager(approval_path=tmp_path / "approved.json")
 
-        with patch("ember_code.mcp.approval.Confirm.ask", return_value=False):
+        with patch("ember_code.core.mcp.approval.Confirm.ask", return_value=False):
             result = mgr.check_approval("new-server", "/project/custom-mcp.json")
 
         assert result is False

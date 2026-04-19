@@ -1,6 +1,6 @@
 """Tests for ember_code.utils.media — media parsing and creation utilities."""
 
-from ember_code.utils.media import ParsedMedia, parse_media_from_text
+from ember_code.core.utils.media import ParsedMedia, parse_media_from_text
 
 
 class TestParseMediaFromText:

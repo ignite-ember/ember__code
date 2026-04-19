@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ember_code.worktree import WorktreeManager, cleanup_stale_worktrees
+from ember_code.core.worktree import WorktreeManager, cleanup_stale_worktrees
 
 
 def _init_git_repo(path: Path) -> None:

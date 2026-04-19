@@ -2,7 +2,7 @@
 
 import json
 
-from ember_code.config.tool_permissions import (
+from ember_code.core.config.tool_permissions import (
     FUNC_TO_TOOL,
     ToolPermissions,
     _args_to_str,
@@ -135,7 +135,7 @@ class TestToolPermissions:
         perms = ToolPermissions(project_dir=tmp_path)
         from unittest.mock import patch
 
-        with patch("ember_code.config.tool_permissions.Path.home", return_value=tmp_path):
+        with patch("ember_code.core.config.tool_permissions.Path.home", return_value=tmp_path):
             perms.save_rule("Bash(git push)", "allow")
 
         settings_path = tmp_path / ".ember" / "settings.local.json"
