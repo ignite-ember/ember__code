@@ -332,7 +332,7 @@ class ToolCallLiveWidget(Static):
         self._result_summary = ""
         self._full_result = ""
         self._result_has_markup = False  # True if result contains Rich markup
-        self._diff_table = None  # Rich Table for edit diffs
+        self._diff_table: object = None  # Rich Table for edit diffs
         self._expanded = False
         self._preview_lines = preview_lines
         display = self._format()

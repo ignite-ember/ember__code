@@ -335,7 +335,7 @@ class CodeIndexTools(Toolkit):
         if err := self._check_remote():
             return err
 
-        params: dict[str, str] = {"remote_url": self._remote_url}
+        params: dict[str, str] = {"remote_url": self._remote_url or ""}
         if commit_id:
             params["commit_id"] = commit_id
 

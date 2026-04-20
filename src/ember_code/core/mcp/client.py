@@ -125,13 +125,13 @@ class MCPClientManager:
         )
 
         # Connect using MCP SDK directly with errlog redirected
-        mcp_tools._context = stdio_client(params, errlog=errlog)
+        mcp_tools._context = stdio_client(params, errlog=errlog)  # type: ignore[assignment]
         session_params = await mcp_tools._context.__aenter__()
         mcp_tools._active_contexts = [mcp_tools._context]
         read, write = session_params[0:2]
 
         timeout = getattr(mcp_tools, "timeout_seconds", 30) or 30
-        mcp_tools._session_context = ClientSession(
+        mcp_tools._session_context = ClientSession(  # type: ignore[assignment]
             read, write, read_timeout_seconds=timedelta(seconds=timeout)
         )
         mcp_tools.session = await mcp_tools._session_context.__aenter__()

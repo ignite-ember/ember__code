@@ -164,7 +164,7 @@ def _build_diff_table(rows: list[tuple[str, str]], max_rows: int | None = None) 
     return table
 
 
-def _format_edit_diff(tool: Any) -> tuple[str, Any] | None:
+def _format_edit_diff(tool: Any) -> tuple[Any, Any, list[tuple[str, str]]] | None:
     """Format an Edit tool's diff as (markup_preview, table_renderable).
 
     Returns a tuple of (preview_markup_str, Rich Table) or None.

@@ -55,6 +55,7 @@ class RunController:
         self._hitl = hitl
 
         self._stream_widget: StreamingMessageWidget | None = None
+        self._thinking_widget: StreamingMessageWidget | None = None
         self._spinner: AgentActivityWidget | None = None
         self._task_progress: TaskProgressWidget | None = None
         self._processing = False
@@ -186,7 +187,7 @@ class RunController:
         # Reset per-run state
         self._run_input_tokens = 0
         self._run_output_tokens = 0
-        self._run_output_text = []
+        self._run_output_text: list[str] = []
         self._last_token_update = 0.0
         self._streamed = False
         self._ui_finalized = False

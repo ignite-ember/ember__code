@@ -34,7 +34,7 @@ class PromptInput(TextArea):
             self.text = text
             super().__init__()
 
-    def _on_key(self, event) -> None:
+    async def _on_key(self, event) -> None:
         if event.key == "enter":
             # When the file picker is open, don't submit — let the event
             # bubble up to the app's on_key where picker selection happens
@@ -57,7 +57,7 @@ class PromptInput(TextArea):
             if text:
                 self.post_message(self.Submitted(text))
             return
-        super()._on_key(event)
+        await super()._on_key(event)
 
 
 class InputHistory:

@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -228,8 +229,9 @@ class EmberApp(App):
         self._debug = debug
 
         # Backend created in on_mount via BackendProcess (separate subprocess)
-        self._backend = None
-        self._process_mgr = None
+        self._backend: Any = None
+        self._process_mgr: Any = None
+        self._task_refresh_timer: Any = None
 
         self._conversation: ConversationView | None = None
         self._input_handler: InputHandler | None = None
@@ -1000,15 +1002,6 @@ class EmberApp(App):
         verbose = self._backend.toggle_verbose()
         state = "on" if verbose else "off"
         self._conversation.append_info(f"Verbose mode: {state}")
-
-    async def _init_mcp_background(self) -> None:
-        """Connect user-configured MCP servers in the background."""
-        try:
-            await self._backend.ensure_mcp()
-            for name, connected in self._backend.get_mcp_status():
-                self._status.set_ide_status(name, connected)
-        except Exception:
-            pass
 
     async def _check_for_update(self) -> None:
         """Check for a newer CLI version via BE RPC."""

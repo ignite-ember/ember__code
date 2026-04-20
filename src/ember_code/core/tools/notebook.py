@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 from agno.tools import Toolkit
 
@@ -82,7 +83,7 @@ class NotebookTools(Toolkit):
         lines = source.split("\n")
         source_list = [line + "\n" for line in lines[:-1]] + [lines[-1]] if lines else []
 
-        cell = {
+        cell: dict[str, Any] = {
             "cell_type": cell_type,
             "metadata": {},
             "source": source_list,

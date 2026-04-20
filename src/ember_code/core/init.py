@@ -393,13 +393,14 @@ def _provision_hooks(project_dir: Path) -> None:
 
     for hook in BUILT_IN_HOOKS:
         # Write the hook script (always overwrite — hooks are code, not config)
-        script_path = hooks_dir / hook["filename"]
-        script_path.write_text(hook["content"])
+        filename = str(hook["filename"])
+        script_path = hooks_dir / filename
+        script_path.write_text(str(hook["content"]))
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         # Register in settings (skip if already registered)
         event = hook["event"]
-        definition = hook["definition"]
+        definition: dict[str, object] = dict(hook["definition"])  # type: ignore[arg-type]
         event_hooks = settings.setdefault("hooks", {}).setdefault(event, [])
         if not any(h.get("command") == definition["command"] for h in event_hooks):
             event_hooks.append(definition)

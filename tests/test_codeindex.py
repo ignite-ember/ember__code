@@ -184,7 +184,7 @@ class TestCodeIndexTools:
             mock_req.assert_called_once_with(
                 "GET",
                 "/v1/codeindex/tags",
-                params={"remote_url": tools._remote_url},
+                params={"remote_url": tools._remote_url or ""},
             )
 
     @pytest.mark.asyncio
