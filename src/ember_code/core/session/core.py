@@ -448,9 +448,7 @@ class Session:
 
             # Hot-swap into the live session
             self.knowledge = knowledge
-            self.knowledge_mgr = SessionKnowledgeManager(
-                knowledge, self.settings, self.project_dir
-            )
+            self.knowledge_mgr = SessionKnowledgeManager(knowledge, self.settings, self.project_dir)
             self.pool._knowledge_mgr = self.knowledge_mgr
             self.pool.build_agents()  # rebuild with knowledge tools
             logger.info("Knowledge: background init complete")

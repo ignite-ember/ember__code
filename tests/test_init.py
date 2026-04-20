@@ -67,16 +67,16 @@ class TestAgentCopy:
     def test_copies_builtin_agents(self, tmp_path):
         import ember_code.core.init as init_mod
 
-        original = init_mod.PACKAGE_ROOT
+        original = init_mod.PACKAGE_DIR
 
         fake_root = tmp_path / "fake_root"
         fake_root.mkdir()
-        agents_dir = fake_root / "agents"
+        agents_dir = fake_root / "bundled_agents"
         agents_dir.mkdir()
         (agents_dir / "editor.md").write_text("editor content")
         (agents_dir / "docs.md").write_text("docs content")
 
-        init_mod.PACKAGE_ROOT = fake_root
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -88,19 +88,19 @@ class TestAgentCopy:
             assert (copied / "docs.md").exists()
             assert (copied / "editor.md").read_text() == "editor content"
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
     def test_does_not_overwrite_existing_agents(self, tmp_path):
         import ember_code.core.init as init_mod
 
-        original = init_mod.PACKAGE_ROOT
+        original = init_mod.PACKAGE_DIR
 
         fake_root = tmp_path / "fake_root"
-        (fake_root / "agents").mkdir(parents=True)
-        (fake_root / "agents" / "editor.md").write_text("builtin version")
-        (fake_root / "skills").mkdir()
+        (fake_root / "bundled_agents").mkdir(parents=True)
+        (fake_root / "bundled_agents" / "editor.md").write_text("builtin version")
+        (fake_root / "bundled_skills").mkdir()
 
-        init_mod.PACKAGE_ROOT = fake_root
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -112,24 +112,24 @@ class TestAgentCopy:
                 initialize_project(project)
             assert (agents_dir / "editor.md").read_text() == "user version"
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
 
 class TestSkillCopy:
     def test_copies_builtin_skills(self, tmp_path):
         import ember_code.core.init as init_mod
 
-        original = init_mod.PACKAGE_ROOT
+        original = init_mod.PACKAGE_DIR
 
         fake_root = tmp_path / "fake_root"
-        (fake_root / "agents").mkdir(parents=True)
-        skills_dir = fake_root / "skills"
+        (fake_root / "bundled_agents").mkdir(parents=True)
+        skills_dir = fake_root / "bundled_skills"
         (skills_dir / "commit").mkdir(parents=True)
         (skills_dir / "commit" / "SKILL.md").write_text("commit skill")
         (skills_dir / "simplify").mkdir(parents=True)
         (skills_dir / "simplify" / "SKILL.md").write_text("simplify skill")
 
-        init_mod.PACKAGE_ROOT = fake_root
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -141,20 +141,20 @@ class TestSkillCopy:
             assert (copied / "simplify" / "SKILL.md").exists()
             assert (copied / "commit" / "SKILL.md").read_text() == "commit skill"
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
     def test_ignores_non_skill_directories(self, tmp_path):
         import ember_code.core.init as init_mod
 
-        original = init_mod.PACKAGE_ROOT
+        original = init_mod.PACKAGE_DIR
 
         fake_root = tmp_path / "fake_root"
-        (fake_root / "agents").mkdir(parents=True)
-        skills_dir = fake_root / "skills"
+        (fake_root / "bundled_agents").mkdir(parents=True)
+        skills_dir = fake_root / "bundled_skills"
         (skills_dir / "broken").mkdir(parents=True)
         (skills_dir / "broken" / "README.md").write_text("not a skill")
 
-        init_mod.PACKAGE_ROOT = fake_root
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -162,7 +162,7 @@ class TestSkillCopy:
                 initialize_project(project)
             assert not (project / ".ember" / "skills" / "broken").exists()
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
 
 class TestHookProvisioning:
@@ -222,16 +222,16 @@ class TestChecksumUpdate:
         import ember_code.core.init as init_mod
 
         fake_root = tmp_path / "fake_root"
-        (fake_root / "agents").mkdir(parents=True)
-        (fake_root / "agents" / "editor.md").write_text(agent_content)
-        (fake_root / "skills").mkdir()
+        (fake_root / "bundled_agents").mkdir(parents=True)
+        (fake_root / "bundled_agents" / "editor.md").write_text(agent_content)
+        (fake_root / "bundled_skills").mkdir()
         return fake_root, init_mod
 
     def test_untouched_file_gets_updated(self, tmp_path):
         """Package updated + user didn't modify → overwrite."""
         fake_root, init_mod = self._setup_fake_root(tmp_path, "v1 content")
-        original = init_mod.PACKAGE_ROOT
-        init_mod.PACKAGE_ROOT = fake_root
+        original = init_mod.PACKAGE_DIR
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -242,20 +242,20 @@ class TestChecksumUpdate:
             assert (project / ".ember" / "agents" / "editor.md").read_text() == "v1 content"
 
             # Simulate package update — change the source file
-            (fake_root / "agents" / "editor.md").write_text("v2 content")
+            (fake_root / "bundled_agents" / "editor.md").write_text("v2 content")
 
             # Second run — should overwrite since user didn't modify
             with _patch_home(tmp_path):
                 initialize_project(project)
             assert (project / ".ember" / "agents" / "editor.md").read_text() == "v2 content"
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
     def test_user_modified_file_kept_with_new(self, tmp_path):
         """Package updated + user modified → keep user version, write .new file."""
         fake_root, init_mod = self._setup_fake_root(tmp_path, "v1 content")
-        original = init_mod.PACKAGE_ROOT
-        init_mod.PACKAGE_ROOT = fake_root
+        original = init_mod.PACKAGE_DIR
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -268,7 +268,7 @@ class TestChecksumUpdate:
             (project / ".ember" / "agents" / "editor.md").write_text("my custom agent")
 
             # Package updates
-            (fake_root / "agents" / "editor.md").write_text("v2 content")
+            (fake_root / "bundled_agents" / "editor.md").write_text("v2 content")
 
             # Second run — should keep user version and write .new
             with _patch_home(tmp_path):
@@ -276,13 +276,13 @@ class TestChecksumUpdate:
             assert (project / ".ember" / "agents" / "editor.md").read_text() == "my custom agent"
             assert (project / ".ember" / "agents" / "editor.md.new").read_text() == "v2 content"
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
     def test_new_package_file_copied(self, tmp_path):
         """New file in package → copied to project."""
         fake_root, init_mod = self._setup_fake_root(tmp_path, "editor v1")
-        original = init_mod.PACKAGE_ROOT
-        init_mod.PACKAGE_ROOT = fake_root
+        original = init_mod.PACKAGE_DIR
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -292,7 +292,7 @@ class TestChecksumUpdate:
                 initialize_project(project)
 
             # Add new agent to package
-            (fake_root / "agents" / "new-agent.md").write_text("new agent content")
+            (fake_root / "bundled_agents" / "new-agent.md").write_text("new agent content")
 
             # Second run — should copy the new file
             with _patch_home(tmp_path):
@@ -301,13 +301,13 @@ class TestChecksumUpdate:
                 project / ".ember" / "agents" / "new-agent.md"
             ).read_text() == "new agent content"
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
     def test_user_custom_files_not_deleted(self, tmp_path):
         """User's custom agents not in package → never touched."""
         fake_root, init_mod = self._setup_fake_root(tmp_path, "editor v1")
-        original = init_mod.PACKAGE_ROOT
-        init_mod.PACKAGE_ROOT = fake_root
+        original = init_mod.PACKAGE_DIR
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -323,13 +323,13 @@ class TestChecksumUpdate:
                 initialize_project(project)
             assert (project / ".ember" / "agents" / "my-custom.md").read_text() == "custom agent"
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
 
     def test_checksums_file_created(self, tmp_path):
         """Checksums file is created after init."""
         fake_root, init_mod = self._setup_fake_root(tmp_path, "content")
-        original = init_mod.PACKAGE_ROOT
-        init_mod.PACKAGE_ROOT = fake_root
+        original = init_mod.PACKAGE_DIR
+        init_mod.PACKAGE_DIR = fake_root
         try:
             project = tmp_path / "project"
             project.mkdir()
@@ -337,4 +337,4 @@ class TestChecksumUpdate:
                 initialize_project(project)
             assert (project / ".ember" / ".checksums.json").exists()
         finally:
-            init_mod.PACKAGE_ROOT = original
+            init_mod.PACKAGE_DIR = original
