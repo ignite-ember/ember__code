@@ -46,6 +46,8 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   github-release:
     needs: publish-pypi
@@ -102,25 +104,27 @@ jobs:
       - name: Download sdist and compute SHA
         id: sha
         run: |
-          # Wait for PyPI to serve the file
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz"
           for i in 1 2 3 4 5; do
-            URL="https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${{ steps.version.outputs.version }}.tar.gz"
             if curl -fsSL -o sdist.tar.gz "$URL" 2>/dev/null; then
-              break
+              SHA=$(sha256sum sdist.tar.gz | awk '{print $1}')
+              echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
             sleep 15
           done
-          SHA=$(sha256sum sdist.tar.gz | awk '{print $1}')
-          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "::error::Failed to download sdist from PyPI after 5 attempts"
+          exit 1
 
       - name: Update Homebrew tap
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           SHA="${{ steps.sha.outputs.sha256 }}"
 
-          gh repo clone ignite-ember/homebrew-tap /tmp/homebrew-tap
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ignite-ember/homebrew-tap.git" /tmp/homebrew-tap
           cd /tmp/homebrew-tap
 
           sed -i "s|url \".*\"|url \"https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz\"|" Formula/ignite-ember.rb
