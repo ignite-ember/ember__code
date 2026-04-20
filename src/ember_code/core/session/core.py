@@ -446,11 +446,13 @@ class Session:
                 os.close(old_stdout)
                 os.close(devnull)
 
-            # Hot-swap into the live session
+            # Hot-swap into the live session — only set references.
+            # Do NOT call pool.build_agents() here: the main thread may
+            # still be building agents, and concurrent mutation deadlocks.
+            # Agents are rebuilt on next MCP connect or _ensure_knowledge().
             self.knowledge = knowledge
             self.knowledge_mgr = SessionKnowledgeManager(knowledge, self.settings, self.project_dir)
             self.pool._knowledge_mgr = self.knowledge_mgr
-            self.pool.build_agents()  # rebuild with knowledge tools
             logger.info("Knowledge: background init complete")
         except Exception as e:
             logger.warning("Knowledge: background init failed: %s", e, exc_info=True)
@@ -465,6 +467,10 @@ class Session:
         # Don't block the event loop — poll the threading event
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._knowledge_ready.wait)
+        # Rebuild agents now that knowledge is available (safe — main thread only)
+        if self.knowledge is not None:
+            self.pool.build_agents()
+            logger.info("Knowledge: agents rebuilt with knowledge tools")
 
     # ── MCP initialization (async, runs once) ──────────────────────
 

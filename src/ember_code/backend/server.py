@@ -461,8 +461,9 @@ class BackendServer:
     # ── Cleanup ───────────────────────────────────────────────────
 
     async def shutdown(self) -> None:
-        """Graceful shutdown — disconnect MCP, fire hooks."""
+        """Graceful shutdown — disconnect MCP, fire hooks, kill bg processes."""
         from ember_code.core.hooks.events import HookEvent
+        from ember_code.core.tools.shell import EmberShellTools
 
         with contextlib.suppress(Exception):
             await self._session.hook_executor.execute(
@@ -474,6 +475,10 @@ class BackendServer:
                 self._session.pool.cleanup_ephemeral()
         with contextlib.suppress(Exception):
             await self._session.mcp_manager.disconnect_all()
+        with contextlib.suppress(Exception):
+            killed = EmberShellTools.cleanup()
+            if killed:
+                logger.info("Shutdown: killed %d background process(es)", killed)
 
     # ── Accessors for FE (read-only state) ──────────────────────
 
@@ -496,7 +501,14 @@ class BackendServer:
                 break
 
     def cancel_run(self) -> None:
-        """Cancel the currently running agent."""
+        """Cancel the currently running agent and kill any foreground process."""
+        # Kill the active foreground subprocess first so the blocking
+        # tool call returns quickly and the Agno cancellation can fire.
+        from ember_code.core.tools.shell import cancel_foreground
+
+        if cancel_foreground():
+            logger.info("Killed foreground process on cancel")
+
         try:
             from agno.agent import Agent
 

@@ -12,6 +12,7 @@ from ember_code.core.tools.edit import EmberEditTools
 from ember_code.core.tools.notebook import NotebookTools
 from ember_code.core.tools.schedule import ScheduleTools
 from ember_code.core.tools.search import GlobTools, GrepTools
+from ember_code.core.tools.shell import EmberShellTools
 from ember_code.core.tools.web import WebTools
 
 logger = logging.getLogger(__name__)
@@ -159,13 +160,22 @@ class ToolRegistry:
         return toolkit
 
     def _make_bash(self, confirm: bool = False):
+        kwargs: dict = dict(base_dir=str(self.base_dir))
+        if confirm:
+            kwargs["requires_confirmation_tools"] = [
+                "run_shell_command",
+                "stop_process",
+            ]
+        return EmberShellTools(**kwargs)
+
+    def _make_bash_legacy(self, confirm: bool = False):
         kwargs: dict = {}
         if confirm:
             kwargs["requires_confirmation_tools"] = ["run_shell_command"]
         return ShellTools(**kwargs)
 
     def _make_ls(self, confirm: bool = False):
-        return ShellTools()
+        return EmberShellTools(base_dir=str(self.base_dir))
 
     def _make_grep(self, confirm: bool = False):
         toolkit = GrepTools(base_dir=str(self.base_dir))
