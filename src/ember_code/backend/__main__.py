@@ -187,18 +187,15 @@ async def _run(
 
     settings = load_settings(project_dir=project_dir)
 
+    transport = UnixSocketServerTransport(socket_path)
+    await transport.start()
+
     backend = BackendServer(
         settings,
         project_dir=project_dir,
         resume_session_id=resume_session_id,
         additional_dirs=additional_dirs,
     )
-
-    transport = UnixSocketServerTransport(socket_path)
-    await transport.start()
-
-    # Signal ready to FE
-    print(f"READY {socket_path}", flush=True)
 
     # Handle SIGTERM/SIGINT
     shutdown_event = asyncio.Event()
@@ -225,6 +222,15 @@ async def _run(
     backend.wire_orchestrate_progress(_on_progress)
 
     rpc_table = _build_rpc_table(backend, transport)
+
+    # Signal ready AFTER init + wiring so the FE can immediately
+    # send requests (e.g. refresh_cache).  Knowledge may still be
+    # loading in a background thread — that's fine.
+    print(f"READY {socket_path}", flush=True)
+
+    # Start knowledge loading AFTER READY — model download is GIL-heavy
+    # and would block the main thread if started during __init__.
+    backend._session.start_knowledge_background()
 
     try:
         await transport.wait_for_connection()
