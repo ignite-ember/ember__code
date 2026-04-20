@@ -5,59 +5,66 @@
 Ember Code is a terminal-based AI coding assistant built on [Agno](https://docs.agno.com/). Its core innovation is **dynamic team assembly**: instead of a fixed agent hierarchy, an Orchestrator analyzes each task and builds a purpose-fit team on the fly from a pool of agent definitions.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Terminal UI                      │
-│              (Rich / Textual CLI)                   │
-├─────────────────────────────────────────────────────┤
-│                  Session Manager                    │
-│        (conversation state, history, memory)        │
-├─────────────────────────────────────────────────────┤
+┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┐
+  FRONTEND PROCESS (Textual TUI)
 │                                                     │
-│              ┌──────────────────┐                   │
-│              │   Orchestrator   │ ← entry point     │
-│              │  (meta-agent)    │                   │
-│              └────────┬─────────┘                   │
-│                       │ analyzes task,              │
-│                       │ picks agents + mode         │
-│                       ▼                             │
-│              ┌──────────────────┐                   │
-│              │   Agent Pool     │                   │
-│              │                  │                   │
-│              │  ┌─────────┐     │                   │
-│              │  │.md files│     │  ← user-extensible│
-│              │  └─────────┘     │                   │
-│              └────────┬─────────┘                   │
-│                       │                             │
-│                       ▼                             │
-│              ┌──────────────────┐                   │
-│              │  Dynamic Team    │                   │
-│              │  (route/coord/   │                   │
-│              │   broadcast/     │                   │
-│              │   tasks)         │                   │
-│              │       │          │                   │
-│              │       ▼          │                   │
-│              │  Agents can      │                   │
-│              │  spawn sub-teams │ ← unlimited depth │
-│              │  from the pool   │                   │
-│              └──────────────────┘                   │
+  ┌─────────────────────────────────────────────────┐
+│ │               EmberApp (Textual)                │ │
+  │  ConversationView │ InputHandler │ StatusTracker│
+│ │  SessionManager │ HITLHandler │ RunController   │ │
+  └──────────────────────┬──────────────────────────┘
+│                        │                            │
+                         │ BackendClient
+│                        │                            │
+└ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘
+                         │
+              Unix socket + NDJSON protocol
+              (newline-delimited JSON messages)
+                         │
+┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┐
+  BACKEND PROCESS       │
+│                        ▼                            │
+  ┌─────────────────────────────────────────────────┐
+│ │         BackendServer + CommandHandler           │ │
+  │         (protocol dispatch, slash commands)      │
+│ └──────────────────────┬──────────────────────────┘ │
+                         │
+│ ┌──────────────────────▼──────────────────────────┐ │
+  │              Session Manager                    │
+│ │      (conversation state, history, memory)      │ │
+  └──────────────────────┬──────────────────────────┘
+│                        │                            │
+  ┌──────────────────────▼──────────────────────────┐
+│ │              Orchestrator (meta-agent)           │ │
+  │              → Agent Pool (.md files)           │
+│ │              → Dynamic Team Assembly            │ │
+  │                (route/coord/broadcast/tasks)    │
+│ │              → Unlimited nesting depth          │ │
+  └──────────────────────┬──────────────────────────┘
+│                        │                            │
+  ┌──────────────────────▼──────────────────────────┐
+│ │              Guardrails Layer                    │ │
+  │   PII Detection │ Prompt Injection │ Moderation │
+│ └─────────────────────────────────────────────────┘ │
+  ┌─────────────────────────────────────────────────┐
+│ │              Tool Layer (Agno Toolkits)          │ │
+  │   Shell │ File │ Edit │ Search │ Git │ Web      │
+│ └─────────────────────────────────────────────────┘ │
+  ┌─────────────────────────────────────────────────┐
+│ │              Knowledge Layer                     │ │
+  │   ChromaDB vector store │ EmberEmbedder (384d)  │
+│ └─────────────────────────────────────────────────┘ │
+  ┌─────────────────────────────────────────────────┐
+│ │              MCP Layer                           │ │
+  │   Server (expose tools to IDEs via stdio)       │
+│ │   Client (consume external MCP servers)         │ │
+  └─────────────────────────────────────────────────┘
+│ ┌─────────────────────────────────────────────────┐ │
+  │              Storage Layer                      │
+│ │      SQLite (sessions) │ Memory (user prefs)    │ │
+  └─────────────────────────────────────────────────┘
 │                                                     │
-├─────────────────────────────────────────────────────┤
-│              Guardrails Layer                       │
-│   PII Detection │ Prompt Injection │ Moderation     │
-├─────────────────────────────────────────────────────┤
-│              Tool Layer (Agno Toolkits)             │
-│   Shell │ File │ Edit │ Search │ Git │ Web │ Python │
-├─────────────────────────────────────────────────────┤
-│              Knowledge Layer                        │
-│   ChromaDB vector store │ EmberEmbedder (384-dim)   │
-├─────────────────────────────────────────────────────┤
-│              MCP Layer                              │
-│   Server (expose tools to IDEs via stdio)           │
-│   Client (consume external MCP servers via Agno)    │
-├─────────────────────────────────────────────────────┤
-│              Storage Layer                          │
-│      SQLite (sessions) │ Memory (user prefs)        │
-└─────────────────────────────────────────────────────┘
+└ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘
 ```
 
 ## Core Design Principles
@@ -118,6 +125,7 @@ Agno's built-in memory system replaces file-based memory:
 - **User memory** — preferences, role, expertise level (persists across sessions)
 - **Session storage** — conversation history, tool outputs (per-session, DB-backed)
 - **Session state** — current task progress, open files, working context
+- **Progress tracking** — `.ember/TODO.md` auto-loaded into context for cross-session task continuity
 
 ## Request Lifecycle
 
@@ -183,8 +191,8 @@ For complex tasks, the orchestration overhead (one extra LLM call) is negligible
 ```
 Startup
     │
-    ├── Scan built-in agents/              (built-in)
-    ├── Scan built-in skills/              (built-in)
+    ├── Copy built-in agents → .ember/agents/   (first run, checksum-merged on update)
+    ├── Copy built-in skills → .ember/skills/   (first run, checksum-merged on update)
     │
     ├── Scan ~/.ember/agents/              (global)
     ├── Scan ~/.ember/skills/              (global)
@@ -193,7 +201,7 @@ Startup
     ├── Scan .ember/agents/                (project)
     ├── Scan .ember/skills.local/          (project, gitignored)
     ├── Scan .ember/skills/                (project)
-    └── Scan .ember/agents.ephemeral/      (session-scoped, auto-cleaned)
+    └── Scan .ember/agents.tmp/            (session-scoped, auto-cleaned)
            │
            │  With cross_tool_support: true, also scans:
            │  ├── ~/.claude/agents/        (Claude Code global)
@@ -215,7 +223,7 @@ Startup
            └── Orchestrator reads pool on each request
 ```
 
-By default, Ember Code loads agents and skills from its own directories only. Enable `cross_tool_support: true` in config to also scan Claude Code and Codex directories — useful for teams migrating from those tools. See [Agents](AGENTS.md) and [Skills](SKILLS.md) for format details.
+By default, Ember Code loads agents and skills from both its own directories and Claude Code / Codex directories (`cross_tool_support` is on by default). Set `cross_tool_support: false` to only scan Ember Code directories. See [Agents](AGENTS.md) and [Skills](SKILLS.md) for format details.
 
 ## Session Management
 
@@ -318,8 +326,9 @@ The TUI is built with [Textual](https://textual.textualize.io/) and follows a cl
 | `StatusTracker` | `status_tracker.py` | Token/context tracking, status bar |
 | `HITLHandler` | `hitl_handler.py` | Confirmation dialogs, user input |
 | `SessionManager` | `session_manager.py` | Session picker, switching, clearing |
-| `CommandHandler` | `command_handler.py` | Slash command dispatch |
 | `InputHandler` | `input_handler.py` | History, autocomplete |
+
+`CommandHandler` has moved to the backend process — slash commands are now dispatched server-side via protocol messages. See [Process Split Architecture](#process-split-architecture) below.
 
 `EmberApp` is a thin shell that delegates to focused manager classes. Textual requires `action_*` methods and `@on` decorators on the App, but the logic lives in the managers. Each manager takes an `EmberApp` reference (via `TYPE_CHECKING` to avoid circular imports) and uses `query_one()` to interact with widgets.
 
@@ -341,12 +350,66 @@ The widget updates in real-time as `TaskCreatedEvent`, `TaskUpdatedEvent`, and `
 
 When scheduled tasks complete, toast notifications appear via Textual's `notify()` system.
 
+## Process Split Architecture
+
+Ember Code runs as two OS processes connected by a Unix domain socket. This isolates the TUI rendering from heavy AI/tool execution, preventing long-running agent work from blocking the UI event loop.
+
+```
+┌──────────────┐   Unix socket   ┌──────────────┐
+│   Frontend   │◄───────────────►│   Backend    │
+│  (Textual)   │  NDJSON framing │  (Session +  │
+│              │                 │   Agents)    │
+└──────────────┘                 └──────────────┘
+   PID A                            PID B
+```
+
+### Key Components
+
+| Component | Location | Role |
+|---|---|---|
+| `BackendServer` | `backend/server.py` | Wraps Session; dispatches FE messages to Session/CommandHandler; streams Agno events back as protocol messages |
+| `BackendClient` | `frontend/tui/backend_client.py` | FE-side proxy with the same public interface as BackendServer; serializes calls to protocol messages over the socket |
+| `BackendProcess` | `frontend/tui/process_manager.py` | Spawns the BE subprocess (`python -m ember_code.backend`), manages its lifecycle, waits for READY, and returns a connected `BackendClient` |
+| `CommandHandler` | `backend/command_handler.py` | Slash command dispatch (moved from TUI to backend so commands execute with direct Session access) |
+| `UnixSocketClientTransport` / `UnixSocketServerTransport` | `transport/unix_socket.py` | Async Unix socket transport with NDJSON framing (one JSON object per `\n`) |
+
+### Protocol Messages
+
+All messages are Pydantic models defined in `protocol/messages.py` with plain types only (no Agno imports). This keeps the FE/BE contract serialization-safe.
+
+**FE to BE (requests):**
+- `RunRequest` — send user message for agent execution
+- `CancelRequest` — cancel a running agent/team
+- `CommandRequest` — execute a slash command
+- `HITLResponse` — user's answer to a confirmation/input prompt
+
+**BE to FE (events, streamed):**
+- `ContentDelta` — streamed text chunk from the model
+- `ToolStarted` / `ToolCompleted` / `ToolError` — tool lifecycle events
+- `HITLRequest` / `RunPaused` — HITL prompts (permission dialog + run-level pause wrapper)
+- `RunCompleted` / `RunError` — run lifecycle bookends
+- `StatusUpdate` — token counts, context usage, model info
+
+### Startup Sequence
+
+1. `EmberApp` creates a `BackendProcess` with project dir and settings
+2. `BackendProcess.start()` spawns `python -m ember_code.backend --socket /tmp/ember-code/<id>.sock`
+3. The BE process creates `BackendServer`, binds to the socket, sends a `Ready` message
+4. `BackendProcess` connects a `BackendClient` to the socket and returns it
+5. The FE uses `BackendClient` as if it were a local `BackendServer` — all calls are transparent proxies
+
+### Design Rationale
+
+- **Non-blocking UI** — Textual's event loop stays responsive while agents run. Token streaming, tool progress, and HITL dialogs all arrive as async messages.
+- **Crash isolation** — a backend crash (OOM from large context, tool segfault) does not kill the TUI. The FE can detect the lost connection and offer to restart.
+- **Future flexibility** — the socket protocol is transport-agnostic (the `Transport` base class abstracts over Unix socket, TCP, or in-process). Remote backends and multi-session servers become possible without changing the FE.
+
 ## Error Handling
 
 - **Tool failures** — agents retry with alternative approaches (Agno's built-in retry)
 - **Model errors** — graceful fallback with user notification
 - **Permission denied** — clear explanation of what was blocked and why
-- **Context overflow** — automatic compaction of older conversation turns via `num_history_runs` limiting
+- **Context overflow** — two-layer compression (tool result compression + conversation history compaction) triggers at 80% of `min(model_window, models.max_context_window)`, default ceiling 200k tokens
 - **Agent not found** — Orchestrator falls back to available agents with a warning
 - **Team failure** — if a coordinated team fails mid-execution, partial results are preserved and shown
 
@@ -355,7 +418,7 @@ When scheduled tasks complete, toast notifications appear via Textual's `notify(
 Ember Code follows a defense-in-depth approach:
 
 1. **Permission tiers** — configurable per-tool approval requirements
-2. **Command sandboxing** — shell commands run in restricted mode by default
+2. **Command blocking** — dangerous shell commands blocked, others require confirmation
 3. **File guards** — sensitive paths (`.env`, credentials) protected from writes
 4. **Confirmation prompts** — destructive/irreversible actions require explicit approval
 5. **Audit log** — all tool executions logged to `~/.ember/audit.log`

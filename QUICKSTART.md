@@ -133,6 +133,20 @@ The TUI launches by default — full terminal UI with streaming responses, sessi
 | Input history | `↑/↓` | `Up/Down` |
 | Cancel current operation | `Esc` | `Escape` |
 
+### Media Input (Paste)
+
+Include file paths or URLs directly in your message — Ember Code auto-detects and attaches them:
+
+```
+> Analyze ~/screenshots/error.png and explain what went wrong
+  Attached: 1 image(s)
+
+> Summarize https://example.com/report.pdf
+  Attached: 1 file(s)
+```
+
+Supported formats: images (`.png`, `.jpg`, `.gif`, `.webp`, etc.), audio (`.mp3`, `.wav`, `.ogg`, etc.), video (`.mp4`, `.mov`, `.webm`, etc.), and documents (`.pdf`, `.docx`, `.txt`, `.py`, `.json`, etc.).
+
 ---
 
 ## Key Concepts
@@ -372,7 +386,6 @@ Create a `.md` file in `.ember/agents/`:
 name: my-agent
 description: Does a specific thing for my project
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: MiniMax-M2.7
 tags: [backend, api]
 reasoning: true
 ---
@@ -421,7 +434,7 @@ On startup, Ember Code shows contextual tips based on your configuration. For ex
 - *Drop a `.md` file in `.ember/agents/` to create a project-specific agent — no code needed.*
 - *Use `--verbose` to see which agents and team mode the Orchestrator picks.*
 
-Tips adapt to your setup — if you haven't enabled the knowledge base or guardrails, you'll see suggestions for those. If you have Claude Code agents in `.claude/agents/`, you'll see a tip about `cross_tool_support`.
+Tips adapt to your setup — if you haven't enabled the knowledge base or guardrails, you'll see suggestions for those.
 
 ---
 
@@ -429,16 +442,7 @@ Tips adapt to your setup — if you haven't enabled the knowledge base or guardr
 
 Most things just work. See the [Migration Guide](docs/MIGRATION.md) for details, but the short version:
 
-```bash
-# Enable cross-tool support to pick up existing Claude Code agents
-# .ember/config.yaml
-agents:
-  cross_tool_support: true
-skills:
-  cross_tool_support: true
-```
-
-Ember Code also reads `CLAUDE.md`, `.claude/agents/*.md`, and `.mcp.json` as-is.
+Ember Code reads `CLAUDE.md`, `.claude/agents/*.md`, `.claude/skills/`, and `.mcp.json` out of the box — cross-tool support is on by default.
 
 ---
 

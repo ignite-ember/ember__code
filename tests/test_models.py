@@ -2,12 +2,12 @@
 
 import pytest
 
-from ember_code.config.models import (
+from ember_code.core.config.models import (
     DEFAULT_CONTEXT_WINDOW,
     ContextWindowResolver,
     ModelRegistry,
 )
-from ember_code.config.settings import ModelsConfig, Settings, load_settings
+from ember_code.core.config.settings import ModelsConfig, Settings, load_settings
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ class TestModelRegistry:
         assert "fake" in registry.PROVIDERS
 
     def test_generate_pattern_command(self):
-        from ember_code.config.permissions import PermissionGuard
+        from ember_code.core.config.permissions import PermissionGuard
 
         assert PermissionGuard._generate_pattern("npm test") == "npm *"
         assert PermissionGuard._generate_pattern("pytest tests/") == "pytest *"

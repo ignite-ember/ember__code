@@ -1,8 +1,10 @@
 """Tests for pool.py — agent parsing and pool management."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from ember_code.pool import AgentPool, parse_agent_file
+from ember_code.core.pool import AgentDefinition, AgentPool, build_agent, parse_agent_file
 
 
 class TestAgentParser:
@@ -48,6 +50,23 @@ class TestAgentParser:
         defn = parse_agent_file(md)
         assert defn.tools == ["Bash", "Grep"]
 
+    def test_parse_mcp_servers(self, tmp_path):
+        md = tmp_path / "mcp.md"
+        md.write_text(
+            "---\nname: db\ndescription: DB agent\n"
+            "tools: Read, Write\n"
+            "mcp_servers: [postgres, redis]\n"
+            "---\nDB agent.\n"
+        )
+        defn = parse_agent_file(md)
+        assert defn.mcp_servers == ["postgres", "redis"]
+
+    def test_parse_mcp_servers_absent(self, tmp_path):
+        md = tmp_path / "no-mcp.md"
+        md.write_text("---\nname: t\ndescription: d\n---\n")
+        defn = parse_agent_file(md)
+        assert defn.mcp_servers == []
+
     def test_parse_defaults(self, tmp_path):
         md = tmp_path / "minimal.md"
         md.write_text("---\nname: minimal\ndescription: minimal agent\n---\n")
@@ -56,6 +75,7 @@ class TestAgentParser:
         assert defn.model is None
         assert defn.reasoning is False
         assert defn.can_orchestrate is True
+        assert defn.mcp_servers == []
         assert defn.temperature is None
 
     def test_parse_optional_fields(self, tmp_path):
@@ -161,3 +181,95 @@ class TestAgentPool:
         assert "alpha" in desc
         assert "Does things" in desc
         assert "Read" in desc
+
+
+class TestBuildAgentMCPFiltering:
+    """Tests for MCP server filtering based on agent's mcp_servers field."""
+
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
+    def test_all_mcp_when_no_filter(
+        self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings
+    ):
+        mock_model_cls.return_value.get_model.return_value = MagicMock()
+        mock_registry_cls.return_value.resolve.return_value = [MagicMock()]
+
+        defn = AgentDefinition(
+            name="editor",
+            description="Edits files",
+            tools=["Read"],
+            mcp_servers=[],
+        )
+        pg_client = MagicMock()
+        redis_client = MagicMock()
+        mcp_clients = {"postgres": pg_client, "redis": redis_client}
+
+        build_agent(defn, settings, mcp_clients=mcp_clients)
+        kwargs = mock_agent_cls.call_args[1]
+        assert pg_client in kwargs["tools"]
+        assert redis_client in kwargs["tools"]
+
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
+    def test_filtered_mcp_servers(
+        self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings
+    ):
+        mock_model_cls.return_value.get_model.return_value = MagicMock()
+        mock_registry_cls.return_value.resolve.return_value = [MagicMock()]
+
+        defn = AgentDefinition(
+            name="db-agent",
+            description="Database agent",
+            tools=["Read"],
+            mcp_servers=["postgres"],
+        )
+        pg_client = MagicMock()
+        redis_client = MagicMock()
+        mcp_clients = {"postgres": pg_client, "redis": redis_client}
+
+        build_agent(defn, settings, mcp_clients=mcp_clients)
+        kwargs = mock_agent_cls.call_args[1]
+        assert pg_client in kwargs["tools"]
+        assert redis_client not in kwargs["tools"]
+
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
+    def test_mcp_instruction_reflects_filter(
+        self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings
+    ):
+        mock_model_cls.return_value.get_model.return_value = MagicMock()
+        mock_registry_cls.return_value.resolve.return_value = [MagicMock()]
+
+        defn = AgentDefinition(
+            name="db-agent",
+            description="Database agent",
+            tools=["Read"],
+            mcp_servers=["postgres"],
+        )
+        mcp_clients = {"postgres": MagicMock(), "redis": MagicMock()}
+
+        build_agent(defn, settings, base_dir="/tmp", mcp_clients=mcp_clients)
+        kwargs = mock_agent_cls.call_args[1]
+        instructions_text = " ".join(kwargs["instructions"])
+        assert "postgres" in instructions_text
+        assert "redis" not in instructions_text
+
+    @patch("ember_code.core.pool.Agent")
+    @patch("ember_code.core.pool.ModelRegistry")
+    @patch("ember_code.core.pool.ToolRegistry")
+    def test_no_mcp_clients(self, mock_registry_cls, mock_model_cls, mock_agent_cls, settings):
+        mock_model_cls.return_value.get_model.return_value = MagicMock()
+        mock_registry_cls.return_value.resolve.return_value = [MagicMock()]
+
+        defn = AgentDefinition(
+            name="editor",
+            description="Edits files",
+            tools=["Read"],
+            mcp_servers=["postgres"],
+        )
+
+        build_agent(defn, settings, mcp_clients=None)
+        mock_agent_cls.assert_called_once()

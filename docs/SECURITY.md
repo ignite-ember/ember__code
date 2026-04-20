@@ -8,7 +8,7 @@ Ember Code is an AI agent that reads, writes, and executes code on behalf of the
 
 | Threat | Risk | Mitigation |
 |---|---|---|
-| **Destructive commands** | Agent runs `rm -rf /`, `DROP TABLE`, force-push | Command sandboxing, blocked patterns, confirmation prompts |
+| **Destructive commands** | Agent runs `rm -rf /`, `DROP TABLE`, force-push | Blocked patterns, confirmation prompts |
 | **Sensitive file access** | Agent reads/writes `.env`, credentials, private keys | Protected paths list, file guards |
 | **Prompt injection** | Malicious content in files/URLs tricks the agent | Tool output filtering, agent isolation |
 | **Runaway recursion** | Agents spawn infinite sub-teams | Depth limits, agent caps, timeouts |
@@ -126,22 +126,9 @@ safety:
     - "keys/"
 ```
 
-### 3. Command Sandboxing
+### 3. Command Blocking
 
-Shell commands can be sandboxed to restrict filesystem and network access:
-
-```yaml
-safety:
-  sandbox_shell: true
-```
-
-When sandboxing is enabled:
-- Commands run in a restricted environment
-- Filesystem access is limited to the project directory
-- Network access can be restricted
-- Specific commands can be excluded from sandboxing
-
-**Blocked commands** (always blocked, regardless of sandbox):
+**Blocked commands** (always blocked):
 
 ```yaml
 safety:
@@ -294,7 +281,6 @@ For organizations, administrators can enforce security policies that individual 
     "git_destructive": "deny"
   },
   "safety": {
-    "sandbox_shell": true,
     "protected_paths": [
       ".env*",
       "*.pem",
@@ -351,15 +337,7 @@ safety:
 
 ### CodeIndex Data Residency
 
-For teams that can't send code to the cloud, CodeIndex can be [self-hosted](CODEINDEX.md#self-hosting-advanced):
-
-```yaml
-# CodeIndex (config key is 'vectorbridge' for SDK compatibility)
-vectorbridge:
-  api_url: "https://vectorbridge.internal.corp.com"
-```
-
-All code analysis and embeddings stay on your infrastructure.
+For teams that can't send code to the cloud, self-hosted CodeIndex is planned for a future release. This will allow all code analysis and embeddings to stay on your infrastructure. See [CodeIndex](CODEINDEX.md#self-hosting-planned) for details.
 
 ---
 
@@ -369,7 +347,7 @@ All code analysis and embeddings stay on your infrastructure.
 |---|---|---|
 | Permission tiers | allow / ask / deny per tool | Same, plus category-based presets |
 | Protected paths | Via deny rules | Dedicated protected_paths list |
-| Command sandboxing | macOS sandbox (Seatbelt) | Configurable shell sandbox |
+| Command blocking | macOS sandbox (Seatbelt) | Blocked patterns, confirmation prompts |
 | Audit logging | Not built-in | Built-in to `~/.ember/audit.log` |
 | Agent isolation | Tools per agent definition | Same — tools declared in `.md` |
 | Depth limits | Sub-agents capped at 1 level | Configurable: depth, agent count, timeout |
@@ -378,7 +356,7 @@ All code analysis and embeddings stay on your infrastructure.
 | Hooks | PreToolUse/PostToolUse/Stop | Same events, same format |
 | Guardrails | Not built-in | PII detection, prompt injection, moderation pre-hooks |
 | Network control | Not built-in | allowed_domains, deny-by-default |
-| CodeIndex | N/A | Self-hostable for data residency |
+| CodeIndex | N/A | Self-hosting planned for data residency |
 
 ---
 
@@ -402,8 +380,8 @@ All code analysis and embeddings stay on your infrastructure.
 ### For Enterprise
 
 - [ ] Deploy managed-settings.json via MDM/configuration management
-- [ ] Self-host CodeIndex for code data residency
+- [ ] Self-host CodeIndex for code data residency (planned — coming soon)
 - [ ] Restrict allowed MCP servers to approved list
 - [ ] Enable network deny-by-default with whitelisted domains
-- [ ] Mandate shell sandboxing
+- [ ] Review blocked command lists and confirmation requirements
 - [ ] Set up audit log aggregation for compliance

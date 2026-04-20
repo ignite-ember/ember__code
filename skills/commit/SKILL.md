@@ -1,8 +1,8 @@
 ---
 name: commit
 description: This skill should be used when the user asks to "commit", "save changes", "create a commit", or mentions git commit. Creates a well-formatted commit with conventional message.
+category: development
 argument-hint: [message]
-allowed-tools: Read, Bash, Grep, Glob
 ---
 
 Create a git commit for the current changes.

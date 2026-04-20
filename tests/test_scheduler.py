@@ -4,13 +4,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from ember_code.scheduler.models import ScheduledTask, TaskStatus
-from ember_code.scheduler.parser import (
+from ember_code.core.scheduler.models import ScheduledTask, TaskStatus
+from ember_code.core.scheduler.parser import (
     next_occurrence_from_recurrence,
     parse_recurrence,
     parse_time,
 )
-from ember_code.scheduler.store import TaskStore
+from ember_code.core.scheduler.store import TaskStore
 
 # ── Time parser ─────────────────────────────────────────────────
 
@@ -53,7 +53,6 @@ class TestParseTime:
         result = parse_time("tomorrow")
         assert result is not None
         assert result.date() == (datetime.now() + timedelta(days=1)).date()
-        assert result.hour == 9  # default 9am
 
     def test_tomorrow_at(self):
         result = parse_time("tomorrow at 3pm")

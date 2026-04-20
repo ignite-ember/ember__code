@@ -2,7 +2,7 @@
 
 CodeIndex is the semantic code intelligence engine behind Ember Code. While other tools operate on raw text (grep for patterns, read for file contents), CodeIndex gives agents **pre-processed understanding** of the entire codebase — searchable by meaning, not just keywords.
 
-**CodeIndex is included free with every Ember Code account.** No separate subscription, no extra API keys. When you sign up at [ignite-ember.sh](https://ignite-ember.sh), you get both the AI coding assistant and the code intelligence platform.
+**CodeIndex is included with every Ember Code plan** (Lite, Pro, Max). If you only need code intelligence without the AI coding assistant, CodeIndex is also available as a standalone plan at $10/seat. Sign up at [ignite-ember.sh](https://ignite-ember.sh).
 
 ## What CodeIndex Does
 
@@ -266,13 +266,10 @@ Returns:
 Agents access CodeIndex through the `CodeIndex` tool (see [Tools](TOOLS.md)):
 
 ```python
-# Import path uses 'vectorbridge' (SDK interface unchanged)
-from ember_code.tools.vectorbridge import CodeIndexTools
+from ember_code.tools.codeindex import CodeIndexTools
 
 codeindex = CodeIndexTools(
-    api_url=config.vectorbridge.api_url,
-    api_key=config.vectorbridge.api_key,
-    project_id=config.project_id,
+    project_id=config.project_id,  # authenticated via Ember Code login
 )
 ```
 
@@ -308,8 +305,6 @@ codeindex = CodeIndexTools(
 |---|---|
 | First onboarding | Full codebase |
 | `git push` (if configured) | Changed files |
-| `/codeindex reindex` | Full codebase |
-| `/codeindex reindex --changed` | Files changed since last index |
 | Background (auto-refresh) | Changed files, periodic |
 
 ### Pipeline Steps
@@ -377,84 +372,16 @@ The experience degrades gracefully — agents are slower and less informed witho
 
 ## Configuration
 
-```yaml
-# .ember/config.yaml
-# Note: config key is 'vectorbridge' (SDK interface unchanged)
+CodeIndex works out of the box with zero configuration. When you sign up at [ignite-ember.sh](https://ignite-ember.sh), CodeIndex is included automatically — no API keys, no config files needed. Your Ember Code login is all that's required.
 
-vectorbridge:
-  enabled: true
-  api_url: "https://api.ignite-ember.sh"     # Ember Code hosted (included free)
-  # api_key is inherited from EMBER_API_KEY — no separate key needed
+> **Coming soon:** Per-project configuration for CodeIndex (custom categories, indexing options, ignore patterns, chunking strategies, self-hosting) is planned for a future release. Today, CodeIndex uses sensible defaults for all projects.
 
-  categories:                                  # Categories to generate
-    - code
-    - security
-    - testability
-    - architecture
-    - performance
-    - maintainability
-
-  indexing:
-    auto_refresh: true                         # Re-index on significant changes
-    refresh_on_git_push: true                  # Trigger after push
-    ignore_patterns:                           # Skip these files/dirs
-      - "node_modules/"
-      - ".git/"
-      - "__pycache__/"
-      - "*.pyc"
-      - ".venv/"
-      - "dist/"
-      - "build/"
-      - "*.min.js"
-      - "*.lock"
-    max_file_size_kb: 500                      # Skip files larger than this
-    chunking_strategy: "semantic"              # semantic | fixed_size | document | agentic
-```
-
-### Environment Variables
-
-| Variable | Purpose |
-|---|---|
-| `EMBER_API_KEY` | Authenticates with both Ember Code and CodeIndex (single key) |
-| `VECTORBRIDGE_API_URL` | Override CodeIndex API URL (for self-hosted). Env var name unchanged for SDK compatibility |
-
-### Slash Commands
-
-```
-/codeindex status              — show indexing status
-/codeindex reindex             — reindex the full project
-/codeindex reindex --changed   — reindex only changed files
-/codeindex search <query>      — quick semantic search from the CLI
-```
 
 ---
 
-## Self-Hosting (Advanced)
+## Self-Hosting (Planned)
 
-CodeIndex is included free with Ember Code accounts. But for teams that need to keep code on-premises, CodeIndex can be self-hosted:
-
-```yaml
-# docker-compose.yml (CodeIndex stack)
-services:
-  weaviate:      # Vector database
-  postgres:      # Metadata & references
-  redis:         # Cache & rate limiting
-  transformers:  # Embedding model
-  vectorbridge:  # API server (FastAPI)
-```
-
-Point Ember Code to your self-hosted instance:
-
-```yaml
-# .ember/config.yaml
-vectorbridge:
-  api_url: "https://codeindex.internal.yourcompany.com"
-```
-
-Or via environment variable:
-```bash
-export VECTORBRIDGE_API_URL=https://codeindex.internal.yourcompany.com
-```
+For teams that need to keep code on-premises, self-hosted CodeIndex is planned for a future release. The architecture will include Weaviate (vector DB), PostgreSQL (metadata), Redis (cache), and a FastAPI server.
 
 ---
 

@@ -20,6 +20,7 @@ Ember Code uses the **same tool names as Claude Code**. Each name maps to an Agn
 | `Orchestrate` | `OrchestrateTools` (custom) | Spawn sub-teams from agent pool |
 | `Schedule` | `ScheduleTools` (custom) | Schedule tasks for later or recurring execution |
 | `CodeIndex` | `CodeIndexTools` (custom) | Semantic search over pre-processed code intelligence |
+| `NotebookEdit` | `NotebookTools` (custom) | Read and edit Jupyter notebook cells |
 | `Python` | `PythonTools` | Execute Python code |
 
 ---
@@ -38,11 +39,12 @@ Summaries are built **bottom-up** (function → class → file → module → pr
 
 ### Functions
 
-- `search(query, categories?, entity_types?, limit?)` — semantic search across summaries
-- `get_entity(path)` — get full summary for a specific entity (file, class, function)
-- `get_children(path)` — get summaries of all children of an entity
-- `get_references(path)` — get entities that reference or are referenced by a given entity
-- `get_category(path, category)` — get a specific category summary (e.g., security analysis of a file)
+- `codeindex_search(query, item_type?, name?, file_extension?, tags?, limit?)` — semantic search across the indexed codebase with filters
+- `codeindex_similar(item_id, item_type?, limit?)` — find semantically similar items to a given item
+- `codeindex_item(item_id)` — get full details for a specific indexed item (content, summary, chunks, references)
+- `codeindex_references(item_id)` — get incoming/outgoing reference graph for an item
+- `codeindex_tree(parent_id?, item_type?, name?, query?, limit?)` — browse the indexed folder/file hierarchy
+- `codeindex_tags(commit_id?)` — get all available tags (domain, concern, system, quality) for filtering
 
 ### Why This Matters
 
@@ -57,7 +59,7 @@ Traditional code search is syntactic — `grep "authenticate"` finds the string,
 
 ### Configuration
 
-See [CodeIndex configuration](CODEINDEX.md#configuration) for full details. Config keys and env vars use the `vectorbridge` prefix (SDK interface unchanged).
+CodeIndex works out of the box with zero configuration. Per-project customization (categories, indexing options, ignore patterns) is planned for a future release.
 
 ### Fallback: Local Mode
 
@@ -116,8 +118,8 @@ grep_tools = GrepTools(base_dir="/path/to/project")
 ```
 
 **Functions:**
-- `grep(pattern, path?, glob?, type?)` — search file contents with regex
-- `grep_files(pattern, path?)` — return only matching file paths
+- `grep(pattern, path?, glob?, file_type?, context_lines?, max_results?)` — search file contents with regex
+- `grep_files(pattern, path?, glob?)` — return only matching file paths
 - `grep_count(pattern, path?)` — return match counts per file
 
 ### Glob (GlobTools)
@@ -131,7 +133,7 @@ glob_tools = GlobTools(base_dir="/path/to/project")
 ```
 
 **Functions:**
-- `glob(pattern, path?)` — find files matching a glob pattern (e.g., `**/*.py`)
+- `glob_files(pattern, path?, max_results?)` — find files matching a glob pattern (e.g., `**/*.py`)
 
 ---
 
@@ -156,7 +158,7 @@ ShellTools(
 
 **Functions:** `run_shell_command(command, timeout?)`
 
-**Safety:** Commands are validated before execution. See [Configuration](CONFIGURATION.md) for sandboxing options.
+**Safety:** Commands are validated against blocked patterns and confirmation requirements. See [Configuration](CONFIGURATION.md) for details.
 
 ---
 
@@ -206,6 +208,27 @@ python_tools = PythonTools(
 ```
 
 **Functions:** `run_python_code(code)`, `pip_install(package)`, `read_file(path)`, `list_files(path)`
+
+---
+
+## Notebook Editing
+
+### NotebookEdit (NotebookTools)
+
+Read and edit individual cells in Jupyter notebooks (`.ipynb`). Operates on the notebook's JSON structure directly -- no `nbformat` dependency required. Preserves all metadata, outputs, and formatting.
+
+```python
+from ember_code.core.tools.notebook import NotebookTools
+
+notebook_tools = NotebookTools(base_dir="/path/to/project")
+```
+
+**Functions:**
+- `notebook_read(file_path)` -- read a notebook and return a summary of all cells (index, type, line count, preview)
+- `notebook_read_cell(file_path, cell_index)` -- read a specific cell's full source and outputs
+- `notebook_edit_cell(file_path, cell_index, new_source)` -- replace a cell's source content (clears outputs for code cells)
+- `notebook_add_cell(file_path, cell_index, cell_type, source)` -- insert a new cell at the given index (`-1` to append). `cell_type` is one of "code", "markdown", "raw".
+- `notebook_remove_cell(file_path, cell_index)` -- remove a cell by index
 
 ---
 
@@ -288,8 +311,9 @@ orchestrate = OrchestrateTools(pool=agent_pool, config=settings)
 ```
 
 **Functions:**
-- `spawn_team(task, agent_names?, mode?)` — spawn a sub-team to handle a task. The Orchestrator picks agents and mode if not specified.
+- `spawn_team(task, agent_names, mode?)` — spawn a sub-team to handle a task. `agent_names` is a required comma-separated string of agent names. Mode defaults to "coordinate".
 - `spawn_agent(task, agent_name)` — spawn a single agent for a focused sub-task.
+- `create_agent(name, description, system_prompt, tools?)` — create an ephemeral agent with a custom system prompt (only available when `orchestration.generate_ephemeral` is enabled). `tools` defaults to "Read,Write,Edit,Bash,Grep,Glob".
 
 **Depth limits:** Configurable via `orchestration.max_nesting_depth` (default: 5) and `orchestration.max_total_agents` (default: 20). See [Security](SECURITY.md) for details.
 

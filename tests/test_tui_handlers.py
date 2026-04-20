@@ -1,15 +1,18 @@
 """Tests for TUI handler classes: InputHandler, CommandHandler, RunController queue, QueueInjectorHook."""
 
 import sys
+from unittest.mock import MagicMock
 
 import pytest
 
-from ember_code.tui.command_handler import CommandHandler, CommandResult
-from ember_code.tui.format_helpers import format_tool_args
-from ember_code.tui.input_handler import (
+from ember_code.backend.command_handler import CommandHandler, CommandResult
+from ember_code.frontend.tui.format_helpers import format_tool_args
+from ember_code.frontend.tui.input_handler import (
     SHORTCUT_HELP,
     AutocompleteProvider,
     InputHandler,
+    extract_at_mention,
+    process_file_mentions,
     shortcut_label,
 )
 
@@ -268,12 +271,23 @@ class TestCommandHandler:
         assert result.action == "quit"
 
     @pytest.mark.asyncio
-    async def test_help(self, mock_session):
+    async def test_help_no_args_shows_panel(self, mock_session):
         handler = CommandHandler(mock_session)
         result = await handler.handle("/help")
+        assert result.action == "help"
+
+    @pytest.mark.asyncio
+    async def test_help_with_topic(self, mock_session):
+        handler = CommandHandler(mock_session)
+        result = await handler.handle("/help schedule")
         assert result.kind == "markdown"
-        assert "Commands" in result.content
-        assert "Keyboard Shortcuts" in result.content
+        assert "Schedule" in result.content
+
+    @pytest.mark.asyncio
+    async def test_help_unknown_topic(self, mock_session):
+        handler = CommandHandler(mock_session)
+        result = await handler.handle("/help nonexistent")
+        assert result.kind == "error"
 
     @pytest.mark.asyncio
     async def test_agents(self, mock_session):
@@ -337,27 +351,49 @@ class TestCommandHandler:
         assert "My Session" in result.content
 
     @pytest.mark.asyncio
-    async def test_memory_list_empty(self, mock_session):
+    async def test_memory_list_no_learning(self, mock_session):
+        mock_session.main_team = MagicMock()
+        mock_session.main_team.learning_machine = None
+        mock_session._learning = None
         handler = CommandHandler(mock_session)
         result = await handler.handle("/memory")
         assert result.kind == "info"
-        assert "No memories" in result.content
+        assert "not enabled" in result.content.lower()
 
     @pytest.mark.asyncio
-    async def test_memory_list_with_items(self, mock_session):
-        async def mock_get():
-            return [
-                {"memory": "User prefers pytest", "topics": "testing"},
-                {"memory": "User uses Python 3.13", "topics": "python"},
-            ]
+    async def test_memory_list_with_learnings(self, mock_session):
+        from unittest.mock import AsyncMock
 
-        mock_session.memory_mgr.get_memories = mock_get
+        profile = MagicMock()
+        profile.name = "Dmytro"
+        profile.preferred_name = "Dmytro"
+        profile.role = None
+        profile.expertise = "Python"
+        profile.preferences = "pytest"
+
+        memories = MagicMock()
+        memories.memories = [
+            {"content": "Prefers Python over JavaScript"},
+            {"content": "Uses pytest for testing"},
+        ]
+
+        learning = MagicMock()
+        learning.arecall = AsyncMock(
+            return_value={
+                "user_profile": profile,
+                "user_memory": memories,
+            }
+        )
+        mock_session.main_team = MagicMock()
+        mock_session.main_team.learning_machine = learning
+        mock_session.user_id = "testuser"
+        mock_session.session_id = "test123"
 
         handler = CommandHandler(mock_session)
         result = await handler.handle("/memory")
         assert result.kind == "markdown"
+        assert "Dmytro" in result.content
         assert "pytest" in result.content
-        assert "2" in result.content
 
     @pytest.mark.asyncio
     async def test_memory_optimize(self, mock_session):
@@ -397,7 +433,7 @@ class TestRunControllerQueue:
     """Tests for the message queue in RunController."""
 
     def _make_controller(self):
-        from ember_code.tui.run_controller import RunController
+        from ember_code.frontend.tui.run_controller import RunController
 
         ctrl = RunController.__new__(RunController)
         ctrl._queue = []
@@ -464,7 +500,7 @@ class TestQueueInjectorHook:
     """Tests for the tool hook that injects queued messages mid-run."""
 
     def _make_hook(self, queue=None, on_inject=None, on_queue_changed=None):
-        from ember_code.queue_hook import QueueInjectorHook
+        from ember_code.core.queue_hook import QueueInjectorHook
 
         return QueueInjectorHook(
             queue=queue if queue is not None else [],
@@ -472,25 +508,20 @@ class TestQueueInjectorHook:
             on_queue_changed=on_queue_changed,
         )
 
-    def test_calls_next_func_and_returns_result(self):
+    @pytest.mark.asyncio
+    async def test_calls_next_func_and_returns_result(self):
         hook = self._make_hook()
-
-        def next_func(**kwargs):
-            return "tool_result"
-
-        result = hook(name="my_tool", func=next_func, args={})
+        result = await hook(name="my_tool", func=lambda **kw: "tool_result", args={})
         assert result == "tool_result"
 
-    def test_calls_sync_next_func(self):
+    @pytest.mark.asyncio
+    async def test_calls_sync_next_func(self):
         hook = self._make_hook()
-
-        def next_func(**kwargs):
-            return "sync_result"
-
-        result = hook(name="my_tool", func=next_func, args={})
+        result = await hook(name="my_tool", func=lambda **kw: "sync_result", args={})
         assert result == "sync_result"
 
-    def test_injects_queued_messages(self):
+    @pytest.mark.asyncio
+    async def test_injects_queued_messages(self):
         queue = ["hello from user"]
 
         class FakeAgent:
@@ -498,18 +529,15 @@ class TestQueueInjectorHook:
 
         agent = FakeAgent()
         hook = self._make_hook(queue=queue)
-
-        def next_func(**kwargs):
-            return "ok"
-
-        hook(name="tool", func=next_func, args={}, agent=agent)
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=agent)
 
         assert agent.additional_input is not None
         assert len(agent.additional_input) == 1
         assert "hello from user" in agent.additional_input[0].content
-        assert queue == []  # drained
+        assert queue == []
 
-    def test_clears_previous_injection_on_next_call(self):
+    @pytest.mark.asyncio
+    async def test_clears_previous_injection_on_next_call(self):
         queue = ["msg1"]
 
         class FakeAgent:
@@ -518,18 +546,14 @@ class TestQueueInjectorHook:
         agent = FakeAgent()
         hook = self._make_hook(queue=queue)
 
-        def next_func(**kwargs):
-            return "ok"
-
-        # First call: injects msg1
-        hook(name="tool", func=next_func, args={}, agent=agent)
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=agent)
         assert agent.additional_input is not None
 
-        # Second call (no new messages): clears previous injection
-        hook(name="tool", func=next_func, args={}, agent=agent)
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=agent)
         assert agent.additional_input is None
 
-    def test_on_inject_callback(self):
+    @pytest.mark.asyncio
+    async def test_on_inject_callback(self):
         injected = []
         queue = ["a", "b"]
         hook = self._make_hook(queue=queue, on_inject=lambda msg: injected.append(msg))
@@ -537,39 +561,28 @@ class TestQueueInjectorHook:
         class FakeAgent:
             additional_input = None
 
-        def next_func(**kwargs):
-            return "ok"
-
-        hook(name="tool", func=next_func, args={}, agent=FakeAgent())
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=FakeAgent())
         assert injected == ["a", "b"]
 
-    def test_on_queue_changed_callback(self):
+    @pytest.mark.asyncio
+    async def test_on_queue_changed_callback(self):
         changed_count = []
         queue = ["x"]
-        hook = self._make_hook(
-            queue=queue,
-            on_queue_changed=lambda: changed_count.append(1),
-        )
+        hook = self._make_hook(queue=queue, on_queue_changed=lambda: changed_count.append(1))
 
         class FakeAgent:
             additional_input = None
 
-        def next_func(**kwargs):
-            return "ok"
-
-        hook(name="tool", func=next_func, args={}, agent=FakeAgent())
+        await hook(name="tool", func=lambda **kw: "ok", args={}, agent=FakeAgent())
         assert len(changed_count) == 1
 
-    def test_no_agent_skips_injection(self):
+    @pytest.mark.asyncio
+    async def test_no_agent_skips_injection(self):
         queue = ["msg"]
         hook = self._make_hook(queue=queue)
-
-        def next_func(**kwargs):
-            return "ok"
-
-        result = hook(name="tool", func=next_func, args={}, agent=None)
+        result = await hook(name="tool", func=lambda **kw: "ok", args={}, agent=None)
         assert result == "ok"
-        assert queue == ["msg"]  # not drained without agent
+        assert queue == ["msg"]
 
     def test_reset(self):
         hook = self._make_hook()
@@ -578,8 +591,111 @@ class TestQueueInjectorHook:
         assert hook._has_injected is False
 
     def test_create_queue_hook_factory(self):
-        from ember_code.queue_hook import create_queue_hook
+        from ember_code.core.queue_hook import create_queue_hook
 
         queue = []
         hook = create_queue_hook(queue)
         assert hook._queue is queue
+
+
+# ── extract_at_mention ───────────────────────────────────────────
+
+
+class TestExtractAtMention:
+    """Tests for @file mention token extraction."""
+
+    def _line(self, text):
+        """Helper: returns a get_line callable for single-line input."""
+        return lambda row: text
+
+    def test_at_start_of_line(self):
+        assert extract_at_mention(0, 1, self._line("@")) == ""
+
+    def test_at_with_query(self):
+        assert extract_at_mention(0, 5, self._line("@src/")) == "src/"
+
+    def test_at_mid_line(self):
+        # "look at this file @src/utils" — @ is at pos 18, end at 28
+        assert extract_at_mention(0, 28, self._line("look at this file @src/utils")) == "src/utils"
+
+    def test_email_not_matched(self):
+        # No whitespace before @ — not a mention
+        assert extract_at_mention(0, 10, self._line("user@email")) is None
+
+    def test_no_at_in_text(self):
+        assert extract_at_mention(0, 5, self._line("hello")) is None
+
+    def test_at_after_space(self):
+        assert extract_at_mention(0, 8, self._line("check @f")) == "f"
+
+    def test_cursor_at_start(self):
+        assert extract_at_mention(0, 0, self._line("@test")) is None
+
+    def test_at_with_deep_path(self):
+        text = "@src/ember_code/tui/widgets/_file_picker.py"
+        assert (
+            extract_at_mention(0, len(text), self._line(text))
+            == "src/ember_code/tui/widgets/_file_picker.py"
+        )
+
+    def test_multiple_at_picks_nearest(self):
+        text = "@first @second"
+        # Cursor at end — should find @second
+        assert extract_at_mention(0, 14, self._line(text)) == "second"
+
+    def test_whitespace_breaks_scan(self):
+        # Cursor after a space following @mention — no active mention
+        text = "@file rest"
+        assert extract_at_mention(0, 10, self._line(text)) is None
+
+
+# ── process_file_mentions ────────────────────────────────────────
+
+
+class TestProcessFileMentions:
+    """Tests for @file mention processing before sending to LLM."""
+
+    def test_single_mention(self):
+        cleaned, paths = process_file_mentions("fix @src/main.py please")
+        assert paths == ["src/main.py"]
+        assert "@" not in cleaned
+        assert "src/main.py" in cleaned
+        assert "[Referenced files:" in cleaned
+
+    def test_multiple_mentions(self):
+        cleaned, paths = process_file_mentions("compare @a.py and @b.py")
+        assert paths == ["a.py", "b.py"]
+        assert cleaned.count("@") == 0
+        assert "a.py" in cleaned
+        assert "b.py" in cleaned
+
+    def test_no_mentions(self):
+        cleaned, paths = process_file_mentions("just a normal message")
+        assert paths == []
+        assert cleaned == "just a normal message"
+        assert "[Referenced" not in cleaned
+
+    def test_email_not_stripped(self):
+        cleaned, paths = process_file_mentions("contact user@example.com")
+        assert paths == []
+        assert "user@example.com" in cleaned
+
+    def test_at_start_of_line(self):
+        cleaned, paths = process_file_mentions("@src/utils/media.py has a bug")
+        assert paths == ["src/utils/media.py"]
+        assert "src/utils/media.py has a bug" in cleaned
+
+    def test_hint_prepended(self):
+        cleaned, paths = process_file_mentions("look at @config.yaml")
+        lines = cleaned.split("\n")
+        assert lines[0].startswith("[Referenced files:")
+        assert "read before responding" in lines[0]
+
+    def test_deep_path(self):
+        text = "review @src/ember_code/tui/widgets/_file_picker.py"
+        cleaned, paths = process_file_mentions(text)
+        assert paths == ["src/ember_code/tui/widgets/_file_picker.py"]
+
+    def test_mention_with_dots(self):
+        cleaned, paths = process_file_mentions("check @pyproject.toml")
+        assert paths == ["pyproject.toml"]

@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
-from ember_code.config.settings import KnowledgeConfig, Settings
-from ember_code.knowledge.models import KnowledgeSyncResult
-from ember_code.knowledge.sync import KnowledgeSyncer
-from ember_code.knowledge.vector_store import VectorStoreAdapter
+from ember_code.core.config.settings import KnowledgeConfig, Settings
+from ember_code.core.knowledge.models import KnowledgeSyncResult
+from ember_code.core.knowledge.sync import KnowledgeSyncer
+from ember_code.core.knowledge.vector_store import VectorStoreAdapter
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -243,24 +243,30 @@ class TestSyncFileToDb:
         assert result.new_entries == 2
         assert result.existing_entries == 0
         assert result.total_entries == 2
-        assert knowledge.ainsert.call_count == 2
+        assert knowledge.insert.call_count == 2
 
     @pytest.mark.asyncio
     async def test_some_existing(self, tmp_path):
         e1 = KnowledgeSyncer.make_entry("hello")
         e2 = KnowledgeSyncer.make_entry("world")
         knowledge = AsyncMock()
+        # Simulate e1 already synced (entry_id in metadata)
         syncer = _syncer(
             tmp_path,
             knowledge=knowledge,
-            vector_db=FakeVectorDb(FakeCollection(ids=[e1["id"]])),
+            vector_db=FakeVectorDb(
+                FakeCollection(
+                    ids=["agno-uuid-1"],
+                    metadatas=[{"entry_id": e1["id"]}],
+                )
+            ),
         )
         syncer.save_file([e1, e2])
 
         result = await syncer.sync_file_to_db()
         assert result.new_entries == 1
         assert result.existing_entries == 1
-        assert knowledge.ainsert.call_count == 1
+        assert knowledge.insert.call_count == 1
 
     @pytest.mark.asyncio
     async def test_all_existing(self, tmp_path):
@@ -269,14 +275,19 @@ class TestSyncFileToDb:
         syncer = _syncer(
             tmp_path,
             knowledge=knowledge,
-            vector_db=FakeVectorDb(FakeCollection(ids=[e1["id"]])),
+            vector_db=FakeVectorDb(
+                FakeCollection(
+                    ids=["agno-uuid-1"],
+                    metadatas=[{"entry_id": e1["id"]}],
+                )
+            ),
         )
         syncer.save_file([e1])
 
         result = await syncer.sync_file_to_db()
         assert result.new_entries == 0
         assert result.existing_entries == 1
-        assert knowledge.ainsert.call_count == 0
+        assert knowledge.insert.call_count == 0
 
 
 # ── sync_db_to_file ────────────────────────────────────────────────

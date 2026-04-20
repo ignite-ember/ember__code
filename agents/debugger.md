@@ -2,7 +2,6 @@
 name: debugger
 description: Diagnoses bugs, traces errors through stack traces, reproduces failures, and finds root causes before implementing targeted fixes.
 tools: Read, Edit, Bash, Glob, Grep
-model: MiniMax-M2.7
 color: yellow
 reasoning: true
 reasoning_min_steps: 2

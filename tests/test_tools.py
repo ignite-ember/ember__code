@@ -2,9 +2,9 @@
 
 import pytest
 
-from ember_code.tools.edit import EmberEditTools
-from ember_code.tools.registry import ToolRegistry
-from ember_code.tools.search import GlobTools
+from ember_code.core.tools.edit import EmberEditTools
+from ember_code.core.tools.registry import ToolRegistry
+from ember_code.core.tools.search import GlobTools
 
 
 class TestToolRegistry:

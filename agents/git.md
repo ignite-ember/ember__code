@@ -2,7 +2,6 @@
 name: git
 description: Handles version control operations including commits, branches, diffs, PRs, and git history analysis. Understands git safety protocols.
 tools: Bash, Read, Glob, Grep
-model: MiniMax-M2.7
 color: green
 
 tags:

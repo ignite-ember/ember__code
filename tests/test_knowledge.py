@@ -4,19 +4,18 @@ from unittest.mock import patch
 
 import pytest
 
-from ember_code.config.settings import (
+from ember_code.core.config.settings import (
     EmbeddingsConfig,
     GuardrailsConfig,
     KnowledgeConfig,
     LearningConfig,
     ReasoningConfig,
     Settings,
-    load_settings,
 )
-from ember_code.knowledge.embedder import EmberEmbedder
-from ember_code.knowledge.embedder_registry import EmbedderRegistry
-from ember_code.knowledge.manager import KnowledgeManager
-from ember_code.knowledge.models import (
+from ember_code.core.knowledge.embedder import EmberEmbedder
+from ember_code.core.knowledge.embedder_registry import EmbedderRegistry
+from ember_code.core.knowledge.manager import KnowledgeManager, _resolve_collection_name
+from ember_code.core.knowledge.models import (
     KnowledgeAddResult,
     KnowledgeFilter,
     KnowledgeSearchResponse,
@@ -30,11 +29,11 @@ from ember_code.knowledge.models import (
 class TestKnowledgeConfig:
     def test_defaults(self):
         cfg = KnowledgeConfig()
-        assert cfg.enabled is False
+        assert cfg.enabled is True
         assert cfg.collection_name == "ember_knowledge"
         assert cfg.chroma_db_path == "~/.ember/chromadb"
         assert cfg.max_results == 10
-        assert cfg.embedder == "ember"
+        assert cfg.embedder == "local"
 
     def test_settings_includes_knowledge(self):
         s = Settings()
@@ -45,7 +44,7 @@ class TestKnowledgeConfig:
         s = Settings()
         assert hasattr(s, "embeddings")
         assert isinstance(s.embeddings, EmbeddingsConfig)
-        assert s.embeddings.default == "ember"
+        assert s.embeddings.default == "local"
 
     def test_custom_config(self):
         cfg = KnowledgeConfig(
@@ -149,6 +148,77 @@ class TestEmberEmbedder:
         assert usage is None
 
 
+# ── Collection Name Resolution ──────────────────────────────────
+
+
+class TestResolveCollectionName:
+    def test_uses_git_remote(self, tmp_path):
+        """When a git repo with a remote exists, hash is based on remote URL."""
+        import subprocess
+
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/my-repo.git"],
+            cwd=tmp_path,
+            capture_output=True,
+        )
+        name = _resolve_collection_name("ember_knowledge", tmp_path)
+        assert name.startswith("ember_knowledge_")
+        assert len(name) == len("ember_knowledge_") + 8
+
+        # Same remote URL should produce same hash
+        name2 = _resolve_collection_name("ember_knowledge", tmp_path)
+        assert name == name2
+
+    def test_different_remotes_differ(self, tmp_path):
+        """Different remote URLs produce different collection names."""
+        import subprocess
+
+        # Repo A
+        repo_a = tmp_path / "a"
+        repo_a.mkdir()
+        subprocess.run(["git", "init"], cwd=repo_a, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo-a.git"],
+            cwd=repo_a,
+            capture_output=True,
+        )
+
+        # Repo B
+        repo_b = tmp_path / "b"
+        repo_b.mkdir()
+        subprocess.run(["git", "init"], cwd=repo_b, capture_output=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:user/repo-b.git"],
+            cwd=repo_b,
+            capture_output=True,
+        )
+
+        name_a = _resolve_collection_name("ember_knowledge", repo_a)
+        name_b = _resolve_collection_name("ember_knowledge", repo_b)
+        assert name_a != name_b
+
+    def test_falls_back_to_path_without_git(self, tmp_path):
+        """Non-git directories fall back to path-based hash."""
+        name = _resolve_collection_name("ember_knowledge", tmp_path)
+        assert name.startswith("ember_knowledge_")
+        assert len(name) == len("ember_knowledge_") + 8
+
+    def test_different_dirs_differ(self, tmp_path):
+        """Different directories produce different collection names."""
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        name_a = _resolve_collection_name("ember_knowledge", dir_a)
+        name_b = _resolve_collection_name("ember_knowledge", dir_b)
+        assert name_a != name_b
+
+    def test_preserves_base_name(self, tmp_path):
+        name = _resolve_collection_name("my_project", tmp_path)
+        assert name.startswith("my_project_")
+
+
 # ── KnowledgeManager ─────────────────────────────────────────────
 
 
@@ -164,45 +234,21 @@ class TestKnowledgeManager:
         result = KnowledgeManager(settings).create_knowledge()
         assert result is None
 
-    def test_creates_ember_embedder(self):
-        cfg = KnowledgeConfig(enabled=True, embedder="ember")
-        settings = load_settings()
-        settings.knowledge = cfg
+    def test_creates_local_embedder(self):
+        cfg = KnowledgeConfig(enabled=True, embedder="local")
+        settings = Settings(knowledge=cfg)
         manager = KnowledgeManager(settings)
         embedder = manager._create_embedder(cfg)
         assert embedder is not None
-        assert isinstance(embedder, EmberEmbedder)
-        assert embedder.base_url == "https://api.ignite-ember.sh"
 
-    def test_creates_custom_embedder_from_registry(self):
-        embeddings = EmbeddingsConfig(
-            registry={
-                "my-embedder": {
-                    "provider": "openai_compatible",
-                    "model_id": "custom-model",
-                    "url": "http://localhost:9000",
-                    "dimensions": 768,
-                }
-            }
-        )
-        cfg = KnowledgeConfig(enabled=True, embedder="my-embedder")
-        settings = Settings(knowledge=cfg, embeddings=embeddings)
-        manager = KnowledgeManager(settings)
-        embedder = manager._create_embedder(cfg)
-        assert embedder is not None
-        assert isinstance(embedder, EmberEmbedder)
-        assert embedder.base_url == "http://localhost:9000"
-        assert embedder.model == "custom-model"
-        assert embedder.dimensions == 768
-
-    def test_unknown_embedder_returns_none(self):
+    def test_unknown_embedder_falls_back_to_local(self):
         cfg = KnowledgeConfig(enabled=True, embedder="unknown")
         settings = Settings(knowledge=cfg)
         manager = KnowledgeManager(settings)
         embedder = manager._create_embedder(cfg)
-        assert embedder is None
+        assert embedder is not None  # falls back to local
 
-    @patch("ember_code.knowledge.manager.KnowledgeManager._create_embedder")
+    @patch("ember_code.core.knowledge.manager.KnowledgeManager._create_embedder")
     def test_no_embedder_returns_none(self, mock_create):
         mock_create.return_value = None
         cfg = KnowledgeConfig(enabled=True)
@@ -306,7 +352,7 @@ class TestKnowledgeModels:
 class TestLearningConfig:
     def test_defaults(self):
         cfg = LearningConfig()
-        assert cfg.enabled is False
+        assert cfg.enabled is True
         assert cfg.user_profile is True
         assert cfg.user_memory is True
         assert cfg.session_context is True
@@ -342,7 +388,7 @@ class TestReasoningConfig:
         assert cfg.add_few_shot is False
 
     def test_reasoning_tools_created_from_settings(self):
-        from ember_code.session.core import _create_reasoning_tools
+        from ember_code.core.session.core import _create_reasoning_tools
 
         settings = Settings(reasoning=ReasoningConfig(enabled=True))
         tools = _create_reasoning_tools(settings)
@@ -350,7 +396,7 @@ class TestReasoningConfig:
         assert tools.name == "reasoning_tools"
 
     def test_reasoning_tools_not_created_when_disabled(self):
-        from ember_code.session.core import _create_reasoning_tools
+        from ember_code.core.session.core import _create_reasoning_tools
 
         settings = Settings(reasoning=ReasoningConfig(enabled=False))
         tools = _create_reasoning_tools(settings)
@@ -371,16 +417,18 @@ class TestReasoningConfig:
 class TestGuardrailsConfig:
     def test_defaults(self):
         cfg = GuardrailsConfig()
-        assert cfg.pii_detection is False
+        assert cfg.pii_detection is True
         assert cfg.prompt_injection is False
         assert cfg.moderation is False
 
-    def test_guardrails_none_when_disabled(self):
-        from ember_code.session.core import _create_guardrails
+    def test_guardrails_created_when_defaults(self):
+        from ember_code.core.session.core import _create_guardrails
 
         settings = Settings()
         result = _create_guardrails(settings)
-        assert result is None
+        # PII and injection are enabled by default
+        assert result is not None
+        assert len(result) >= 1
 
     def test_guardrails_on_agent(self):
         from agno.agent import Agent
@@ -411,126 +459,25 @@ class TestGuardrailsConfig:
 
 
 class TestEmbedderRegistry:
-    def test_builtin_ember(self):
-        settings = load_settings()
-        registry = EmbedderRegistry(settings)
-        embedder = registry.get_embedder("ember")
-        assert embedder is not None
-        assert isinstance(embedder, EmberEmbedder)
-        assert embedder.base_url == "https://api.ignite-ember.sh"
-        assert embedder.model == "text2vec-transformers"
-        assert embedder.dimensions == 384
-
-    def test_default_name(self):
-        settings = load_settings()
-        registry = EmbedderRegistry(settings)
-        embedder = registry.get_embedder()  # uses default
-        assert embedder is not None
-        assert isinstance(embedder, EmberEmbedder)
-
-    def test_user_registry_override(self):
-        embeddings = EmbeddingsConfig(
-            registry={
-                "ember": {
-                    "provider": "openai_compatible",
-                    "model_id": "my-model",
-                    "url": "http://my-server:8000",
-                    "dimensions": 512,
-                }
-            }
-        )
-        settings = Settings(embeddings=embeddings)
-        registry = EmbedderRegistry(settings)
-        embedder = registry.get_embedder("ember")
-        assert isinstance(embedder, EmberEmbedder)
-        assert embedder.base_url == "http://my-server:8000"
-        assert embedder.model == "my-model"
-        assert embedder.dimensions == 512
-
-    def test_custom_entry(self):
-        embeddings = EmbeddingsConfig(
-            registry={
-                "voyage": {
-                    "provider": "openai_compatible",
-                    "model_id": "voyage-3",
-                    "url": "https://api.voyageai.com/v1",
-                    "api_key_env": "VOYAGE_API_KEY",
-                    "dimensions": 1024,
-                }
-            }
-        )
-        settings = Settings(embeddings=embeddings)
-        registry = EmbedderRegistry(settings)
-        embedder = registry.get_embedder("voyage")
-        assert isinstance(embedder, EmberEmbedder)
-        assert embedder.base_url == "https://api.voyageai.com/v1"
-        assert embedder.model == "voyage-3"
-        assert embedder.dimensions == 1024
-
-    def test_provider_model_id_format(self):
+    def test_local_default(self):
         settings = Settings()
         registry = EmbedderRegistry(settings)
-        embedder = registry.get_embedder("openai_compatible:my-model")
-        assert isinstance(embedder, EmberEmbedder)
-        assert embedder.model == "my-model"
+        embedder = registry.get_embedder()
+        assert embedder is not None
 
-    def test_unknown_returns_none(self):
+    def test_local_explicit(self):
+        settings = Settings()
+        registry = EmbedderRegistry(settings)
+        embedder = registry.get_embedder("local")
+        assert embedder is not None
+
+    def test_unknown_falls_back_to_local(self):
         settings = Settings()
         registry = EmbedderRegistry(settings)
         embedder = registry.get_embedder("nonexistent")
-        assert embedder is None
-
-    def test_resolve_entry_user_first(self):
-        """User config takes priority over built-in."""
-        embeddings = EmbeddingsConfig(
-            registry={
-                "ember": {
-                    "provider": "openai_compatible",
-                    "model_id": "overridden",
-                    "url": "http://custom:8000",
-                }
-            }
-        )
-        settings = Settings(embeddings=embeddings)
-        registry = EmbedderRegistry(settings)
-        entry = registry._resolve_entry("ember")
-        assert entry is not None
-        assert entry["model_id"] == "overridden"
-
-    def test_resolve_api_key_env(self):
-        with patch.dict("os.environ", {"MY_KEY": "secret123"}):
-            key = EmbedderRegistry._resolve_api_key({"api_key_env": "MY_KEY"})
-            assert key == "secret123"
-
-    def test_resolve_api_key_missing_env(self):
-        key = EmbedderRegistry._resolve_api_key({"api_key_env": "NONEXISTENT_KEY_XYZ"})
-        assert key is None
-
-    def test_resolve_api_key_no_config(self):
-        key = EmbedderRegistry._resolve_api_key({})
-        assert key is None
-
-    def test_get_embedder_via_registry(self):
-        settings = load_settings()
-        embedder = EmbedderRegistry(settings).get_embedder("ember")
-        assert embedder is not None
-        assert isinstance(embedder, EmberEmbedder)
+        assert embedder is not None  # falls back to local
 
     def test_embeddings_config_defaults(self):
         cfg = EmbeddingsConfig()
-        assert cfg.default == "ember"
+        assert cfg.default == "local"
         assert cfg.registry == {}
-
-    def test_embeddings_config_custom(self):
-        cfg = EmbeddingsConfig(
-            default="voyage",
-            registry={
-                "voyage": {
-                    "provider": "openai_compatible",
-                    "model_id": "voyage-3",
-                    "url": "https://api.voyageai.com/v1",
-                }
-            },
-        )
-        assert cfg.default == "voyage"
-        assert "voyage" in cfg.registry

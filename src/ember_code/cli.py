@@ -13,9 +13,10 @@ from ember_code import __version__
 @click.option("--verbose", is_flag=True, help="Show routing and reasoning")
 @click.option("--quiet", is_flag=True, help="Minimal output")
 @click.option("-m", "--message", default=None, help="Single message (non-interactive)")
-@click.option("--resume", default=None, required=False, help="Resume session (omit ID for last)")
-@click.option("--no-memory", is_flag=True, help="Disable persistent memory")
-@click.option("--sandbox", is_flag=True, help="Sandbox shell commands")
+@click.option(
+    "--continue", "-c", "continue_session", is_flag=True, help="Resume the most recent session"
+)
+@click.option("--session-id", default=None, help="Resume a specific session by ID")
 @click.option("--read-only", is_flag=True, help="No file modifications")
 @click.option("--accept-edits", is_flag=True, help="Auto-approve file edits")
 @click.option("--auto-approve", is_flag=True, help="Auto-approve everything")
@@ -29,6 +30,13 @@ from ember_code import __version__
 @click.option("--no-color", is_flag=True, help="Disable color output")
 @click.option("--debug", is_flag=True, help="Enable debug logging to ~/.ember/debug.log")
 @click.option("--strict", is_flag=True, help="Strict mode: deny all dangerous operations")
+@click.option("--worktree", is_flag=True, help="Run in an isolated git worktree")
+@click.option(
+    "--add-dir",
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False),
+    help="Additional directory to include (can be repeated)",
+)
 @click.pass_context
 def cli(
     ctx,
@@ -36,9 +44,8 @@ def cli(
     verbose,
     quiet,
     message,
-    resume,
-    no_memory,
-    sandbox,
+    continue_session,
+    session_id,
     read_only,
     accept_edits,
     auto_approve,
@@ -48,6 +55,8 @@ def cli(
     no_color,
     debug,
     strict,
+    worktree,
+    add_dir,
 ):
     """Ember Code — AI coding assistant powered by Agno."""
     ctx.ensure_object(dict)
@@ -86,8 +95,6 @@ def cli(
                 "show_routing": False,
             }
         )
-    if sandbox:
-        cli_overrides.setdefault("safety", {})["sandbox_shell"] = True
     if read_only:
         cli_overrides.setdefault("permissions", {}).update(
             {
@@ -106,9 +113,6 @@ def cli(
                 "git_destructive": "allow",
             }
         )
-    if no_memory:
-        cli_overrides.setdefault("learning", {})["enabled"] = False
-        cli_overrides.setdefault("memory", {})["enable_agentic_memory"] = False
     if no_web:
         cli_overrides.setdefault("permissions", {}).update(
             {
@@ -125,10 +129,9 @@ def cli(
                 "git_destructive": "deny",
             }
         )
-        cli_overrides.setdefault("safety", {})["sandbox_shell"] = True
 
     # Load settings
-    from ember_code.config.settings import load_settings
+    from ember_code.core.config.settings import load_settings
 
     settings = load_settings(cli_overrides=cli_overrides if cli_overrides else None)
     ctx.obj["settings"] = settings
@@ -137,7 +140,53 @@ def cli(
         return
 
     # Determine resume session id
-    resume_session_id = resume if resume else None
+    resume_session_id = None
+    if session_id:
+        resume_session_id = session_id
+    elif continue_session:
+        from ember_code.core.config.settings import load_settings as _ls
+        from ember_code.core.memory.manager import setup_db
+        from ember_code.core.session.persistence import SessionPersistence
+
+        _s = _ls(cli_overrides=cli_overrides if cli_overrides else None)
+        _db = setup_db(_s)
+        _p = SessionPersistence(_db, session_id="")
+        try:
+            sessions = asyncio.run(_p.list_sessions(limit=1))
+            if sessions:
+                resume_session_id = sessions[0]["session_id"]
+                click.echo(f"Resuming last session: {resume_session_id}")
+            else:
+                click.echo("No previous sessions found.")
+        except Exception:
+            click.echo("Could not look up last session.")
+
+    # ── Worktree setup ───────────────────────────────────────────
+    project_dir = None
+    worktree_manager = None
+
+    if worktree:
+        from pathlib import Path
+
+        from ember_code.core.worktree import WorktreeManager
+
+        wm = WorktreeManager(Path.cwd())
+        wt_info = wm.create(session_id=resume_session_id)
+        project_dir = wt_info.worktree_path
+        worktree_manager = wm
+        click.echo(f"Worktree: {wt_info.worktree_path} (branch: {wt_info.branch_name})")
+
+    # ── Additional directories ───────────────────────────────────
+    additional_dirs = None
+    if add_dir:
+        from pathlib import Path
+
+        additional_dirs = [Path(d).resolve() for d in add_dir]
+
+    # ── Store for cleanup ────────────────────────────────────────
+    ctx.obj["worktree_manager"] = worktree_manager
+    ctx.obj["project_dir"] = project_dir
+    ctx.obj["additional_dirs"] = additional_dirs
 
     # -- Pipe mode --
     if pipe:
@@ -149,84 +198,81 @@ def cli(
         if not text:
             click.echo("Error: no input provided via stdin or -m", err=True)
             raise SystemExit(1)
-        from ember_code.session import run_single_message
+        from ember_code.core.session import run_single_message
 
-        asyncio.run(run_single_message(settings, text, resume_session_id=resume_session_id))
+        asyncio.run(
+            run_single_message(
+                settings,
+                text,
+                resume_session_id=resume_session_id,
+                project_dir=project_dir,
+                additional_dirs=additional_dirs,
+            )
+        )
+        _worktree_cleanup(worktree_manager)
         return
 
     # -- Single message mode (non-interactive) --
     if message:
-        from ember_code.session import run_single_message
+        from ember_code.core.session import run_single_message
 
-        asyncio.run(run_single_message(settings, message, resume_session_id=resume_session_id))
+        asyncio.run(
+            run_single_message(
+                settings,
+                message,
+                resume_session_id=resume_session_id,
+                project_dir=project_dir,
+                additional_dirs=additional_dirs,
+            )
+        )
+        _worktree_cleanup(worktree_manager)
         return
 
-    # -- Interactive mode (TUI by default, --no-tui for plain Rich CLI) --
+    # -- Interactive mode (TUI only for now) --
     if no_tui:
-        from ember_code.session import run_session_interactive
-
-        asyncio.run(run_session_interactive(settings, resume_session_id=resume_session_id))
+        click.echo("Error: --no-tui mode is temporarily disabled. Use TUI mode (default).")
+        click.echo("This will be revisited in a future release.")
+        raise SystemExit(1)
     else:
-        from ember_code.tui import EmberApp
+        from ember_code.frontend.tui import EmberApp
 
         app = EmberApp(
             settings=settings,
             resume_session_id=resume_session_id,
+            project_dir=project_dir,
+            additional_dirs=additional_dirs,
+            debug=debug,
         )
         _run_app(app)
+        _worktree_cleanup(worktree_manager)
 
 
 def _run_app(app):
     """Run the Textual app. SSE cleanup errors are silenced in on_unmount."""
+    import sys
+
+    # Clear terminal before Textual takes over — prevents flash of previous session
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
     app.run()
 
 
-# -- MCP subcommand --
-
-
-@cli.group()
-@click.pass_context
-def mcp(ctx):
-    """MCP (Model Context Protocol) server commands."""
-    pass
-
-
-@mcp.command("serve")
-@click.option(
-    "--transport", default="stdio", type=click.Choice(["stdio", "sse"]), help="Transport type"
-)
-@click.option("--port", default=3000, type=int, help="Port for SSE transport")
-@click.pass_context
-def mcp_serve(ctx, transport, port):
-    """Start Ember Code as an MCP server."""
-    settings = ctx.obj["settings"]
-    from ember_code.mcp.server import MCPServerFactory
-
-    server = MCPServerFactory(settings).create()
-    if server is None:
-        click.echo("Error: MCP dependencies not installed. Run: pip install mcp", err=True)
-        raise SystemExit(1)
-
-    click.echo(f"Starting MCP server (transport={transport})...")
-    if transport == "stdio":
-        asyncio.run(_run_mcp_stdio(server))
+def _worktree_cleanup(wm) -> None:
+    """Clean up worktree after session ends. Report if changes exist."""
+    if wm is None:
+        return
+    info = wm.info
+    if info is None:
+        return
+    cleaned = wm.cleanup()
+    if not cleaned:
+        click.echo("\nWorktree preserved (has changes):")
+        click.echo(f"  Path:   {info.worktree_path}")
+        click.echo(f"  Branch: {info.branch_name}")
+        click.echo(f"\nTo merge: git merge {info.branch_name}")
+        click.echo(f"To remove: git worktree remove {info.worktree_path}")
     else:
-        click.echo(f"SSE transport on port {port} — not yet implemented.", err=True)
-        raise SystemExit(1)
-
-
-async def _run_mcp_stdio(server):
-    """Run MCP server with stdio transport."""
-    try:
-        from mcp.server.stdio import stdio_server
-
-        async with stdio_server() as (read_stream, write_stream):
-            await server.run(read_stream, write_stream)
-    except ImportError:
-        import click as _click
-
-        _click.echo("Error: MCP stdio transport not available.", err=True)
-        raise SystemExit(1) from None
+        click.echo("Worktree cleaned up (no changes).")
 
 
 if __name__ == "__main__":

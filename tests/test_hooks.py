@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-from ember_code.hooks.events import HookEvent
-from ember_code.hooks.executor import HookExecutor
-from ember_code.hooks.loader import HookLoader
-from ember_code.hooks.schemas import HookDefinition, HookResult
+from ember_code.core.hooks.events import HookEvent
+from ember_code.core.hooks.executor import HookExecutor
+from ember_code.core.hooks.loader import HookLoader
+from ember_code.core.hooks.schemas import HookDefinition, HookResult
 
 
 class TestHookEvent:

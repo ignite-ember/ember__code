@@ -1,0 +1,128 @@
+"""Tests for the BackendServer — validates the BE protocol layer."""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from ember_code.protocol import messages as msg
+
+
+class TestBackendServerCommands:
+    """Test that commands return proper protocol messages."""
+
+    @pytest.mark.asyncio
+    async def test_handle_command_returns_command_result(self):
+        from ember_code.backend.server import BackendServer
+
+        with patch("ember_code.backend.server.BackendServer.__init__", return_value=None):
+            server = BackendServer.__new__(BackendServer)
+            server._session = MagicMock()
+            server._settings = MagicMock()
+            server._pending_requirements = {}
+            server._processing = False
+
+            # Mock the command handler
+            mock_result = MagicMock()
+            mock_result.kind = "info"
+            mock_result.content = "test output"
+            mock_result.action = ""
+
+            with patch("ember_code.backend.command_handler.CommandHandler") as MockHandler:
+                instance = MockHandler.return_value
+                instance.handle = AsyncMock(return_value=mock_result)
+
+                result = await server.handle_command("/test")
+
+            assert isinstance(result, msg.CommandResult)
+            assert result.kind == "info"
+            assert result.content == "test output"
+
+    @pytest.mark.asyncio
+    async def test_get_status(self):
+        from ember_code.backend.server import BackendServer
+
+        with patch("ember_code.backend.server.BackendServer.__init__", return_value=None):
+            server = BackendServer.__new__(BackendServer)
+            server._settings = MagicMock()
+            server._settings.models.default = "test-model"
+            server._session = MagicMock()
+            server._session.cloud_connected = True
+            server._session.cloud_org_name = "Test Org"
+
+            status = server.get_status()
+
+        assert isinstance(status, msg.StatusUpdate)
+        assert status.model == "test-model"
+        assert status.cloud_connected is True
+        assert status.cloud_org == "Test Org"
+
+    @pytest.mark.asyncio
+    async def test_switch_model(self):
+        from ember_code.backend.server import BackendServer
+
+        with patch("ember_code.backend.server.BackendServer.__init__", return_value=None):
+            server = BackendServer.__new__(BackendServer)
+            server._session = MagicMock()
+            server._session._build_main_agent = MagicMock()
+            server._settings = MagicMock()
+
+            result = server.switch_model("new-model")
+
+        assert isinstance(result, msg.Info)
+        assert "new-model" in result.text
+        server._session._build_main_agent.assert_called_once()
+
+
+class TestProtocolSerialization:
+    """Test that protocol messages serialize/deserialize correctly."""
+
+    def test_content_delta_roundtrip(self):
+        original = msg.ContentDelta(text="hello world", is_thinking=True)
+        json_str = original.model_dump_json()
+        restored = msg.ContentDelta.model_validate_json(json_str)
+        assert restored.text == "hello world"
+        assert restored.is_thinking is True
+        assert restored.type == "content_delta"
+
+    def test_tool_completed_with_diff_rows(self):
+        rows = [("+ 1   added line", "#69db7c on #003d00"), ("  2   context", "")]
+        original = msg.ToolCompleted(
+            summary="Edited file.py",
+            has_markup=True,
+            diff_rows=rows,
+        )
+        json_str = original.model_dump_json()
+        restored = msg.ToolCompleted.model_validate_json(json_str)
+        assert restored.diff_rows == rows
+        assert restored.has_markup is True
+
+    def test_hitl_request_serialization(self):
+        original = msg.HITLRequest(
+            requirement_id="abc123",
+            tool_name="run_shell_command",
+            friendly_name="Bash",
+            tool_args={"command": "rm -rf /"},
+        )
+        json_str = original.model_dump_json()
+        restored = msg.HITLRequest.model_validate_json(json_str)
+        assert restored.requirement_id == "abc123"
+        assert restored.tool_args["command"] == "rm -rf /"
+
+    def test_all_message_types_have_type_field(self):
+        """Every concrete message class should have a default type value."""
+        import inspect
+
+        for name, cls in inspect.getmembers(msg, inspect.isclass):
+            if issubclass(cls, msg.Message) and cls is not msg.Message:
+                instance = cls()
+                assert instance.type, f"{name} has no default type"
+
+    def test_unix_socket_deserializer(self):
+        from ember_code.transport.unix_socket import deserialize_message
+
+        # Round-trip through JSON string
+        original = msg.UserMessage(text="hello")
+        json_line = original.model_dump_json()
+        restored = deserialize_message(json_line)
+        assert isinstance(restored, msg.UserMessage)
+        assert restored.text == "hello"

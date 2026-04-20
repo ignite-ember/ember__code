@@ -2,7 +2,6 @@
 name: diagnostician
 description: Analyzes IDE diagnostics, warnings, and code inspections to identify code quality issues, type errors, and potential bugs before runtime.
 tools: Read, Edit, Bash, Glob, Grep
-model: MiniMax-M2.7
 color: cyan
 reasoning: true
 reasoning_min_steps: 2

@@ -2,8 +2,8 @@
 
 import pytest
 
-from ember_code.config.permissions import PermissionGuard
-from ember_code.config.settings import PermissionsConfig, Settings
+from ember_code.core.config.permissions import PermissionGuard
+from ember_code.core.config.settings import PermissionsConfig, Settings
 
 
 class TestPermissionGuard:
@@ -59,8 +59,9 @@ class TestPermissionGuard:
         )
         guard = PermissionGuard(settings)
         guard.permissions_path = tmp_path / "permissions.yaml"
-        assert guard.check_file_write(".env") is False
+        assert guard.check_file_write("regular.py") is True
         assert guard.check_file_write("secrets.json") is False
+        assert guard.check_file_write("credentials.yaml") is False
         assert guard.check_file_write("server.pem") is False
         assert guard.check_file_write("private.key") is False
 

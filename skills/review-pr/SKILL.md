@@ -1,8 +1,8 @@
 ---
 name: review-pr
 description: This skill should be used when the user asks to "review a PR", "review pull request", "check this PR", or mentions PR numbers. Performs comprehensive code review.
+category: review
 argument-hint: [pr-number]
-allowed-tools: Read, Bash, Grep, Glob
 ---
 
 Review a pull request with thorough, confidence-filtered analysis.
