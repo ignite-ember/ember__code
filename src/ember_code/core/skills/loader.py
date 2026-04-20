@@ -58,7 +58,7 @@ class SkillPool:
             project_dir = Path.cwd()
 
         # Priority 0: Built-in skills
-        builtin_dir = Path(__file__).parent.parent.parent.parent / "skills"
+        builtin_dir = Path(__file__).parent.parent / "bundled_skills"
         self.load_directory(builtin_dir, priority=0)
 
         # Priority 1: Global user skills

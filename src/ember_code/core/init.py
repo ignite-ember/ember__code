@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────
 
-PACKAGE_ROOT = Path(__file__).parent.parent.parent.parent  # repo root
+PACKAGE_DIR = Path(__file__).parent.parent  # src/ember_code
 MARKER_FILE = ".initialized"
 CHECKSUMS_FILE = ".checksums.json"
 
@@ -276,7 +276,7 @@ def _update_built_in_files(project_dir: Path) -> list[str]:
     warnings: list[str] = []
 
     # Update agents
-    agents_src = PACKAGE_ROOT / "agents"
+    agents_src = PACKAGE_DIR / "bundled_agents"
     agents_dst = project_dir / ".ember" / "agents"
     if agents_src.exists():
         agents_dst.mkdir(parents=True, exist_ok=True)
@@ -288,7 +288,7 @@ def _update_built_in_files(project_dir: Path) -> list[str]:
                 warnings.append(warn)
 
     # Update skills
-    skills_src = PACKAGE_ROOT / "skills"
+    skills_src = PACKAGE_DIR / "bundled_skills"
     skills_dst = project_dir / ".ember" / "skills"
     if skills_src.exists():
         for skill_dir in skills_src.iterdir():

@@ -1,7 +1,9 @@
 """Session core — wires up subsystems and handles messages."""
 
+import asyncio
 import getpass
 import logging
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -70,23 +72,23 @@ class Session:
         self.db = setup_db(settings)
 
         # ── Knowledge (ChromaDB + Agno Knowledge) ─────────────────────
+        # Model download can take 30s+ on first run, so we load in a
+        # background thread.  The session is fully usable while it loads;
+        # once ready, knowledge + dependent managers are hot-swapped in.
+        self._knowledge_error: str | None = None
+        self._knowledge_ready = threading.Event()
         if pre_knowledge is not None:
             self.knowledge = pre_knowledge
+            self._knowledge_ready.set()
             logger.info("Knowledge: using pre-loaded instance")
         elif settings.knowledge.enabled:
-            try:
-                from ember_code.core.knowledge.manager import KnowledgeManager
-
-                mgr = KnowledgeManager(settings, project_dir=self.project_dir)
-                self.knowledge = mgr.create_knowledge()
-                logger.info("Knowledge: created successfully, is_none=%s", self.knowledge is None)
-            except Exception as e:
-                logger.warning("Knowledge: failed to create: %s", e, exc_info=True)
-                self.knowledge = None
+            self.knowledge = None
+            # Thread is started later via start_knowledge_background()
+            # to avoid GIL contention with the main thread during startup.
         else:
             self.knowledge = None
+            self._knowledge_ready.set()
             logger.info("Knowledge: disabled in settings")
-        self._knowledge_error: str | None = None
 
         # ── Permission Guard ─────────────────────────────────────────
         self.permission_guard = PermissionGuard(settings)
@@ -410,22 +412,61 @@ class Session:
 
     # ── Lazy knowledge initialization (async, runs once) ──────────
 
-    async def _ensure_knowledge(self) -> None:
-        """Ensure knowledge is available (pre-loaded before Textual).
+    def start_knowledge_background(self) -> None:
+        """Start the background knowledge init thread.
 
-        Knowledge is loaded synchronously before the TUI starts to avoid
-        fds_to_keep errors from SentenceTransformer subprocesses.  This
-        method is a no-op if knowledge was pre-loaded successfully.
+        Called after READY is printed so GIL-heavy model loading
+        doesn't block the main thread during startup.
         """
-        if self.knowledge is not None:
+        if not self.settings.knowledge.enabled or self._knowledge_ready.is_set():
             return
+        threading.Thread(
+            target=self._init_knowledge_background,
+            name="knowledge-init",
+            daemon=True,
+        ).start()
 
-        if not self.settings.knowledge.enabled:
+    def _init_knowledge_background(self) -> None:
+        """Load knowledge in a background thread (model download may be slow)."""
+        import os
+
+        try:
+            from ember_code.core.knowledge.manager import KnowledgeManager
+
+            # Suppress stdout from SentenceTransformers/HuggingFace model loading
+            # to avoid corrupting the READY protocol on the BE stdout pipe.
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            old_stdout = os.dup(1)
+            os.dup2(devnull, 1)
+            try:
+                mgr = KnowledgeManager(self.settings, project_dir=self.project_dir)
+                knowledge = mgr.create_knowledge()
+            finally:
+                os.dup2(old_stdout, 1)
+                os.close(old_stdout)
+                os.close(devnull)
+
+            # Hot-swap into the live session
+            self.knowledge = knowledge
+            self.knowledge_mgr = SessionKnowledgeManager(
+                knowledge, self.settings, self.project_dir
+            )
+            self.pool._knowledge_mgr = self.knowledge_mgr
+            self.pool.build_agents()  # rebuild with knowledge tools
+            logger.info("Knowledge: background init complete")
+        except Exception as e:
+            logger.warning("Knowledge: background init failed: %s", e, exc_info=True)
+            self._knowledge_error = str(e)
+        finally:
+            self._knowledge_ready.set()
+
+    async def _ensure_knowledge(self) -> None:
+        """Wait for background knowledge init if still in progress."""
+        if self._knowledge_ready.is_set():
             return
-
-        # Knowledge was supposed to be pre-loaded but isn't available
-        if not self._knowledge_error:
-            self._knowledge_error = "Knowledge not available — embedder may have failed to load"
+        # Don't block the event loop — poll the threading event
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._knowledge_ready.wait)
 
     # ── MCP initialization (async, runs once) ──────────────────────
 
