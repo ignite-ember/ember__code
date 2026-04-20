@@ -85,7 +85,7 @@ jobs:
             ## Install
 
             ```bash
-            pip install ember-code==${{ github.ref_name }}
+            pip install ignite-ember==${{ github.ref_name }}
             ```
 
   update-homebrew:
@@ -104,7 +104,7 @@ jobs:
         run: |
           # Wait for PyPI to serve the file
           for i in 1 2 3 4 5; do
-            URL="https://files.pythonhosted.org/packages/source/e/ember-code/ember_code-${{ steps.version.outputs.version }}.tar.gz"
+            URL="https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${{ steps.version.outputs.version }}.tar.gz"
             if curl -fsSL -o sdist.tar.gz "$URL" 2>/dev/null; then
               break
             fi
@@ -114,14 +114,20 @@ jobs:
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Update Homebrew tap
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          repository: ignite-ember/homebrew-tap
-          event-type: update-formula
-          client-payload: |
-            {
-              "formula": "ember-code",
-              "version": "${{ steps.version.outputs.version }}",
-              "sha256": "${{ steps.sha.outputs.sha256 }}"
-            }
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+
+          gh repo clone ignite-ember/homebrew-tap /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          sed -i "s|url \".*\"|url \"https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz\"|" Formula/ignite-ember.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/ignite-ember.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ignite-ember.rb
+          git commit -m "Update ignite-ember to ${VERSION}"
+          git push

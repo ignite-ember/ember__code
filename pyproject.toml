@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ember-code"
+name = "ignite-ember"
 version = "0.1.0"
 description = "Terminal-based AI coding assistant built on Agno"
 readme = "README.md"
