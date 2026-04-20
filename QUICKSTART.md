@@ -7,7 +7,7 @@ Get up and running with Ember Code in under 5 minutes.
 **Homebrew (recommended):**
 
 ```bash
-brew install ignite-ember
+brew install ignite-ember/tap/ignite-ember
 ```
 
 **pip:**
@@ -21,7 +21,7 @@ pip install ignite-ember
 ```bash
 git clone https://github.com/ignite-ember/ember-code.git
 cd ember-code
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 ## Authenticate
@@ -67,12 +67,10 @@ ignite-ember
 ```
 
 On first launch, Ember Code:
-1. Creates 11 default agents in `.ember/agents/` — see the [agent list](#agents) below
-2. Asks a few questions about your role and workflow
-3. Proposes project-specific agents based on your codebase
+1. Copies 13 built-in agents to `.ember/agents/`
+2. Copies skills to `.ember/skills/`
+3. Creates `ember.md` template and `.ember/config.yaml`
 4. You're ready to work
-
-See [Onboarding](docs/ONBOARDING.md) for the full first-run flow.
 
 ---
 
@@ -117,7 +115,7 @@ Reads stdin, processes it with your message, writes to stdout. No interactive UI
 ignite-ember
 ```
 
-The TUI launches by default — full terminal UI with streaming responses, session management, token tracking, agent tree visualization, and keyboard shortcuts. Use `--no-tui` to fall back to the plain Rich CLI output.
+The TUI launches by default — full terminal UI with streaming responses, session management, token tracking, agent tree visualization, and keyboard shortcuts.
 
 ### Keyboard Shortcuts
 
@@ -166,6 +164,8 @@ Agents are `.md` files with YAML frontmatter. Each agent has a role, tools, and 
 ├── security.md       # vulnerability analysis
 ├── qa.md             # test generation and review
 ├── debugger.md       # bug diagnosis and root cause analysis
+├── diagnostician.md  # IDE diagnostics and warnings
+├── docs.md           # documentation maintenance
 ├── git.md            # handles version control
 └── conversational.md # answers questions
 ```
@@ -254,7 +254,7 @@ Control how much the agent can do without asking:
 | `ignite-ember` | Asks for file writes and shell commands |
 | `ignite-ember --accept-edits` | Auto-approves file edits, asks for shell |
 | `ignite-ember --read-only` | No file modifications allowed |
-| `ignite-ember --strict` | Asks for everything, sandbox enabled |
+| `ignite-ember --strict` | Asks for everything |
 | `ignite-ember --auto-approve` | Auto-approves everything (use with caution) |
 
 When prompted for approval, you can:
@@ -292,8 +292,8 @@ In interactive mode, use `/` commands:
 Ember Code persists sessions to SQLite. Pick up where you left off:
 
 ```bash
-ignite-ember --resume             # resume last session
-ignite-ember --resume abc123      # resume specific session
+ignite-ember --continue           # resume last session
+ignite-ember --session-id abc123  # resume specific session
 ```
 
 Or use `/sessions` in interactive mode to browse past sessions.
@@ -413,16 +413,17 @@ All flags at a glance:
 | `--quiet` | Minimal output |
 | `-m, --message <text>` | Single message mode (non-interactive) |
 | `-p, --pipe` | Pipe mode: read stdin, write stdout |
-| `--resume [id]` | Resume last session (or specific session by ID) |
-| `--no-memory` | Disable persistent memory for this session |
-| `--sandbox` | Sandbox all shell commands |
+| `-c, --continue` | Resume last session |
+| `--session-id <id>` | Resume specific session |
 | `--read-only` | No file modifications allowed |
 | `--accept-edits` | Auto-approve file edits, ask for shell |
 | `--auto-approve` | Auto-approve everything (use with caution) |
-| `--strict` | Strict mode: ask for everything, sandbox enabled |
-| `--no-tui` | Use plain Rich CLI instead of Textual TUI |
+| `--strict` | Deny all dangerous operations |
 | `--no-web` | Disable web search/fetch tools |
 | `--no-color` | Disable color output |
+| `--worktree` | Run in an isolated git worktree |
+| `--add-dir <path>` | Include additional directory (repeatable) |
+| `--debug` | Enable debug logging to ~/.ember/debug.log |
 
 ---
 
@@ -453,5 +454,5 @@ Ember Code reads `CLAUDE.md`, `.claude/agents/*.md`, `.claude/skills/`, and `.mc
 - [Configuration](docs/CONFIGURATION.md) — full settings reference
 - [Tools](docs/TOOLS.md) — all available toolkits
 - [Skills](docs/SKILLS.md) — reusable prompted workflows
-- [Security](docs/SECURITY.md) — permissions, sandboxing, audit logging
+- [Security](docs/SECURITY.md) — permissions, safety, audit logging
 - [Development](docs/DEVELOPMENT.md) — contributing to Ember Code

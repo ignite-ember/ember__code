@@ -2,9 +2,7 @@
 
 **One spark ignites a team.** An AI coding assistant built with [Agno](https://github.com/agno-agi/agno) orchestration.
 
-```
- ◆ ignite-ember — ignite-ember.sh
-```
+[ignite-ember.sh](https://ignite-ember.sh)
 
 Inspired by [Claude Code](https://github.com/anthropics/claude-code), Ember Code is a terminal-based coding agent that assembles specialized AI teams on the fly. Describe your task — the Orchestrator picks the right agents, the right team mode, and runs them.
 
@@ -31,7 +29,7 @@ Claude Code uses a single agent loop — powerful but monolithic. Ember Code tak
 ## Quick Start
 
 ```bash
-brew install ignite-ember        # or: pip install ignite-ember
+brew install ignite-ember/tap/ignite-ember  # or: pip install ignite-ember
 ignite-ember /login              # sign up for hosted models (MiniMax M2.7)
 ignite-ember                     # start coding
 ```
@@ -60,7 +58,7 @@ See [Quickstart](QUICKSTART.md) for the full setup guide.
 
 ## TUI Mode
 
-`ignite-ember` launches the Textual-based terminal UI by default — no flag needed. Use `--no-tui` to fall back to plain Rich CLI output.
+`ignite-ember` launches the Textual-based terminal UI by default. The backend runs as a separate process, connected via Unix socket.
 
 Features: streaming responses, agent tree visualization, token tracking, session picker, keyboard shortcuts, HITL confirmation dialogs.
 
@@ -92,7 +90,7 @@ Built-in vector knowledge base powered by ChromaDB and the Ember embeddings API:
 knowledge:
   enabled: true
   collection_name: "my_project"
-  embedder: "ember"            # uses Ember server's /v1/embeddings
+  embedder: "local"             # local SentenceTransformer (or "ember" for cloud)
 ```
 
 Add content via slash commands: `/knowledge add <url|path|text>`, search with `/knowledge search <query>`. Agents can search the knowledge base automatically during execution.
@@ -131,7 +129,7 @@ Agents can pause execution to request confirmation or user input before proceedi
 - [Evals](docs/EVALS.md) — Agent evaluation framework and regression testing
 - [Hooks](docs/HOOKS.md) — Pre/post tool execution hooks
 - [Migration](docs/MIGRATION.md) — Coming from Claude Code or Codex
-- [Security](docs/SECURITY.md) — Threat model, sandboxing, and enterprise hardening
+- [Security](docs/SECURITY.md) — Threat model, permissions, and enterprise hardening
 - [Development](docs/DEVELOPMENT.md) — Contributing and extending Ember Code
 
 ## License

@@ -654,96 +654,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ember-code"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "agno", extra = ["ddg", "mcp", "openai", "sqlite"] },
-    { name = "aiofiles" },
-    { name = "aiosqlite" },
-    { name = "arxiv" },
-    { name = "beautifulsoup4" },
-    { name = "chromadb" },
-    { name = "click" },
-    { name = "dateparser" },
-    { name = "google-genai" },
-    { name = "greenlet" },
-    { name = "httpx" },
-    { name = "openpyxl" },
-    { name = "pydantic" },
-    { name = "pypdf" },
-    { name = "python-docx" },
-    { name = "python-pptx" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "ripgrep" },
-    { name = "sentence-transformers" },
-    { name = "textual" },
-    { name = "tiktoken" },
-    { name = "tokenizers" },
-    { name = "wikipedia" },
-    { name = "youtube-transcript-api" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-gemini = [
-    { name = "google-genai" },
-]
-knowledge = [
-    { name = "chromadb" },
-]
-mcp = [
-    { name = "mcp" },
-]
-web = [
-    { name = "duckduckgo-search" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "agno", extras = ["openai", "ddg", "sqlite", "mcp"], specifier = "~=2.5" },
-    { name = "aiofiles", specifier = ">=24.1" },
-    { name = "aiosqlite", specifier = "~=0.22" },
-    { name = "arxiv", specifier = ">=2.1" },
-    { name = "beautifulsoup4", specifier = ">=4.12" },
-    { name = "chromadb", specifier = ">=1.5.5" },
-    { name = "chromadb", marker = "extra == 'knowledge'", specifier = "~=1.5" },
-    { name = "click", specifier = "~=8.3" },
-    { name = "dateparser", specifier = ">=1.4.0" },
-    { name = "duckduckgo-search", marker = "extra == 'web'", specifier = "~=8.1" },
-    { name = "google-genai", specifier = "~=1.67" },
-    { name = "google-genai", marker = "extra == 'gemini'", specifier = "~=1.67" },
-    { name = "greenlet", specifier = "~=3.3" },
-    { name = "httpx", specifier = "~=0.28" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = "~=1.26" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = "~=1.19" },
-    { name = "openpyxl", specifier = ">=3.1" },
-    { name = "pydantic", specifier = "~=2.12" },
-    { name = "pypdf", specifier = ">=5.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "~=9.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "~=1.3" },
-    { name = "python-docx", specifier = ">=1.1" },
-    { name = "python-pptx", specifier = ">=1.0" },
-    { name = "pyyaml", specifier = "~=6.0" },
-    { name = "rich", specifier = "~=14.3" },
-    { name = "ripgrep", specifier = ">=15.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "~=0.15" },
-    { name = "sentence-transformers", specifier = ">=5.3.0" },
-    { name = "textual", specifier = "~=8.1" },
-    { name = "tiktoken", specifier = ">=0.12.0" },
-    { name = "tokenizers", specifier = ">=0.22.2" },
-    { name = "wikipedia", specifier = ">=1.4" },
-    { name = "youtube-transcript-api", specifier = ">=1.0" },
-]
-provides-extras = ["dev", "mcp", "knowledge", "gemini", "web"]
-
-[[package]]
 name = "et-xmlfile"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1146,6 +1056,96 @@ sdist = { url = "https://files.pythonhosted.org/packages/6f/6d/0703ccc57f3a72335
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0e/61/66938bbb5fc52dbdf84594873d5b51fb1f7c7794e9c0f5bd885f30bc507b/idna-3.11-py3-none-any.whl", hash = "sha256:771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea", size = 71008, upload-time = "2025-10-12T14:55:18.883Z" },
 ]
+
+[[package]]
+name = "ignite-ember"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "agno", extra = ["ddg", "mcp", "openai", "sqlite"] },
+    { name = "aiofiles" },
+    { name = "aiosqlite" },
+    { name = "arxiv" },
+    { name = "beautifulsoup4" },
+    { name = "chromadb" },
+    { name = "click" },
+    { name = "dateparser" },
+    { name = "google-genai" },
+    { name = "greenlet" },
+    { name = "httpx" },
+    { name = "openpyxl" },
+    { name = "pydantic" },
+    { name = "pypdf" },
+    { name = "python-docx" },
+    { name = "python-pptx" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "ripgrep" },
+    { name = "sentence-transformers" },
+    { name = "textual" },
+    { name = "tiktoken" },
+    { name = "tokenizers" },
+    { name = "wikipedia" },
+    { name = "youtube-transcript-api" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+gemini = [
+    { name = "google-genai" },
+]
+knowledge = [
+    { name = "chromadb" },
+]
+mcp = [
+    { name = "mcp" },
+]
+web = [
+    { name = "duckduckgo-search" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agno", extras = ["openai", "ddg", "sqlite", "mcp"], specifier = "~=2.5" },
+    { name = "aiofiles", specifier = ">=24.1" },
+    { name = "aiosqlite", specifier = "~=0.22" },
+    { name = "arxiv", specifier = ">=2.1" },
+    { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "chromadb", specifier = ">=1.5.5" },
+    { name = "chromadb", marker = "extra == 'knowledge'", specifier = "~=1.5" },
+    { name = "click", specifier = "~=8.3" },
+    { name = "dateparser", specifier = ">=1.4.0" },
+    { name = "duckduckgo-search", marker = "extra == 'web'", specifier = "~=8.1" },
+    { name = "google-genai", specifier = "~=1.67" },
+    { name = "google-genai", marker = "extra == 'gemini'", specifier = "~=1.67" },
+    { name = "greenlet", specifier = "~=3.3" },
+    { name = "httpx", specifier = "~=0.28" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = "~=1.26" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = "~=1.19" },
+    { name = "openpyxl", specifier = ">=3.1" },
+    { name = "pydantic", specifier = "~=2.12" },
+    { name = "pypdf", specifier = ">=5.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "~=9.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "~=1.3" },
+    { name = "python-docx", specifier = ">=1.1" },
+    { name = "python-pptx", specifier = ">=1.0" },
+    { name = "pyyaml", specifier = "~=6.0" },
+    { name = "rich", specifier = "~=14.3" },
+    { name = "ripgrep", specifier = ">=15.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "~=0.15" },
+    { name = "sentence-transformers", specifier = ">=5.3.0" },
+    { name = "textual", specifier = "~=8.1" },
+    { name = "tiktoken", specifier = ">=0.12.0" },
+    { name = "tokenizers", specifier = ">=0.22.2" },
+    { name = "wikipedia", specifier = ">=1.4" },
+    { name = "youtube-transcript-api", specifier = ">=1.0" },
+]
+provides-extras = ["dev", "mcp", "knowledge", "gemini", "web"]
 
 [[package]]
 name = "importlib-metadata"
