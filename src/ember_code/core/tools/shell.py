@@ -175,23 +175,31 @@ class EmberShellTools(Toolkit):
     def run_shell_command(
         self,
         args: list[str],
-        timeout: int = 120,
+        timeout: int = 7,
         background: bool = False,
         tail: int = 100,
     ) -> str:
         """Run a shell command and return its output.
 
-        For short-lived commands, waits up to `timeout` seconds and returns the
-        output. For long-running commands (servers, watchers), set
-        background=True to start the process and return immediately with its
-        PID — use read_process_output(pid) and stop_process(pid) to manage it.
+        For short-lived commands (ls, git, grep, cat, curl), waits up to
+        `timeout` seconds and returns the output.
+
+        For long-running commands (servers, watchers, anything that runs
+        indefinitely), you MUST set background=True. This starts the process
+        and returns its PID with initial output. Use watch_process(pid) to
+        monitor and stop_process(pid) to stop.
+
+        Examples of commands that MUST use background=True:
+        - uvicorn, gunicorn, flask run, npm start, python -m http.server
+        - docker compose up, npm run dev, tail -f, watch
+        - Any command that starts a server or runs indefinitely
 
         If a foreground command exceeds the timeout, it is automatically
-        backgrounded and its PID is returned so you can check on it later.
+        backgrounded and its PID is returned.
 
         Args:
             args: Command and arguments as a list, e.g. ["python", "-m", "uvicorn", "main:app"].
-            timeout: Max seconds to wait for the command to finish. Default 120.
+            timeout: Max seconds to wait for the command to finish. Default 7.
             background: If True, start in background and return PID immediately.
             tail: Number of output lines to return. Default 100.
 

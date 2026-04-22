@@ -12,6 +12,7 @@ DEFAULT_CONFIG = {
                 "model_id": "MiniMax-Text-01",
                 "url": "https://api.ignite-ember.sh/v1",
                 "context_window": 204_800,
+                "vision": False,
             },
         },
     },

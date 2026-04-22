@@ -457,14 +457,40 @@ class CommandHandler:
         clear_credentials()
 
         # Clear in-memory cloud state and rebuild agent with direct model URL
+        messages = []
         if self._session:
             self._session._cloud_token = None
             self._session._cloud_org_id = None
             self._session._cloud_org_name = None
+
+            # If current model uses cloud_token, switch to a non-cloud model
+            current = self._session.settings.models.default
+            registry = self._session.settings.models.registry
+            current_cfg = registry.get(current, {})
+            if current_cfg.get("api_key") == "cloud_token":
+                # Find first model with its own credentials
+                fallback = next(
+                    (
+                        name
+                        for name, cfg in registry.items()
+                        if cfg.get("api_key") and cfg.get("api_key") != "cloud_token"
+                    ),
+                    None,
+                )
+                if fallback:
+                    self._session.settings.models.default = fallback
+                    messages.append(f"Switched to {fallback} (cloud model no longer available).")
+                else:
+                    messages.append(
+                        "Warning: no models with API keys configured. "
+                        "Add a model with an api_key or /login again."
+                    )
+
             self._session.main_team = self._session._build_main_agent()
 
-        msg = f"Logged out ({creds.email})." if creds else "Not logged in."
-        return CommandResult(kind="info", content=msg, action="logout")
+        email_msg = f"Logged out ({creds.email})." if creds else "Not logged in."
+        messages.insert(0, email_msg)
+        return CommandResult(kind="info", content="\n".join(messages), action="logout")
 
     async def _cmd_whoami(self, _args: str) -> "CommandResult":
         from ember_code.core.auth.credentials import is_token_expired, load_credentials

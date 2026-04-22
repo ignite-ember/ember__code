@@ -166,8 +166,8 @@ class EmberApp(App):
     }
 
     #update-bar {
-        dock: bottom;
-        height: auto;
+        dock: top;
+        height: 1;
         width: 100%;
     }
 
@@ -202,13 +202,13 @@ class EmberApp(App):
     _IS_MACOS = sys.platform == "darwin"
 
     BINDINGS = [
-        Binding("ctrl+d", "quit", "Quit", show=False),
-        Binding("ctrl+l", "clear_screen", "Clear", show=False),
-        Binding("ctrl+o", "toggle_expand_all", "Expand", show=False),
-        Binding("ctrl+v", "toggle_verbose", "Verbose", show=False),
-        Binding("ctrl+q", "toggle_queue", "Queue", show=False),
-        Binding("ctrl+t", "toggle_tasks", "Tasks", show=False),
-        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("ctrl+d", "quit", "Quit", show=False, priority=True),
+        Binding("ctrl+l", "clear_screen", "Clear", show=False, priority=True),
+        Binding("ctrl+o", "toggle_expand_all", "Expand", show=False, priority=True),
+        Binding("ctrl+v", "toggle_verbose", "Verbose", show=False, priority=True),
+        Binding("ctrl+q", "toggle_queue", "Queue", show=False, priority=True),
+        Binding("ctrl+t", "toggle_tasks", "Tasks", show=False, priority=True),
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
 
     def __init__(
@@ -319,10 +319,10 @@ class EmberApp(App):
             f"    [dim]/help for commands · {_quit_key} to quit[/dim]",
             id="header-bar",
         )
+        yield UpdateBar(id="update-bar")
         yield ScrollableContainer(id="conversation")
         yield QueuePanel(id="queue-panel")
         yield TaskPanel(id="task-panel")
-        yield UpdateBar(id="update-bar")
         yield TipBar(id="tip-bar")
         with Vertical(id="footer"):
             with Horizontal(id="prompt-row"):
@@ -704,11 +704,18 @@ class EmberApp(App):
     # ── Model picker ────────────────────────────────────────────────
 
     def _show_model_picker(self) -> None:
-        # Only show models that have an API key configured
+        # Show models that have credentials: explicit API key, env var,
+        # key command, or Ember Cloud auth (for models hosted on ignite-ember.sh)
+        from ember_code.core.auth.credentials import get_access_token
+
+        cloud_token = get_access_token(self.settings.auth.credentials_file)
         models = sorted(
             name
             for name, cfg in self.settings.models.registry.items()
-            if cfg.get("api_key") or cfg.get("api_key_env") or cfg.get("api_key_cmd")
+            if (cfg.get("api_key") == "cloud_token" and cloud_token)
+            or (cfg.get("api_key") and cfg.get("api_key") != "cloud_token")
+            or cfg.get("api_key_env")
+            or cfg.get("api_key_cmd")
         )
         if not models:
             self._conversation.append_error("No models configured with API keys.")
@@ -722,6 +729,7 @@ class EmberApp(App):
     def _on_model_selected(self, event: ModelPickerWidget.Selected) -> None:
         if hasattr(self, "_backend"):
             self._backend.switch_model(event.model_name)
+        self.settings.models.default = event.model_name
         self._status.update_status_bar()
         self._conversation.append_info(f"Switched to model: {event.model_name}")
         self.query_one("#user-input", PromptInput).focus()
@@ -1007,15 +1015,17 @@ class EmberApp(App):
         """Check for a newer CLI version via BE RPC."""
         try:
             result = await self._backend._rpc("check_for_update")
+            logger.debug("Update check result: %s", result)
             if result and result.get("available"):
                 bar = self.query_one("#update-bar", UpdateBar)
                 bar.show_update(
-                    current="",
-                    latest=result.get("version", ""),
-                    url=result.get("message", ""),
+                    current=result.get("current_version", ""),
+                    latest=result.get("latest_version", ""),
+                    url=result.get("download_url", ""),
+                    pkg_name=result.get("pkg_name", ""),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Update check error: %s", e)
 
     # ── Tips ───────────────────────────────────────────────────────
 

@@ -32,8 +32,10 @@ models:
     MiniMax-M2.7:
       provider: openai_like
       model_id: MiniMax-Text-01
-      url: https://api.ignite-ember.sh/v1    # Ember hosted endpoint
-      # authenticated via /login — no API key needed
+      url: https://api.ignite-ember.sh/v1
+      api_key: cloud_token    # uses Ember Cloud login credentials
+      context_window: 204800
+      vision: false
 ```
 
 Agent `.md` files just reference the registry name:
@@ -73,19 +75,29 @@ Add entries to `models.registry` in your config. These override built-in entries
 # .ember/config.yaml
 models:
   registry:
-    # Direct API key in config (simplest)
-    gemini-2.5-flash:
+    # Ember Cloud model — uses login credentials
+    MiniMax-M2.5:
       provider: openai_like
-      model_id: gemini-2.5-flash
-      url: https://generativelanguage.googleapis.com/v1beta/openai/
-      api_key: AIzaSy...your_key_here
+      model_id: MiniMaxAI/MiniMax-M2.5
+      url: https://api.ignite-ember.sh/v1
+      api_key: cloud_token
+      context_window: 204800
+      vision: false
 
-    # Or use an environment variable
+    # Direct API key — vision-capable model
+    GPT-5.4:
+      provider: openai_like
+      model_id: gpt-5.4
+      api_key: sk-proj-...your_key_here
+      context_window: 1048576
+      vision: true
+
+    # Environment variable for API key
     gpt-4o:
       provider: openai_like
       model_id: gpt-4o
-      url: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
+      vision: true
 
     # Or use a shell command (e.g., 1Password, vault)
     claude-sonnet:
@@ -105,14 +117,17 @@ Works with MiniMax, OpenAI, Anthropic, Groq, Together AI, OpenRouter, Ollama, or
 |---|---|---|---|
 | `provider` | string | yes | Agno model class to use. `openai_like` for any OpenAI-compatible API |
 | `model_id` | string | yes | Model identifier sent to the API (e.g., `MiniMax-Text-01`, `gpt-4o`) |
-| `url` | string | yes | API base URL |
-| `api_key` | string | no | API key value directly in the config (simplest option) |
+| `url` | string | yes | API base URL (e.g., `https://api.openai.com/v1`). Omit only for OpenAI models that use the default endpoint |
+| `api_key` | string | no | API key value, or `cloud_token` to use Ember Cloud login credentials |
 | `api_key_env` | string | no | Environment variable name containing the API key |
 | `api_key_cmd` | string | no | Shell command that outputs the API key (e.g., `op read ...` for 1Password) |
+| `context_window` | int | no | Context window size in tokens. Falls back to 128k if not set |
+| `vision` | bool | no | Whether the model supports image input. Default `false`. When `true`, file references (images, PDFs) are attached as multimodal content. When `false`, file paths are resolved so the AI can read them via tools |
 | `temperature` | float | no | Default temperature for this model |
 | `max_tokens` | int | no | Default max output tokens |
+| `timeout` | int | no | Request timeout in seconds. Default 120 |
 
-> **API key resolution order:** `api_key` (direct) → `api_key_env` (env var) → `api_key_cmd` (shell command). Only the first one found is used.
+> **API key resolution order:** `api_key` (direct) → `api_key_env` (env var) → `api_key_cmd` (shell command). The special value `cloud_token` resolves to your Ember Cloud login credentials (from `/login`).
 
 ### Comparison with Claude Code
 

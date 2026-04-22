@@ -47,23 +47,58 @@ def _caller_context(depth: int = 4) -> str:
     return "unknown"
 
 
+def _sanitize_messages(messages: list) -> list:
+    """Convert multimodal content arrays to plain text.
+
+    When a non-vision model receives messages from a session that
+    previously used a vision model, content may be a list of dicts
+    (text + image_url + file). This extracts only the text parts.
+    """
+    for msg in messages:
+        content = getattr(msg, "content", None) if not isinstance(msg, dict) else msg.get("content")
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            new_content = "\n".join(text_parts) if text_parts else ""
+            if isinstance(msg, dict):
+                msg["content"] = new_content
+            else:
+                msg.content = new_content
+    return messages
+
+
 class _LoggingModel(OpenAILike):
-    """Thin wrapper that logs every LLM API call with caller info."""
+    """Thin wrapper that logs calls and sanitizes messages for non-vision models."""
+
+    _vision: bool = False
 
     def invoke(self, *args, **kwargs):
         self._log_call("invoke", args, stream=False, kwargs=kwargs)
+        if not self._vision and args:
+            args = (_sanitize_messages(args[0]), *args[1:])
         return super().invoke(*args, **kwargs)
 
     async def ainvoke(self, *args, **kwargs):
         self._log_call("ainvoke", args, stream=False, kwargs=kwargs)
+        if not self._vision and args:
+            args = (_sanitize_messages(args[0]), *args[1:])
         return await super().ainvoke(*args, **kwargs)
 
     def invoke_stream(self, *args, **kwargs):
         self._log_call("invoke_stream", args, stream=True, kwargs=kwargs)
+        if not self._vision and args:
+            args = (_sanitize_messages(args[0]), *args[1:])
         yield from super().invoke_stream(*args, **kwargs)
 
     async def ainvoke_stream(self, *args, **kwargs):
         self._log_call("ainvoke_stream", args, stream=True, kwargs=kwargs)
+        if not self._vision and args:
+            args = (_sanitize_messages(args[0]), *args[1:])
         async for chunk in super().ainvoke_stream(*args, **kwargs):
             yield chunk
 
@@ -226,17 +261,21 @@ class ModelRegistry:
         # OpenAI-like providers
         kwargs = {"id": entry["model_id"]}
 
-        # When authenticated with Ember Cloud, route inference through the
-        # Ember API gateway — this enables usage tracking, quotas, and
-        # key pooling on the server side.
-        if self._cloud_token and self._cloud_server_url:
-            kwargs["api_key"] = self._cloud_token
-            kwargs["base_url"] = f"{self._cloud_server_url.rstrip('/')}/v1/"
-        elif "url" in entry:
-            kwargs["api_key"] = api_key or "not-set"
+        # Models with explicit credentials use them directly.
+        # Otherwise, authenticated users route through Ember Cloud gateway.
+        # Resolve URL and API key independently:
+        # - URL: from model entry, or Ember Cloud gateway as fallback
+        # - Key: from model entry, or Ember Cloud token as fallback
+        if "url" in entry:
             kwargs["base_url"] = entry["url"]
+
+        if api_key == "cloud_token":
+            # Resolve to Ember Cloud login credentials
+            kwargs["api_key"] = self._cloud_token or "not-set"
         elif api_key:
             kwargs["api_key"] = api_key
+        else:
+            kwargs["api_key"] = "not-set"
 
         if "temperature" in entry:
             kwargs["temperature"] = entry["temperature"]
@@ -259,7 +298,9 @@ class ModelRegistry:
         )
 
         # Use logging wrapper to trace all LLM API calls
-        return _LoggingModel(**kwargs)
+        model = _LoggingModel(**kwargs)
+        model._vision = entry.get("vision", False)
+        return model
 
     def get_context_window(self, name: str | None = None) -> int:
         """Get the context window size for a model (synchronous)."""

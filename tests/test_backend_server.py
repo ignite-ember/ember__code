@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from ember_code.protocol import messages as msg
@@ -71,6 +72,79 @@ class TestBackendServerCommands:
         assert isinstance(result, msg.Info)
         assert "new-model" in result.text
         server._session._build_main_agent.assert_called_once()
+
+
+class TestCloseModelHttpClient:
+    """Test that _close_model_http_client properly closes and replaces the httpx client."""
+
+    @pytest.mark.asyncio
+    async def test_closes_async_client(self):
+        from ember_code.backend.server import BackendServer
+
+        client = httpx.AsyncClient()
+        model = MagicMock()
+        model.http_client = client
+        team = MagicMock()
+        team.model = model
+
+        await BackendServer._close_model_http_client(team)
+
+        assert client.is_closed
+        assert isinstance(model.http_client, httpx.AsyncClient)
+        assert model.http_client is not client  # replaced with a fresh one
+
+    @pytest.mark.asyncio
+    async def test_fresh_client_has_correct_limits(self):
+        from ember_code.backend.server import BackendServer
+
+        client = httpx.AsyncClient()
+        model = MagicMock()
+        model.http_client = client
+        team = MagicMock()
+        team.model = model
+
+        await BackendServer._close_model_http_client(team)
+
+        new_client = model.http_client
+        pool = new_client._transport._pool
+        assert pool._max_connections == 10
+        assert pool._max_keepalive_connections == 5
+
+    @pytest.mark.asyncio
+    async def test_noop_when_no_model(self):
+        """Should not raise when team has no model."""
+        from ember_code.backend.server import BackendServer
+
+        team = MagicMock(spec=[])  # no model attribute
+        await BackendServer._close_model_http_client(team)  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_noop_when_no_http_client(self):
+        """Should not raise when model has no http_client."""
+        from ember_code.backend.server import BackendServer
+
+        model = MagicMock()
+        model.http_client = None
+        team = MagicMock()
+        team.model = model
+
+        await BackendServer._close_model_http_client(team)  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_noop_when_sync_client(self):
+        """Should not close a sync httpx.Client (only async)."""
+        from ember_code.backend.server import BackendServer
+
+        client = httpx.Client()
+        model = MagicMock()
+        model.http_client = client
+        team = MagicMock()
+        team.model = model
+
+        await BackendServer._close_model_http_client(team)
+
+        assert not client.is_closed  # sync client should be left alone
+        client.close()  # cleanup
 
 
 class TestProtocolSerialization:

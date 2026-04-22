@@ -17,6 +17,7 @@ on every session. The TTL is configurable via ``update_check_ttl`` in settings.
 import json
 import logging
 import time
+from importlib.metadata import metadata
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,15 @@ from pydantic import BaseModel
 
 from ember_code import __version__
 from ember_code.core.config.settings import Settings
+
+# Derive package name and project URL from installed package metadata
+_PKG_META = metadata("ignite-ember")
+_PKG_NAME = _PKG_META["Name"]
+_PROJECT_URL = ""
+for line in _PKG_META.get_all("Project-URL") or []:
+    if "Homepage" in line or "Repository" in line:
+        _PROJECT_URL = line.split(",", 1)[-1].strip()
+        break
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +128,6 @@ async def check_for_update(
 
         settings = load_settings()
 
-    api_url = settings.api_url
-    version_endpoint = settings.version_endpoint
     ttl = settings.update_check_ttl
 
     # Check cache first
@@ -136,25 +144,26 @@ async def check_for_update(
             )
         return UpdateInfo(available=False, current_version=current)
 
-    # Fetch from server
+    # Fetch from PyPI
     try:
-        url = api_url.rstrip("/") + version_endpoint
+        pypi_url = f"https://pypi.org/pypi/{_PKG_NAME}/json"
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, params={"current": current})
+            resp = await client.get(pypi_url)
             resp.raise_for_status()
             data = resp.json()
 
-        # Cache the response
-        _write_cache(data)
+        latest = data.get("info", {}).get("version", "")
+        release_url = data.get("info", {}).get("project_url", "") or _PROJECT_URL
 
-        latest = data.get("latest_version", "")
+        # Cache the response
+        _write_cache({"latest_version": latest, "download_url": release_url})
+
         if latest and _is_newer(latest, current):
             return UpdateInfo(
                 available=True,
                 latest_version=latest,
                 current_version=current,
-                release_notes=data.get("release_notes", ""),
-                download_url=data.get("download_url", ""),
+                download_url=release_url,
             )
         return UpdateInfo(available=False, current_version=current)
 

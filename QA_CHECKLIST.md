@@ -252,25 +252,25 @@
 - [x] `/schedule add run tests every 2 hours` — recurring
 - [x] `/schedule add check deps daily` — daily
 - [x] Scheduled task executes at scheduled time
-- [ ] Recurring tasks reschedule after completion
+- [x] Recurring tasks reschedule after completion
 - [ ] Task timeout enforced
 - [ ] Max concurrent enforced
 - [x] Task panel (Ctrl+T) — shows live status
 
 ### Media auto-detection
-- [ ] TUI: local image path — "Attached: 1 image(s)"
-- [ ] TUI: URL with media extension — attaches
-- [ ] TUI: multiple media — combined summary
+- [x] TUI: local image path — "Attached: 1 image(s)"
+- [x] TUI: URL with media extension — attaches
+- [x] TUI: multiple media — combined summary
 - [ ] TUI: non-existent file — left in text
 - [ ] TUI: no media — normal send
 - [ ] TUI: URL without known extension — NOT attached
 - [ ] `-m "analyze ~/img.png"` — media detected
 - [ ] Pipe mode — media detected
-- [ ] Image (`.png`, `.jpg`, `.gif`, `.webp`) — auto-attached
+- [x] Image (`.png`, `.jpg`, `.gif`, `.webp`) — auto-attached
 - [ ] Audio (`.mp3`, `.wav`, `.ogg`, `.flac`) — auto-attached
 - [ ] Video (`.mp4`, `.mov`, `.avi`, `.webm`) — auto-attached
-- [ ] PDF (`.pdf`) — auto-attached
-- [ ] Code/text files (`.py`, `.js`, `.json`, `.md`, etc.) — NOT auto-attached, agent reads via tools
+- [x] PDF (`.pdf`) — auto-attached
+- [x] Code/text files (`.py`, `.js`, `.json`, `.md`, etc.) — NOT auto-attached, agent reads via tools
 
 ### @file mention autocomplete
 - [x] Type `@` — file picker dropdown appears above input

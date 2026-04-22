@@ -75,13 +75,40 @@ class BackendServer:
         if mentioned_files:
             yield msg.Info(text=f"Referenced: {', '.join(mentioned_files)}")
 
-        # Auto-detect media (images, audio, videos, documents)
-        from ember_code.core.utils.media import parse_media_from_text
+        # Resolve bare filenames and attach media for vision-capable models
+        from ember_code.core.utils.media import resolve_file_references
 
-        text, parsed_media = parse_media_from_text(text)
-        if parsed_media.has_media:
-            media = parsed_media.as_kwargs()
-            yield msg.Info(text=f"Attached: {parsed_media.summary()}")
+        model_name = self._session.settings.models.default
+        model_cfg = self._session.settings.models.registry.get(model_name, {})
+        is_vision = model_cfg.get("vision", False)
+
+        text, resolved_files = resolve_file_references(text, project_dir=self._session.project_dir)
+        if resolved_files:
+            if is_vision:
+                from ember_code.core.utils.media import attach_resolved_files
+
+                parsed_media = attach_resolved_files(resolved_files)
+                if parsed_media:
+                    media = parsed_media
+                    yield msg.Info(text=f"Attached: {len(resolved_files)} file(s)")
+                else:
+                    yield msg.Info(text=f"Resolved: {', '.join(resolved_files)}")
+            else:
+                yield msg.Info(text=f"Resolved: {', '.join(resolved_files)}")
+
+        # Attach media URLs (images, etc.) for vision models
+        if is_vision:
+            from ember_code.core.utils.media import extract_media_urls
+
+            url_media = extract_media_urls(text)
+            if url_media:
+                if media:
+                    for k, v in url_media.items():
+                        media.setdefault(k, []).extend(v)
+                else:
+                    media = url_media
+                count = sum(len(v) for v in url_media.values())
+                yield msg.Info(text=f"Attached {count} URL(s)")
 
         # Inject learnings
         await self._session._inject_learnings()
@@ -126,6 +153,7 @@ class BackendServer:
             yield msg.Error(text=str(e))
         finally:
             self._processing = False
+            await self._close_model_http_client(team)
 
         # Fire Stop hook
         stop_result = await self._session.hook_executor.execute(
@@ -304,9 +332,21 @@ class BackendServer:
 
     def switch_model(self, model_name: str) -> msg.Info:
         """Switch the active model."""
+        old_name = self._session.settings.models.default
+        old_cfg = self._session.settings.models.registry.get(old_name, {})
+        new_cfg = self._session.settings.models.registry.get(model_name, {})
+
         self._session.settings.models.default = model_name
         self._session.main_team = self._session._build_main_agent()
-        return msg.Info(text=f"Switched to {model_name}")
+
+        note = f"Switched to {model_name}"
+        # Warn if switching from vision to non-vision with media in history
+        if old_cfg.get("vision") and not new_cfg.get("vision"):
+            note += (
+                "\nNote: previous messages may contain images/files. "
+                "Use /clear to reset if you get errors."
+            )
+        return msg.Info(text=note)
 
     # ── Login/Logout ──────────────────────────────────────────────
 
@@ -499,6 +539,33 @@ class BackendServer:
             if isinstance(tool, OrchestrateTools):
                 tool._on_progress = callback
                 break
+
+    @staticmethod
+    async def _close_model_http_client(team: Any) -> None:
+        """Close the httpx client on the model to release open HTTP streams.
+
+        When an Agno run finishes or is cancelled mid-stream, the underlying
+        httpx connection to the API may stay open indefinitely. Closing the
+        client ensures the TCP connection is torn down promptly so the server
+        can release concurrency slots. A fresh client is assigned so the model
+        remains usable for subsequent runs.
+        """
+        import httpx as _httpx
+
+        try:
+            model = getattr(team, "model", None)
+            client = getattr(model, "http_client", None) if model else None
+            if isinstance(client, _httpx.AsyncClient):
+                await client.aclose()
+                model.http_client = _httpx.AsyncClient(
+                    limits=_httpx.Limits(
+                        max_connections=10,
+                        max_keepalive_connections=5,
+                        keepalive_expiry=30,
+                    ),
+                )
+        except Exception as exc:
+            logger.debug("Failed to close model HTTP client: %s", exc)
 
     def cancel_run(self) -> None:
         """Cancel the currently running agent and kill any foreground process."""

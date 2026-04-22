@@ -193,9 +193,7 @@ class TestCheckForUpdate:
     @pytest.mark.asyncio
     async def test_no_update(self, tmp_path):
         cache_file = tmp_path / ".update-check"
-        mock_client = self._make_mock_client(
-            {"latest_version": "0.1.0", "release_notes": "", "download_url": ""}
-        )
+        mock_client = self._make_mock_client({"info": {"version": "0.1.0"}})
         with (
             patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file),
             patch("ember_code.core.utils.update_checker.__version__", "0.1.0"),
@@ -209,13 +207,7 @@ class TestCheckForUpdate:
     @pytest.mark.asyncio
     async def test_update_available(self, tmp_path):
         cache_file = tmp_path / ".update-check"
-        mock_client = self._make_mock_client(
-            {
-                "latest_version": "0.2.0",
-                "release_notes": "New features",
-                "download_url": "https://example.com",
-            }
-        )
+        mock_client = self._make_mock_client({"info": {"version": "0.2.0"}})
         with (
             patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file),
             patch("ember_code.core.utils.update_checker.__version__", "0.1.0"),
@@ -226,7 +218,6 @@ class TestCheckForUpdate:
             info = await check_for_update()
             assert info.available is True
             assert info.latest_version == "0.2.0"
-            assert info.release_notes == "New features"
 
     @pytest.mark.asyncio
     async def test_network_error(self, tmp_path):

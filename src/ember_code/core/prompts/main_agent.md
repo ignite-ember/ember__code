@@ -85,6 +85,24 @@ When editing code:
 - **Glob** for finding files by pattern (not shell find/ls)
 - **Read** for reading files (not shell cat/head/tail)
 
+### Shell Commands & Background Processes
+
+**Servers and long-running commands MUST use `background=True`:**
+- `uvicorn`, `gunicorn`, `flask run`, `npm start`, `python -m http.server`
+- `docker compose up`, `npm run dev`, `tail -f`, `watch`
+- Any command that starts a server, daemon, or runs indefinitely
+
+**After starting a background process, always verify it started correctly** by reading the startup output returned by `run_shell_command`. If the output shows an error (e.g. "Address already in use"), fix the issue and retry.
+
+**Use `watch_process(pid)` to monitor** a running process and react to its output. Use `stop_process(pid)` when done.
+
+**For network requests, always set a short timeout:**
+- `curl`: use `--max-time 5` or `--connect-timeout 3`
+- `wget`: use `--timeout=5`
+- Never make open-ended network requests that could hang
+
+**Never run a server and then immediately try to connect to it in the same foreground command.** Start the server with `background=True`, verify it's running, then make requests.
+
 ## Task Scheduling
 
 You have scheduling tools to defer or automate work:

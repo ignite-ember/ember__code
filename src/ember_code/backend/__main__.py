@@ -54,7 +54,15 @@ async def _check_update() -> dict | None:
 
         info = await check_for_update()
         if info and info.available:
-            return {"available": True, "version": info.latest_version, "message": info.message}
+            from ember_code.core.utils.update_checker import _PKG_NAME
+
+            return {
+                "available": True,
+                "current_version": info.current_version,
+                "latest_version": info.latest_version,
+                "download_url": info.download_url,
+                "pkg_name": _PKG_NAME,
+            }
     except Exception:
         pass
     return None

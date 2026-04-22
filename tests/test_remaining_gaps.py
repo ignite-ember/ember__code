@@ -150,26 +150,52 @@ class TestAgentsCommand:
         assert "reviewer" in result.content
 
 
-# ── P2: Media in pipe mode ──────────────────────────────────────
+# ── P2: File resolution and media attachment ─────────────────────
 
 
-class TestMediaPipeMode:
-    """Media detection should work in pipe/message mode too."""
+class TestFileResolutionAndAttachment:
+    """File references are resolved to paths; vision models get attachments."""
 
-    def test_parse_media_from_pipe_text(self, tmp_path):
-        from ember_code.core.utils.media import parse_media_from_text
+    def test_resolve_bare_filename(self, tmp_path):
+        from ember_code.core.utils.media import resolve_file_references
 
-        img = tmp_path / "test.png"
+        img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG")
+        text, resolved = resolve_file_references("analyze photo.png", project_dir=tmp_path)
+        assert len(resolved) == 1
+        assert str(tmp_path / "photo.png") in text
 
-        text, media = parse_media_from_text(f"analyze {img}")
-        assert media.has_media or not img.exists()  # depends on file check
+    def test_no_media_in_plain_text(self):
+        from ember_code.core.utils.media import resolve_file_references
 
-    def test_parse_media_no_media_in_text(self):
-        from ember_code.core.utils.media import parse_media_from_text
+        text, resolved = resolve_file_references("just a normal message")
+        assert resolved == []
+        assert text == "just a normal message"
 
-        text, media = parse_media_from_text("just a normal message")
-        assert not media.has_media
+    def test_attach_resolved_files_image(self, tmp_path):
+        from ember_code.core.utils.media import attach_resolved_files
+
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8")
+        result = attach_resolved_files([str(img)])
+        assert result is not None
+        assert "images" in result
+        assert len(result["images"]) == 1
+
+    def test_attach_resolved_files_pdf(self, tmp_path):
+        from ember_code.core.utils.media import attach_resolved_files
+
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF")
+        result = attach_resolved_files([str(pdf)])
+        assert result is not None
+        assert "files" in result
+
+    def test_attach_resolved_files_non_media(self):
+        from ember_code.core.utils.media import attach_resolved_files
+
+        result = attach_resolved_files(["/some/path/script.py"])
+        assert result is None
 
 
 # ── P2: Schedule show/cancel commands ────────────────────────────

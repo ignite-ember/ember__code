@@ -248,12 +248,7 @@ def cli(
 
 
 def _run_app(app):
-    """Run the Textual app. SSE cleanup errors are silenced in on_unmount."""
-    import sys
-
-    # Clear terminal before Textual takes over — prevents flash of previous session
-    sys.stdout.write("\033[2J\033[H")
-    sys.stdout.flush()
+    """Run the Textual app."""
     app.run()
 
 

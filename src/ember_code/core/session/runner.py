@@ -55,19 +55,17 @@ async def run_single_message(
 
         _print_info(f"Referenced: {', '.join(mentioned_files)}")
 
-    # Auto-detect media (images, audio, videos, documents) from message text
-    from ember_code.core.utils.media import parse_media_from_text
+    # Resolve bare filenames to absolute paths
+    from ember_code.core.utils.media import resolve_file_references
 
-    cleaned_msg, media = parse_media_from_text(message)
-    media_kwargs = media.as_kwargs()
-    if media.has_media:
-        message = cleaned_msg
+    message, resolved_files = resolve_file_references(message, project_dir=session.project_dir)
+    if resolved_files:
         from ember_code.core.utils.display import print_info
 
-        print_info(f"Attached: {media.summary()}")
+        print_info(f"Resolved: {', '.join(resolved_files)}")
 
     start_time = time.monotonic()
-    response = await session.handle_message(message, **media_kwargs)
+    response = await session.handle_message(message)
     elapsed = time.monotonic() - start_time
     print_response(response)
     print_run_stats(

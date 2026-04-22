@@ -133,15 +133,16 @@ async def run_session_interactive(
             if mentioned_files:
                 print_info(f"Referenced: {', '.join(mentioned_files)}")
 
-            from ember_code.core.utils.media import parse_media_from_text
+            from ember_code.core.utils.media import resolve_file_references
 
-            cleaned_msg, media = parse_media_from_text(message)
-            if media.has_media:
-                message = cleaned_msg
-                print_info(f"Attached: {media.summary()}")
+            message, resolved_files = resolve_file_references(
+                message, project_dir=session.project_dir
+            )
+            if resolved_files:
+                print_info(f"Resolved: {', '.join(resolved_files)}")
 
             start_time = time.monotonic()
-            response = await session.handle_message(message, **media.as_kwargs())
+            response = await session.handle_message(message)
             elapsed = time.monotonic() - start_time
             print_response(response)
             print_run_stats(

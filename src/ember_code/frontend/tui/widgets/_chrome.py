@@ -407,8 +407,47 @@ class TipBar(Static):
         self.update(f"[dim italic]Tip: {tip}[/dim italic]")
 
 
+def _upgrade_command(pkg_name: str) -> str:
+    """Return the appropriate upgrade command based on install method."""
+    import subprocess
+    import sys
+
+    exe = sys.executable
+
+    # Check if running from a Homebrew prefix
+    if "/Cellar/" in exe or "/homebrew/" in exe.lower():
+        return f"brew upgrade {pkg_name}"
+
+    # Check if pipx manages this package
+    try:
+        result = subprocess.run(
+            ["pipx", "list", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0 and pkg_name in result.stdout:
+            return f"pipx upgrade {pkg_name}"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Check if running inside a uv-managed environment
+    if ".venv" in exe:
+        try:
+            subprocess.run(
+                ["uv", "--version"],
+                capture_output=True,
+                timeout=3,
+            )
+            return f"uv pip install --upgrade {pkg_name}"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return f"pip install --upgrade {pkg_name}"
+
+
 class UpdateBar(Static):
-    """Bottom bar showing an available update notification."""
+    """Top bar showing an available update notification."""
 
     DEFAULT_CSS = """
     UpdateBar {
@@ -427,11 +466,11 @@ class UpdateBar(Static):
         super().__init__("", **kwargs)
         self.add_class("-hidden")
 
-    def show_update(self, current: str, latest: str, url: str = "") -> None:
+    def show_update(self, current: str, latest: str, url: str = "", pkg_name: str = "") -> None:
         """Display an update notification."""
-        msg = f"Update available: v{current} -> v{latest}"
-        if url:
-            msg += f"  |  {url}"
+        msg = f"Update available: v{current} → v{latest}"
+        if pkg_name:
+            msg += f"  |  {_upgrade_command(pkg_name)}"
         self.update(msg)
         self.remove_class("-hidden")
 

@@ -114,9 +114,9 @@ Ember Code uses the **same tool names as Claude Code**. Agent files are fully cr
 | `Edit` | `EmberEditTools()` | Targeted string-replacement editing |
 | `Grep` | `GrepTools()` | Regex content search |
 | `Glob` | `GlobTools()` | File pattern matching |
-| `Bash` | `ShellTools()` | Shell command execution |
-| `BashOutput` | `ShellTools()` | Shell execution (alias) |
-| `LS` | `ShellTools(commands=["ls"])` | List directory contents |
+| `Bash` | `EmberShellTools` | Non-blocking shell with process management |
+| `BashOutput` | `EmberShellTools` | Shell execution (alias) |
+| `LS` | `EmberShellTools` | List directory contents |
 | `WebSearch` | `DuckDuckGoTools()` | Web search |
 | `WebFetch` | `WebTools()` | Fetch URL content |
 | `NotebookRead` | `NotebookTools(read_only=True)` | Read Jupyter notebooks |

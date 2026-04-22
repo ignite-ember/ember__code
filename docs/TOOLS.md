@@ -11,10 +11,10 @@ Ember Code uses the **same tool names as Claude Code**. Each name maps to an Agn
 | `Read` | `FileTools(read_only=True)` | Read file contents |
 | `Write` | `FileTools()` | Create/overwrite files |
 | `Edit` | `EmberEditTools` (custom) | Targeted string-replacement editing |
-| `Bash` | `ShellTools` | Shell command execution |
+| `Bash` | `EmberShellTools` (custom) | Non-blocking shell with process management |
 | `Grep` | `GrepTools` (custom) | Regex content search (ripgrep) |
 | `Glob` | `GlobTools` (custom) | File pattern matching |
-| `LS` | `ShellTools(commands=["ls"])` | List directory contents |
+| `LS` | `EmberShellTools` (custom) | List directory contents |
 | `WebSearch` | `DuckDuckGoTools` or `TavilyTools` | Web search |
 | `WebFetch` | `WebTools` (custom) | Fetch and extract URL content |
 | `Orchestrate` | `OrchestrateTools` (custom) | Spawn sub-teams from agent pool |
@@ -139,24 +139,35 @@ glob_tools = GlobTools(base_dir="/path/to/project")
 
 ## Shell Execution
 
-### Bash (ShellTools)
+### Bash (EmberShellTools)
 
-Execute shell commands with configurable restrictions.
+Non-blocking shell execution with background process management. Replaces Agno's built-in `ShellTools` with an implementation that handles long-running commands (servers, watchers) without blocking the agent.
 
 ```python
-from agno.tools.shell import ShellTools
+from ember_code.core.tools.shell import EmberShellTools
 
-# Unrestricted (Editor Agent)
-ShellTools(base_dir="/path/to/project")
-
-# Restricted to specific commands (Explorer Agent)
-ShellTools(
-    base_dir="/path/to/project",
-    commands=["rg", "find", "tree", "wc", "cat", "head", "tail"],
-)
+shell = EmberShellTools(base_dir="/path/to/project")
 ```
 
-**Functions:** `run_shell_command(command, timeout?)`
+**Functions:**
+
+- `run_shell_command(args, timeout?, background?, tail?)` — Run a command. Short-lived commands block up to `timeout` seconds (default 7s). Long-running commands should use `background=True` to return immediately with a PID. If a foreground command exceeds the timeout, it is automatically backgrounded.
+- `watch_process(pid, seconds?)` — Watch a background process for up to `seconds` (default 10, max 30) and return new output produced during that window. Call repeatedly to keep monitoring.
+- `read_process_output(pid, tail?)` — Read the last `tail` lines of output from a background process.
+- `stop_process(pid)` — Kill a background process and its children.
+- `list_processes()` — List all running background processes with PID, command, and elapsed time.
+
+**Background processes:**
+
+Servers and long-running commands should always use `background=True`:
+
+```
+run_shell_command(["python", "-m", "uvicorn", "main:app"], background=True)
+```
+
+The tool waits 3 seconds after starting to capture initial output (e.g. "Serving on port 8000" or crash errors), then returns the PID. Use `watch_process(pid)` to monitor and `stop_process(pid)` to stop.
+
+**Cancellation:** When the user presses Escape, any active foreground process is killed immediately. Background processes survive cancellation — they're only cleaned up on session exit or explicit `stop_process`.
 
 **Safety:** Commands are validated against blocked patterns and confirmation requirements. See [Configuration](CONFIGURATION.md) for details.
 
@@ -234,7 +245,7 @@ notebook_tools = NotebookTools(base_dir="/path/to/project")
 
 ## Git & GitHub
 
-Git operations are handled via `ShellTools` with git/gh commands. The Git Agent wraps these with safety checks:
+Git operations are handled via `EmberShellTools` with git/gh commands. The Git Agent wraps these with safety checks:
 
 - **Pre-push confirmation** — always asks before pushing
 - **Force-push protection** — warns and requires explicit confirmation
