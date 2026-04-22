@@ -113,10 +113,10 @@ def resolve_file_references(text: str, project_dir: Path | None = None) -> tuple
     # Bare filenames — search common locations
     for match in _BARE_FILE_PATTERN.finditer(text):
         filename = match.group(1)
-        path = _find_bare_file(filename, project_dir)
-        if path:
-            text = text.replace(filename, str(path))
-            resolved.append(str(path))
+        found = _find_bare_file(filename, project_dir)
+        if found:
+            text = text.replace(filename, str(found))
+            resolved.append(str(found))
 
     return text, resolved
 
