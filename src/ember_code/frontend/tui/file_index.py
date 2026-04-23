@@ -112,8 +112,8 @@ def _score_match(query: str, path: str) -> int | None:
 class FileIndex:
     """Cached project file listing with fuzzy matching."""
 
-    def __init__(self, project_dir: Path) -> None:
-        self._project_dir = project_dir
+    def __init__(self, project_dir: Path | None = None) -> None:
+        self._project_dir = project_dir or Path.cwd()
         self._files: list[str] = []
         self._loaded = False
 
