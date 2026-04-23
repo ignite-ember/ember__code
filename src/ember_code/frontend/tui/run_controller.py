@@ -146,6 +146,14 @@ class RunController:
     async def _run(self, message: str) -> None:
         self._conversation.append_user(message)
 
+        # Inject accumulated shell context (from ! commands) into the message
+        # after displaying — the user sees clean text, the AI gets the context
+        shell_ctx = self._app._shell_context
+        if shell_ctx and not message.startswith("/"):
+            context = "\n\n".join(shell_ctx)
+            message = f"<shell-context>\n{context}\n</shell-context>\n\n{message}"
+            shell_ctx.clear()
+
         # Slash commands — handled by backend, result rendered by FE
         if message.startswith("/"):
             try:

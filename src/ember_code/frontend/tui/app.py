@@ -234,6 +234,10 @@ class EmberApp(App):
         self._task_refresh_timer: Any = None
 
         self._conversation: ConversationView | None = None
+        self._shell_context: list[str] = []  # accumulated shell results for AI context
+        self._shell_mode: bool = False  # True when prompt is in $ shell mode
+        self._shell_proc: Any = None  # active inline shell subprocess
+        self._shell_task: Any = None  # asyncio task for _run_shell_inline
         self._input_handler: InputHandler | None = None
 
         # Managers initialised in on_mount once widgets exist
@@ -476,6 +480,19 @@ class EmberApp(App):
         text_area = event.text_area
         text = text_area.text
 
+        # ── Shell mode toggle (! or $ prefix) ─────────────────
+        if not self._shell_mode and text in ("!", "$"):
+            self._shell_mode = True
+            text_area.clear()
+            self._update_shell_mode_indicator()
+            return
+        if not self._shell_mode and (text.startswith("! ") or text.startswith("$ ")):
+            self._shell_mode = True
+            text_area.clear()
+            text_area.insert(text[2:])
+            self._update_shell_mode_indicator()
+            return
+
         # ── @file mention detection ──────────────────────────────
         row, col = text_area.cursor_location
         mention_query = extract_at_mention(row, col, text_area.document.get_line)
@@ -582,11 +599,127 @@ class EmberApp(App):
                 input_widget.clear()
                 with contextlib.suppress(NoMatches):
                     self.query_one("#autocomplete", Static).display = False
+
+                # Shell mode — run as command, stay in shell mode
+                if self._shell_mode:
+                    self._shell_task = asyncio.create_task(self._run_shell_inline(submitted))
+                    return
+
+                # ! or $ prefix from chat mode — one-off shell command
+                if submitted.startswith(("!", "$")) and len(submitted) > 1:
+                    self._shell_task = asyncio.create_task(
+                        self._run_shell_inline(submitted[1:].strip())
+                    )
+                    return
+
                 task = asyncio.create_task(
                     self._controller.process_message(submitted),
                 )
                 if not self._controller.processing:
                     self._controller.set_current_task(task)
+
+    # ── Shell mode ────────────────────────────────────────────
+
+    def _update_shell_mode_indicator(self) -> None:
+        """Update the prompt indicator and placeholder for shell mode."""
+        try:
+            indicator = self.query_one("#prompt-indicator", Static)
+            input_widget = self.query_one("#user-input", PromptInput)
+            if self._shell_mode:
+                indicator.update("[bold $warning]$ [/bold $warning]")
+                input_widget.placeholder = "Shell command (Esc to return to chat)"
+            else:
+                indicator.update("> ")
+                input_widget.placeholder = "Type a message or /help"
+        except NoMatches:
+            pass
+
+    def _exit_shell_mode(self) -> None:
+        """Exit shell mode and return to chat."""
+        self._shell_mode = False
+        self._update_shell_mode_indicator()
+        with contextlib.suppress(NoMatches):
+            self.query_one("#user-input", PromptInput).clear()
+
+    # ── Inline shell execution ───────────────────────────────
+
+    async def _run_shell_inline(self, cmd: str) -> None:
+        """Run a shell command inline, show output, and add to conversation context.
+
+        The command and output are stored so the AI sees them as context
+        in the next message, but no AI response is triggered.
+        """
+        if not cmd:
+            return
+
+        self._conversation.append_user(f"$ {cmd}")
+
+        import os
+        import signal
+
+        # Mount a live output widget that updates as lines arrive
+        output_widget = Static("[dim]...[/dim]", classes="info-message")
+        self._conversation.append(output_widget)
+        lines: list[str] = []
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(self._project_dir) if self._project_dir else None,
+                start_new_session=True,
+            )
+            self._shell_proc = proc
+
+            try:
+                assert proc.stdout is not None
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(proc.stdout.readline(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        if proc.returncode is not None:
+                            break
+                        continue
+                    if not raw:
+                        break
+                    line = raw.decode(errors="replace").rstrip()
+                    lines.append(line)
+                    # Show last 50 lines in the live widget
+                    visible = "\n".join(lines[-50:])
+                    output_widget.update(f"[dim]{visible}[/dim]")
+                    # Auto-scroll
+                    try:
+                        container = self.query_one("#conversation")
+                        container.scroll_end(animate=False)
+                    except NoMatches:
+                        pass
+                await proc.wait()
+            except asyncio.CancelledError:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                lines.append("(cancelled)")
+
+            exit_code = proc.returncode or 0
+        except Exception as e:
+            lines.append(f"(error: {e})")
+            exit_code = -1
+        finally:
+            self._shell_proc = None
+
+        # Final update with all output
+        output = "\n".join(lines)
+        if output:
+            output_widget.update(f"[dim]{output}[/dim]")
+        else:
+            output_widget.update("[dim](no output)[/dim]")
+        if exit_code != 0 and exit_code != -1:
+            self._conversation.append_info(f"Exit code: {exit_code}")
+
+        # Store for AI context
+        self._shell_context.append(f"$ {cmd}\n{output}")
 
     async def on_key(self, event) -> None:
         try:
@@ -594,6 +727,13 @@ class EmberApp(App):
         except NoMatches:
             return
         if not input_widget.has_focus:
+            return
+
+        # ── Shell mode: backspace on empty input exits shell mode ──
+        if self._shell_mode and event.key == "backspace" and not input_widget.text:
+            event.prevent_default()
+            event.stop()
+            self._exit_shell_mode()
             return
 
         # ── File picker navigation (takes priority) ─────────────
@@ -1082,4 +1222,22 @@ class EmberApp(App):
         self.screen.refresh(layout=True)
 
     def action_cancel(self) -> None:
+        import os
+        import signal
+
+        # Kill running inline shell command first
+        if self._shell_proc is not None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(os.getpgid(self._shell_proc.pid), signal.SIGTERM)
+            with contextlib.suppress(ProcessLookupError, OSError):
+                self._shell_proc.kill()
+            self._shell_proc = None
+            return
+
+        # Exit shell mode
+        if self._shell_mode:
+            self._exit_shell_mode()
+            return
+
+        # Cancel AI run
         self._controller.cancel()

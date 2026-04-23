@@ -131,19 +131,42 @@ The TUI launches by default — full terminal UI with streaming responses, sessi
 | Input history | `↑/↓` | `Up/Down` |
 | Cancel current operation | `Esc` | `Escape` |
 
-### Media Input (Paste)
+### Shell Mode
 
-Include file paths or URLs directly in your message — Ember Code auto-detects and attaches them:
+Type `!` or `$` to enter shell mode — the prompt changes from `>` to `$`. Commands run directly in your terminal with output shown in the conversation. The AI sees the output as context in your next message.
 
 ```
-> Analyze ~/screenshots/error.png and explain what went wrong
-  Attached: 1 image(s)
+$ ls src/
+  api/  models/  config.py  main.py
 
-> Summarize https://example.com/report.pdf
-  Attached: 1 file(s)
+$ python -m pytest tests/ -q
+  12 passed in 1.3s
+
+> The tests pass. Now add a /health endpoint
+  (AI sees the shell output as context)
 ```
 
-Supported formats: images (`.png`, `.jpg`, `.gif`, `.webp`, etc.), audio (`.mp3`, `.wav`, `.ogg`, etc.), video (`.mp4`, `.mov`, `.webm`, etc.), and documents (`.pdf`, `.docx`, `.txt`, `.py`, `.json`, etc.).
+- **Enter shell mode**: type `!` or `$`
+- **Exit shell mode**: `Esc` or `Backspace` on empty input
+- **One-off command**: `! git status` from chat mode (without entering shell mode)
+
+### File References
+
+Include file paths or bare filenames in your message — Ember Code resolves them automatically:
+
+```
+> photo.jpg what's in here?
+  Resolved: /Users/you/Downloads/photo.jpg
+
+> Summarize ~/docs/report.pdf
+  Resolved: /Users/you/docs/report.pdf
+```
+
+Bare filenames are searched in: project directory → `~/Downloads` → `~/Desktop` → `~/Documents` → `~`.
+
+For vision-capable models (set `vision: true` in the model registry), images and files are attached as multimodal content. For text-only models, paths are resolved so the AI can read them via tools.
+
+Supported formats: images (`.png`, `.jpg`, `.avif`, `.heic`, `.webp`, etc.), audio (`.mp3`, `.wav`, `.ogg`, etc.), video (`.mp4`, `.mov`, `.webm`, etc.), and documents (`.pdf`).
 
 ---
 
