@@ -117,11 +117,6 @@ jobs:
           echo "::error::Failed to download sdist from PyPI after 5 attempts"
           exit 1
 
-      - name: Generate dependency resource stanzas
-        run: |
-          pip install homebrew-pypi-poet ignite-ember==${{ steps.version.outputs.version }}
-          poet ignite-ember > /tmp/resources.rb
-
       - name: Update Homebrew tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -132,32 +127,44 @@ jobs:
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ignite-ember/homebrew-tap.git" /tmp/homebrew-tap
           cd /tmp/homebrew-tap
 
-          python3 -c "
-          resources = open('/tmp/resources.rb').read()
-          formula = '''class IgniteEmber < Formula
+          # Simple formula: create venv, pip install from PyPI (uses wheels)
+          cat > Formula/ignite-ember.rb << 'FORMULA'
+          class IgniteEmber < Formula
             include Language::Python::Virtualenv
 
-            desc \"AI coding assistant with multi-agent orchestration\"
-            homepage \"https://ignite-ember.sh\"
-            url \"https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz\"
-            sha256 \"${SHA}\"
-            license \"MIT\"
+            desc "AI coding assistant with multi-agent orchestration"
+            homepage "https://ignite-ember.sh"
+            url "PLACEHOLDER_URL"
+            sha256 "PLACEHOLDER_SHA"
+            license "MIT"
 
-            depends_on \"python@3.12\"
+            depends_on "python@3.12"
 
-          ''' + resources + '''
+            skip_clean "libexec"
 
             def install
-              virtualenv_install_with_resources
+              venv = virtualenv_create(libexec, "python3.12")
+              system libexec/"bin/python3.12", "-m", "pip", "install", "--prefer-binary", "ignite-ember==PLACEHOLDER_VERSION"
+              bin.install_symlink libexec/"bin/ignite-ember"
+
+              # Clear dylib IDs from Rust-built Python extensions so Homebrew's
+              # install_name_tool fixup doesn't fail on them.
+              Dir.glob(libexec/"lib/**/*.so").each do |so|
+                MachO::Tools.change_dylib_id(so, "") rescue nil
+              end
             end
 
             test do
-              assert_match \"Ember Code\", shell_output(\"#{bin}/ignite-ember --help\")
+              assert_match "Ember Code", shell_output("#{bin}/ignite-ember --version")
             end
           end
-          '''
-          open('Formula/ignite-ember.rb', 'w').write(formula)
-          "
+          FORMULA
+
+          # Fix heredoc indentation and replace placeholders
+          sed -i 's/^          //' Formula/ignite-ember.rb
+          sed -i "s|PLACEHOLDER_URL|https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz|" Formula/ignite-ember.rb
+          sed -i "s|PLACEHOLDER_SHA|${SHA}|" Formula/ignite-ember.rb
+          sed -i "s|PLACEHOLDER_VERSION|${VERSION}|" Formula/ignite-ember.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

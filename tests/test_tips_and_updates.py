@@ -249,11 +249,14 @@ class TestCheckForUpdate:
         }
         cache_file.write_text(json.dumps(cached_data))
 
+        mock_settings = MagicMock()
+        mock_settings.update_check_ttl = 86400  # 24h — cache will be fresh
+
         with (
             patch("ember_code.core.utils.update_checker.CACHE_FILE", cache_file),
             patch("ember_code.core.utils.update_checker.__version__", "0.1.0"),
         ):
             # Should NOT hit the network — cache is fresh
-            info = await check_for_update()
+            info = await check_for_update(settings=mock_settings)
             assert info.available is True
             assert info.latest_version == "0.3.0"

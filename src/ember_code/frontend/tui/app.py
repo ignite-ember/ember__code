@@ -665,6 +665,7 @@ class EmberApp(App):
         try:
             proc = await asyncio.create_subprocess_shell(
                 cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(self._project_dir) if self._project_dir else None,
@@ -685,8 +686,10 @@ class EmberApp(App):
                         break
                     line = raw.decode(errors="replace").rstrip()
                     lines.append(line)
-                    # Show last 50 lines in the live widget
-                    visible = "\n".join(lines[-50:])
+                    # Show last 50 lines in the live widget (escape Rich markup)
+                    from rich.markup import escape
+
+                    visible = escape("\n".join(lines[-50:]))
                     output_widget.update(f"[dim]{visible}[/dim]")
                     # Auto-scroll
                     try:
@@ -710,9 +713,11 @@ class EmberApp(App):
             self._shell_proc = None
 
         # Final update with all output
+        from rich.markup import escape
+
         output = "\n".join(lines)
         if output:
-            output_widget.update(f"[dim]{output}[/dim]")
+            output_widget.update(f"[dim]{escape(output)}[/dim]")
         else:
             output_widget.update("[dim](no output)[/dim]")
         if exit_code != 0 and exit_code != -1:
