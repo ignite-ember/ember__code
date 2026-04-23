@@ -117,6 +117,11 @@ jobs:
           echo "::error::Failed to download sdist from PyPI after 5 attempts"
           exit 1
 
+      - name: Generate dependency resource stanzas
+        run: |
+          pip install homebrew-pypi-poet ignite-ember==${{ steps.version.outputs.version }}
+          poet ignite-ember > /tmp/resources.rb
+
       - name: Update Homebrew tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -127,8 +132,32 @@ jobs:
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ignite-ember/homebrew-tap.git" /tmp/homebrew-tap
           cd /tmp/homebrew-tap
 
-          sed -i "s|url \".*\"|url \"https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz\"|" Formula/ignite-ember.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/ignite-ember.rb
+          python3 -c "
+          resources = open('/tmp/resources.rb').read()
+          formula = '''class IgniteEmber < Formula
+            include Language::Python::Virtualenv
+
+            desc \"AI coding assistant with multi-agent orchestration\"
+            homepage \"https://ignite-ember.sh\"
+            url \"https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz\"
+            sha256 \"${SHA}\"
+            license \"MIT\"
+
+            depends_on \"python@3.12\"
+
+          ''' + resources + '''
+
+            def install
+              virtualenv_install_with_resources
+            end
+
+            test do
+              assert_match \"Ember Code\", shell_output(\"#{bin}/ignite-ember --help\")
+            end
+          end
+          '''
+          open('Formula/ignite-ember.rb', 'w').write(formula)
+          "
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -3,7 +3,7 @@
 DEFAULT_CONFIG = {
     "api_url": "https://api.ignite-ember.sh",
     "version_endpoint": "/v1/cli/version",
-    "update_check_ttl": 86400,
+    "update_check_ttl": 0,
     "models": {
         "default": "MiniMax-M2.7",
         "registry": {
