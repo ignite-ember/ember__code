@@ -138,7 +138,9 @@ jobs:
             sha256 "PLACEHOLDER_SHA"
             license "MIT"
 
+            depends_on "git"
             depends_on "python@3.12"
+            depends_on "ripgrep"
 
             skip_clean "libexec"
 
