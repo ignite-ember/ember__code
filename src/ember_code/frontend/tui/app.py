@@ -409,6 +409,10 @@ class EmberApp(App):
 
         self.query_one("#user-input", PromptInput).focus()
 
+        # ── Login push handlers (permanent — widget checks if mounted) ──
+        self._backend._push_handlers["login_status"] = self._on_login_status_push
+        self._backend._push_handlers["login_result"] = self._on_login_result_push
+
         # ── Scheduler ──────────────────────────────────────────────────
         self._start_scheduler()
 
@@ -886,9 +890,17 @@ class EmberApp(App):
     # ── Login ────────────────────────────────────────────────────────
 
     def _show_login(self) -> None:
+        # Remove any existing login widget
+        try:
+            old = self.query_one(LoginWidget)
+            old.cancel()
+        except NoMatches:
+            pass
         widget = LoginWidget(backend=self._backend)
         self.mount(widget)
         widget.focus()
+        # Tell BE to start the login flow
+        asyncio.create_task(self._backend.start_login())
 
     @on(LoginWidget.LoggedIn)
     def _on_logged_in(self, event: LoginWidget.LoggedIn) -> None:
@@ -904,6 +916,22 @@ class EmberApp(App):
     @on(LoginWidget.Cancelled)
     def _on_login_cancelled(self, _event: LoginWidget.Cancelled) -> None:
         self.query_one("#user-input", PromptInput).focus()
+
+    def _on_login_status_push(self, payload: dict) -> None:
+        """Handle login_status push — forward to LoginWidget if mounted."""
+        try:
+            widget = self.query_one(LoginWidget)
+            widget.update_status(payload.get("text", ""))
+        except NoMatches:
+            pass
+
+    def _on_login_result_push(self, payload: dict) -> None:
+        """Handle login_result push — forward to LoginWidget if mounted."""
+        try:
+            widget = self.query_one(LoginWidget)
+            widget.show_result(payload.get("success", False), payload.get("result", ""))
+        except NoMatches:
+            pass
 
     # ── MCP panel ───────────────────────────────────────────────────
 
@@ -1229,6 +1257,14 @@ class EmberApp(App):
     def action_cancel(self) -> None:
         import os
         import signal
+
+        # Close login dialog if open
+        try:
+            login = self.query_one(LoginWidget)
+            login.cancel()
+            return
+        except NoMatches:
+            pass
 
         # Kill running inline shell command first
         if self._shell_proc is not None:

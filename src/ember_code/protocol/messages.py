@@ -258,6 +258,12 @@ class Cancel(Message):
     type: Literal["cancel"] = "cancel"
 
 
+class CancelLogin(Message):
+    """Cancel an in-progress login flow."""
+
+    type: Literal["cancel_login"] = "cancel_login"
+
+
 class SessionSwitch(Message):
     """Switch to a different session."""
 

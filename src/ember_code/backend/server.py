@@ -371,8 +371,12 @@ class BackendServer:
 
         def _status(text: str) -> None:
             if on_status:
-                on_status(text)
+                result = on_status(text)
+                # Support both sync and async callbacks
+                if asyncio.iscoroutine(result):
+                    asyncio.ensure_future(result)
 
+        server = None
         try:
             _status("Starting local server...")
             server, callback_url = start_callback_server()
@@ -412,6 +416,11 @@ class BackendServer:
 
         except Exception as exc:
             return False, str(exc)
+        finally:
+            # Always close the callback server to free the port
+            if server is not None:
+                with contextlib.suppress(Exception):
+                    server.server_close()
 
     def reload_cloud_credentials(self) -> msg.StatusUpdate:
         """Reload cloud credentials after login."""

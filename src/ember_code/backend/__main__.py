@@ -9,6 +9,7 @@ processes FE messages until shutdown.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 from pathlib import Path
@@ -71,20 +72,46 @@ async def _check_update() -> dict | None:
 # ── RPC dispatch table ──────────────────────────────────────────────
 
 
-def _build_rpc_table(backend: Any, transport: Any) -> dict[str, Any]:
+def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) -> dict[str, Any]:
     """Build method dispatch for RPCRequest messages."""
+    from ember_code.protocol import messages as msg
 
     async def _login(args: dict) -> dict:
-        # Wrap on_status callback to push notifications
-        async def _on_status(text: str) -> None:
-            from ember_code.protocol import messages as msg
+        # Cancel any previous login attempt
+        old = login_state.get("task")
+        if old and not old.done():
+            old.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await old
 
+        async def _on_status(text: str) -> None:
             await transport.send(
                 msg.PushNotification(channel="login_status", payload={"text": text})
             )
 
-        success, result = await backend.login(on_status=_on_status)
-        return {"success": success, "result": result}
+        async def _do_login() -> None:
+            try:
+                success, result = await backend.login(on_status=_on_status)
+                if success:
+                    backend.reload_cloud_credentials()
+                await transport.send(
+                    msg.PushNotification(
+                        channel="login_result",
+                        payload={"success": success, "result": result},
+                    )
+                )
+            except asyncio.CancelledError:
+                pass  # cancelled by CancelLogin — no result to push
+            except Exception as exc:
+                await transport.send(
+                    msg.PushNotification(
+                        channel="login_result",
+                        payload={"success": False, "result": str(exc)},
+                    )
+                )
+
+        login_state["task"] = asyncio.create_task(_do_login())
+        return {"started": True}
 
     async def _get_skill_definitions(args: dict) -> list[dict]:
         pool = backend.get_skill_pool()
@@ -229,7 +256,8 @@ async def _run(
 
     backend.wire_orchestrate_progress(_on_progress)
 
-    rpc_table = _build_rpc_table(backend, transport)
+    login_state: dict[str, Any] = {"task": None}
+    rpc_table = _build_rpc_table(backend, transport, login_state)
 
     # Signal ready AFTER init + wiring so the FE can immediately
     # send requests (e.g. refresh_cache).  Knowledge may still be
@@ -251,7 +279,7 @@ async def _run(
             if shutdown_event.is_set():
                 break
 
-            await _handle_message(message, backend, transport, rpc_table, _queue)
+            await _handle_message(message, backend, transport, rpc_table, _queue, login_state)
 
     except Exception as exc:
         logger.error("Backend error: %s", exc, exc_info=True)
@@ -267,6 +295,7 @@ async def _handle_message(
     transport: Any,
     rpc_table: dict,
     queue: list[str],
+    login_state: dict[str, Any] | None = None,
 ) -> None:
     from ember_code.protocol import messages as msg
     from ember_code.protocol.messages import Message
@@ -325,6 +354,13 @@ async def _handle_message(
     # ── Cancel ──
     elif isinstance(message, msg.Cancel):
         backend.cancel_run()
+
+    # ── Cancel login ──
+    elif isinstance(message, msg.CancelLogin):
+        if login_state:
+            task = login_state.get("task")
+            if task and not task.done():
+                task.cancel()
 
     # ── Generic RPC ──
     elif isinstance(message, msg.RPCRequest):

@@ -267,14 +267,19 @@ class BackendClient:
 
     # ── Cloud auth ───────────────────────────────────────────────
 
-    async def login(self, on_status: Callable | None = None) -> tuple[bool, str]:
-        if on_status:
-            self._push_handlers["login_status"] = lambda p: on_status(p.get("text", ""))
-        try:
-            result = await self._rpc("login")
-            return result.get("success", False), result.get("result", "")
-        finally:
-            self._push_handlers.pop("login_status", None)
+    async def start_login(self) -> None:
+        """Tell the BE to start the login flow.
+
+        Status and results arrive via push notifications (login_status,
+        login_result) — handled by app-level push handlers.
+        """
+        await self._rpc("login")
+
+    def cancel_login(self) -> None:
+        """Tell the BE to cancel the in-progress login flow."""
+        from ember_code.protocol import messages as msg
+
+        asyncio.ensure_future(self._transport.send(msg.CancelLogin()))
 
     def reload_cloud_credentials(self) -> msg.StatusUpdate:
         fut = asyncio.ensure_future(self._rpc("reload_cloud_credentials"))

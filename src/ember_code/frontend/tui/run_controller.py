@@ -111,6 +111,22 @@ class RunController:
     def set_current_task(self, task: asyncio.Task | None) -> None:
         self._current_task = task
 
+    def _has_usable_model(self) -> bool:
+        """Check if there's at least one model with valid credentials."""
+        from ember_code.core.auth.credentials import get_access_token
+
+        settings = self._app.settings
+        cloud_token = get_access_token(settings.auth.credentials_file)
+        for cfg in settings.models.registry.values():
+            key = cfg.get("api_key", "")
+            if key == "cloud_token" and cloud_token:
+                return True
+            if key and key != "cloud_token":
+                return True
+            if cfg.get("api_key_env") or cfg.get("api_key_cmd"):
+                return True
+        return False
+
     async def process_message(self, message: str) -> None:
         """Entry point — queue or execute a message."""
         # Slash commands always run immediately (they don't use the agent)
@@ -167,6 +183,16 @@ class RunController:
             except Exception as e:
                 logger.error("Command failed: %s", e, exc_info=True)
                 self._conversation.append_error(f"Command failed: {e}")
+            return
+
+        # Check if the user has a usable model configured
+        if not self._has_usable_model():
+            self._conversation.append_error(
+                "No model configured. Either:\n"
+                "  - Run /login to use Ember Cloud\n"
+                "  - Or add a model to ~/.ember/config.yaml — "
+                "see https://ignite-ember.sh/docs/configuration"
+            )
             return
 
         # @file mentions and media detection happen on BE side

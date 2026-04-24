@@ -10,7 +10,7 @@ from ember_code.core.config.defaults import DEFAULT_CONFIG
 
 
 class ModelsConfig(BaseModel):
-    default: str = "MiniMax-M2.7"
+    default: str = "MiniMax-M2.5"
     max_context_window: int = 200_000
     max_run_timeout: int = 300  # total timeout for a single arun() call (seconds)
     registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -234,6 +234,49 @@ def _load_yaml(path: Path) -> dict:
     return {}
 
 
+_EMBER_CLOUD_URL = "api.ignite-ember.sh"
+
+
+def _migrate_cloud_models(config: dict[str, Any]) -> None:
+    """Override Ember Cloud models in user config with latest defaults.
+
+    Any model whose url points to api.ignite-ember.sh is managed by us,
+    so we replace it with the current default to ensure users always get
+    the latest model after upgrading.
+    """
+    default_registry = DEFAULT_CONFIG.get("models", {}).get("registry", {})
+    user_registry = config.get("models", {}).get("registry", {})
+
+    if not user_registry:
+        return
+
+    # Build a lookup of default cloud models by url
+    default_cloud = {}
+    for name, entry in default_registry.items():
+        if _EMBER_CLOUD_URL in entry.get("url", ""):
+            default_cloud[name] = entry
+
+    # Replace user's cloud models with latest defaults
+    for name in list(user_registry):
+        entry = user_registry[name]
+        if _EMBER_CLOUD_URL in entry.get("url", ""):
+            if name in default_cloud:
+                # Update existing entry with latest defaults
+                user_registry[name] = {**default_cloud[name]}
+            else:
+                # Old cloud model not in defaults anymore — replace with
+                # the current default model
+                default_name = config.get("models", {}).get("default", "")
+                if default_name in default_cloud:
+                    user_registry[name] = {**default_cloud[default_name]}
+                    user_registry[name]["model_id"] = default_cloud[default_name]["model_id"]
+
+    # Ensure the default model exists in the registry
+    default_model = config.get("models", {}).get("default", "")
+    if default_model and default_model not in user_registry and default_model in default_cloud:
+        user_registry[default_model] = {**default_cloud[default_model]}
+
+
 def load_settings(
     cli_overrides: dict[str, Any] | None = None,
     project_dir: Path | None = None,
@@ -267,5 +310,8 @@ def load_settings(
     # CLI overrides
     if cli_overrides:
         config = _deep_merge(config, cli_overrides)
+
+    # Migrate Ember Cloud models to latest defaults
+    _migrate_cloud_models(config)
 
     return Settings(**config)

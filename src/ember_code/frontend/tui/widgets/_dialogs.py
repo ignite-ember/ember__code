@@ -515,11 +515,7 @@ class ModelPickerWidget(Widget):
 
 
 class LoginWidget(Widget):
-    """Bottom-docked login dialog with automatic browser callback.
-
-    Starts a local HTTP server, opens the portal in the browser,
-    and automatically receives the token when the user authenticates.
-    """
+    """Bottom-docked login status display. Pure display — all logic lives on BE."""
 
     can_focus = True
 
@@ -564,46 +560,47 @@ class LoginWidget(Widget):
     def __init__(self, backend=None):
         super().__init__()
         self._backend = backend
-        self._login_task: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("[bold $accent]Login to Ember Cloud[/bold $accent]", classes="login-title")
         yield Static("Starting...", classes="login-status", id="login-status")
+        yield Static("", classes="login-status", id="login-url")
         yield Static("[dim]Esc to cancel[/dim]", classes="hint")
-
-    def on_mount(self) -> None:
-        self._login_task = asyncio.create_task(self._login_flow())
 
     def on_key(self, event) -> None:
         event.stop()
         event.prevent_default()
-
         if event.key == "escape":
-            if self._login_task:
-                self._login_task.cancel()
-            self.post_message(self.Cancelled())
-            self.remove()
+            self.cancel()
 
-    async def _login_flow(self) -> None:
-        """Run login via the backend — FE only shows status updates."""
-        status = self.query_one("#login-status", Static)
+    def cancel(self) -> None:
+        """Send cancel to BE and remove widget."""
+        if self._backend:
+            self._backend.cancel_login()
+        self.post_message(self.Cancelled())
+        self.remove()
 
-        if self._backend is None:
-            status.update("[red]Backend not available[/red]")
-            return
+    def update_status(self, text: str) -> None:
+        """Called by app when login_status push arrives."""
+        import re
 
-        def _on_status(text: str) -> None:
-            with contextlib.suppress(Exception):
-                status.update(f"[dim]{text}[/dim]")
+        with contextlib.suppress(Exception):
+            status = self.query_one("#login-status", Static)
+            url_widget = self.query_one("#login-url", Static)
+            if "http" in text:
+                urls = re.findall(r"https?://\S+", text)
+                if urls:
+                    url_widget.update(f"[bold]URL:[/bold] {urls[-1]}")
+                    lines = [line for line in text.splitlines() if "http" not in line]
+                    status.update(f"[dim]{chr(10).join(lines)}[/dim]")
+                    return
+            status.update(f"[dim]{text}[/dim]")
 
-        try:
-            success, email = await self._backend.login(on_status=_on_status)
+    def show_result(self, success: bool, result: str) -> None:
+        """Called by app when login_result push arrives."""
+        with contextlib.suppress(Exception):
             if success:
-                self.post_message(self.LoggedIn(email))
+                self.post_message(self.LoggedIn(result))
                 self.remove()
             else:
-                status.update(f"[red]{email}[/red]")
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            status.update(f"[red]Error: {e}[/red]")
+                self.query_one("#login-status", Static).update(f"[red]{result}[/red]")

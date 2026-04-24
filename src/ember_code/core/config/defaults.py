@@ -5,12 +5,13 @@ DEFAULT_CONFIG = {
     "version_endpoint": "/v1/cli/version",
     "update_check_ttl": 0,
     "models": {
-        "default": "MiniMax-M2.7",
+        "default": "MiniMax-M2.5",
         "registry": {
-            "MiniMax-M2.7": {
+            "MiniMax-M2.5": {
                 "provider": "openai_like",
-                "model_id": "MiniMax-Text-01",
+                "model_id": "MiniMaxAI/MiniMax-M2.5",
                 "url": "https://api.ignite-ember.sh/v1",
+                "api_key": "cloud_token",
                 "context_window": 204_800,
                 "vision": False,
             },

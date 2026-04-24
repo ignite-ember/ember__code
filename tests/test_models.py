@@ -18,13 +18,13 @@ def registry():
 class TestModelRegistry:
     def test_default_models_in_config_registry(self, registry):
         # Defaults come from defaults.py -> Settings.models.registry
-        assert "MiniMax-M2.7" in registry.settings.models.registry
+        assert "MiniMax-M2.5" in registry.settings.models.registry
 
     def test_resolve_default_entry(self, registry):
-        entry = registry._resolve_entry("MiniMax-M2.7")
+        entry = registry._resolve_entry("MiniMax-M2.5")
         assert entry is not None
         assert entry["provider"] == "openai_like"
-        assert entry["model_id"] == "MiniMax-Text-01"
+        assert entry["model_id"] == "MiniMaxAI/MiniMax-M2.5"
         assert entry["context_window"] == 204_800
 
     def test_resolve_provider_colon_format(self, registry):
@@ -39,7 +39,7 @@ class TestModelRegistry:
         settings = Settings(
             models=ModelsConfig(
                 registry={
-                    "MiniMax-M2.7": {
+                    "MiniMax-M2.5": {
                         "provider": "openai_like",
                         "model_id": "custom-override",
                         "url": "https://example.com/v1",
@@ -48,7 +48,7 @@ class TestModelRegistry:
             )
         )
         reg = ModelRegistry(settings)
-        entry = reg._resolve_entry("MiniMax-M2.7")
+        entry = reg._resolve_entry("MiniMax-M2.5")
         assert entry["model_id"] == "custom-override"
 
     def test_resolve_custom_model(self):
@@ -85,10 +85,10 @@ class TestModelRegistry:
         assert key is None
 
     def test_env_model_override(self, monkeypatch):
-        monkeypatch.setenv("EMBER_MODEL", "MiniMax-M2.7")
+        monkeypatch.setenv("EMBER_MODEL", "MiniMax-M2.5")
         reg = ModelRegistry(load_settings())
-        entry = reg._resolve_entry("MiniMax-M2.7")
-        assert entry["model_id"] == "MiniMax-Text-01"
+        entry = reg._resolve_entry("MiniMax-M2.5")
+        assert entry["model_id"] == "MiniMaxAI/MiniMax-M2.5"
 
     def test_register_provider(self, registry):
         class FakeProvider:
@@ -104,7 +104,7 @@ class TestModelRegistry:
         assert PermissionGuard._generate_pattern("pytest tests/") == "pytest *"
 
     def test_get_context_window_from_registry(self, registry):
-        ctx = registry.get_context_window("MiniMax-M2.7")
+        ctx = registry.get_context_window("MiniMax-M2.5")
         assert ctx == 204_800
 
     def test_get_context_window_unknown_fallback(self, registry):
