@@ -150,14 +150,14 @@ class ToolRegistry:
         return FileTools(**kwargs)
 
     def _make_edit(self, confirm: bool = False):
-        toolkit = EmberEditTools(base_dir=str(self.base_dir))
+        kwargs: dict = dict(base_dir=str(self.base_dir))
         if confirm:
-            toolkit.requires_confirmation_tools = [
+            kwargs["requires_confirmation_tools"] = [
                 "edit_file",
                 "edit_file_replace_all",
                 "create_file",
             ]
-        return toolkit
+        return EmberEditTools(**kwargs)
 
     def _make_bash(self, confirm: bool = False):
         kwargs: dict = dict(base_dir=str(self.base_dir))
@@ -178,16 +178,16 @@ class ToolRegistry:
         return EmberShellTools(base_dir=str(self.base_dir))
 
     def _make_grep(self, confirm: bool = False):
-        toolkit = GrepTools(base_dir=str(self.base_dir))
+        kwargs: dict = dict(base_dir=str(self.base_dir))
         if confirm:
-            toolkit.requires_confirmation_tools = ["grep", "grep_files", "grep_count"]
-        return toolkit
+            kwargs["requires_confirmation_tools"] = ["grep", "grep_files", "grep_count"]
+        return GrepTools(**kwargs)
 
     def _make_glob(self, confirm: bool = False):
-        toolkit = GlobTools(base_dir=str(self.base_dir))
+        kwargs: dict = dict(base_dir=str(self.base_dir))
         if confirm:
-            toolkit.requires_confirmation_tools = ["glob_files"]
-        return toolkit
+            kwargs["requires_confirmation_tools"] = ["glob_files"]
+        return GlobTools(**kwargs)
 
     def _make_web_search(self, confirm: bool = False):
         try:
@@ -203,10 +203,10 @@ class ToolRegistry:
             ) from None
 
     def _make_web_fetch(self, confirm: bool = False):
-        toolkit = WebTools()
+        kwargs: dict = {}
         if confirm:
-            toolkit.requires_confirmation_tools = ["fetch_url", "fetch_json"]
-        return toolkit
+            kwargs["requires_confirmation_tools"] = ["fetch_url", "fetch_json"]
+        return WebTools(**kwargs)
 
     def _make_schedule(self, confirm: bool = False):
         return ScheduleTools()
@@ -220,34 +220,34 @@ class ToolRegistry:
         return PythonTools(**kwargs)
 
     def _make_notebook(self, confirm: bool = False):
-        toolkit = NotebookTools(base_dir=str(self.base_dir))
+        kwargs: dict = dict(base_dir=str(self.base_dir))
         if confirm:
-            toolkit.requires_confirmation_tools = [
+            kwargs["requires_confirmation_tools"] = [
                 "notebook_edit_cell",
                 "notebook_add_cell",
                 "notebook_remove_cell",
             ]
-        return toolkit
+        return NotebookTools(**kwargs)
 
     # ── CodeIndex (Ember Cloud) ───────────────────────────────────
 
     def _make_codeindex(self, confirm: bool = False):
         from ember_code.core.tools.codeindex import CodeIndexTools
 
-        toolkit = CodeIndexTools(
+        kwargs: dict = dict(
             server_url=self._cloud_server_url,
             access_token=self._cloud_token,
             project_dir=str(self.base_dir),
         )
         if confirm:
-            toolkit.requires_confirmation_tools = [
+            kwargs["requires_confirmation_tools"] = [
                 "codeindex_search",
                 "codeindex_similar",
                 "codeindex_item",
                 "codeindex_references",
                 "codeindex_tree",
             ]
-        return toolkit
+        return CodeIndexTools(**kwargs)
 
     def load_custom_tools(self, project_dir: Path | None = None) -> list:
         """Discover custom tools from .ember/tools/ and return as toolkit list.

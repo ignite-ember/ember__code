@@ -58,6 +58,11 @@ See [Quickstart](QUICKSTART.md) for the full setup guide.
 
 ## Upgrading
 
+**v0.3.7** includes the following changes:
+
+- **Problem:** Edit/Write/Bash tools never asked for user confirmation, even when permissions were set to "ask".
+  - **Solution:** `requires_confirmation` flag is now set on each function after registration in all custom toolkits.
+
 **v0.3.6** includes the following changes:
 
 - **Problem:** Debug logs grow unbounded and can fill up disk space.

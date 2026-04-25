@@ -235,6 +235,7 @@ def initialize_project(project_dir: Path) -> bool:
     if first_run:
         _write_ember_md(project_dir)
         _write_project_config(project_dir)
+        _write_project_settings(project_dir)
         project_marker.touch()
 
     # Sync built-in agents/skills — checksum-based so user edits are preserved
@@ -421,6 +422,49 @@ def _write_project_config(project_dir: Path) -> None:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(PROJECT_CONFIG_TEMPLATE)
+
+
+# Default permissions for new projects:
+# - file_read/grep/glob/list_files: allow (safe, read-only)
+# - file_write/shell_execute/python: ask (requires user confirmation)
+DEFAULT_PERMISSIONS = {
+    "allow": [
+        "Glob",
+        "Grep",
+        "LS",
+        "Read",
+        "ReadFile",
+        "ListFiles",
+        "WebSearch",
+        "WebFetch",
+    ],
+    "ask": [
+        "Write",
+        "CreateFile",
+        "edit_file",
+        "Edit",
+        "Bash",
+        "BashOutput",
+        "Python",
+        "run_shell_command",
+    ],
+}
+
+
+def _write_project_settings(project_dir: Path) -> None:
+    """Write a starter .ember/settings.local.json with default permissions.
+
+    This gives users a template they can customize for their project.
+    The file is gitignored so each user can have their own overrides.
+    Team defaults can go in .ember/settings.json if needed (committed).
+    """
+    path = project_dir / ".ember" / "settings.local.json"
+    settings = _load_json(path)
+
+    # Only add permissions if not already present
+    if "permissions" not in settings:
+        settings["permissions"] = DEFAULT_PERMISSIONS
+        _save_json(path, settings)
 
 
 def _load_json(path: Path) -> dict:

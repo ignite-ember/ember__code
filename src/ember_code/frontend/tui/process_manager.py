@@ -65,13 +65,28 @@ class BackendProcess:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Wait for "READY <path>" on stdout
+        # Wait for JSON ready signal on stdout (skip non-JSON lines like warnings)
+        import json
+
         try:
-            line = await asyncio.wait_for(self._process.stdout.readline(), timeout=60.0)
-            ready_msg = line.decode().strip()
-            if not ready_msg.startswith("READY"):
-                raise RuntimeError(f"BE failed to start: {ready_msg}")
-            logger.info("BE ready: %s", ready_msg)
+            deadline = asyncio.get_event_loop().time() + 60.0
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                line = await asyncio.wait_for(self._process.stdout.readline(), timeout=remaining)
+                text = line.decode().strip()
+                if not text:
+                    continue
+                try:
+                    data = json.loads(text)
+                    if data.get("status") == "ready":
+                        logger.info("BE ready: %s", text)
+                        break
+                except json.JSONDecodeError:
+                    # Skip non-JSON lines (library warnings, model load reports)
+                    logger.debug("BE stdout (non-JSON): %s", text[:200])
+                    continue
         except asyncio.TimeoutError:
             self._process.kill()
             stderr = await self._process.stderr.read()

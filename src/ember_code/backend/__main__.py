@@ -262,7 +262,9 @@ async def _run(
     # Signal ready AFTER init + wiring so the FE can immediately
     # send requests (e.g. refresh_cache).  Knowledge may still be
     # loading in a background thread — that's fine.
-    print(f"READY {socket_path}", flush=True)
+    import json as _json
+
+    print(_json.dumps({"status": "ready", "socket": str(socket_path)}), flush=True)
 
     # Start knowledge loading AFTER READY — model download is GIL-heavy
     # and would block the main thread if started during __init__.

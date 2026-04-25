@@ -183,6 +183,9 @@ class EmberShellTools(Toolkit):
         self.register(self.list_processes)
         if confirm_tools:
             self.requires_confirmation_tools = confirm_tools
+            for name, func in self.functions.items():
+                if name in confirm_tools:
+                    func.requires_confirmation = True
 
     def run_shell_command(
         self,

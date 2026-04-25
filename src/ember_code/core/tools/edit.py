@@ -13,11 +13,17 @@ class EmberEditTools(Toolkit):
     """
 
     def __init__(self, base_dir: str | None = None, **kwargs):
+        confirm_tools = kwargs.pop("requires_confirmation_tools", None)
         super().__init__(name="ember_edit", **kwargs)
         self.base_dir = Path(base_dir) if base_dir else Path.cwd()
         self.register(self.edit_file)
         self.register(self.edit_file_replace_all)
         self.register(self.create_file)
+        if confirm_tools:
+            self.requires_confirmation_tools = confirm_tools
+            for name, func in self.functions.items():
+                if name in confirm_tools:
+                    func.requires_confirmation = True
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve a path relative to base_dir."""

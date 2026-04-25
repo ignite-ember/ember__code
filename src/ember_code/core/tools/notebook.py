@@ -15,6 +15,7 @@ class NotebookTools(Toolkit):
     """
 
     def __init__(self, base_dir: str | None = None, **kwargs):
+        confirm_tools = kwargs.pop("requires_confirmation_tools", None)
         super().__init__(name="ember_notebook", **kwargs)
         self.base_dir = Path(base_dir) if base_dir else Path.cwd()
         self.register(self.notebook_read)
@@ -22,6 +23,11 @@ class NotebookTools(Toolkit):
         self.register(self.notebook_edit_cell)
         self.register(self.notebook_add_cell)
         self.register(self.notebook_remove_cell)
+        if confirm_tools:
+            self.requires_confirmation_tools = confirm_tools
+            for name, func in self.functions.items():
+                if name in confirm_tools:
+                    func.requires_confirmation = True
 
     def _resolve_path(self, path: str) -> Path:
         p = Path(path)
