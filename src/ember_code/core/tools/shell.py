@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 
 # Maximum output buffer size per process (1MB)
 _MAX_BUFFER = 1_048_576
+# Maximum characters in a tool result returned to the AI
+_MAX_RESULT_CHARS = 30_000
+
+
+def _truncate(text: str, limit: int = _MAX_RESULT_CHARS) -> str:
+    """Truncate output to avoid sending huge tool results to the LLM."""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return (
+        text[:half] + f"\n\n... ({len(text) - limit} characters truncated) ...\n\n" + text[-half:]
+    )
 
 
 class _ManagedProcess:
@@ -263,7 +275,7 @@ class EmberShellTools(Toolkit):
         if proc.poll() is None:
             # Command is still running — treat it as backgrounded
             output = mp.read(tail=tail)
-            return (
+            return _truncate(
                 f"Command still running after {timeout}s — backgrounded as PID {pid}.\n"
                 f"Use read_process_output({pid}) to check output.\n"
                 f"Use stop_process({pid}) to stop it.\n\n"
@@ -277,8 +289,8 @@ class EmberShellTools(Toolkit):
         _registry.remove(pid)
 
         if rc != 0:
-            return f"Command exited with code {rc}:\n{output}"
-        return output
+            return _truncate(f"Command exited with code {rc}:\n{output}")
+        return _truncate(output)
 
     def read_process_output(self, pid: int, tail: int = 100) -> str:
         """Read recent output from a running or finished background process.
@@ -297,11 +309,11 @@ class EmberShellTools(Toolkit):
         output = mp.read(tail=tail)
         if mp.is_running():
             elapsed = time.monotonic() - mp.started_at
-            return f"[Running for {elapsed:.0f}s — PID {pid}]\n{output}"
+            return _truncate(f"[Running for {elapsed:.0f}s — PID {pid}]\n{output}")
         else:
             rc = mp.returncode()
             _registry.remove(pid)
-            return f"[Finished — exit code {rc}]\n{output}"
+            return _truncate(f"[Finished — exit code {rc}]\n{output}")
 
     def watch_process(self, pid: int, seconds: int = 10) -> str:
         """Watch a background process for a period, then return new output.

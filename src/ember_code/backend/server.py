@@ -474,7 +474,11 @@ class BackendServer:
     # ── Learning ──────────────────────────────────────────────────
 
     async def extract_learnings(self, user_msg: str, assistant_msg: str) -> None:
-        """Run learning extraction in background."""
+        """Run learning extraction as a background task on the main event loop.
+
+        Uses the main loop (not a separate thread) so the httpx client's
+        connection pool works correctly.
+        """
         learning = self._session._learning
         if learning is None:
             return
@@ -485,27 +489,17 @@ class BackendServer:
         if assistant_msg:
             messages.append(AgnoMessage(role="assistant", content=assistant_msg))
 
-        def _run():
-            import asyncio as _aio
-
-            loop = _aio.new_event_loop()
+        async def _run() -> None:
             try:
-                loop.run_until_complete(
-                    learning.aprocess(
-                        messages=messages,
-                        user_id=self._session.user_id,
-                        session_id=self._session.session_id,
-                    )
+                await learning.aprocess(
+                    messages=messages,
+                    user_id=self._session.user_id,
+                    session_id=self._session.session_id,
                 )
             except Exception as exc:
                 logger.warning("Learning extraction failed: %s", exc)
-            finally:
-                with contextlib.suppress(Exception):
-                    loop.run_until_complete(loop.shutdown_asyncgens())
-                loop.close()
 
-        with contextlib.suppress(Exception):
-            await asyncio.to_thread(_run)
+        asyncio.create_task(_run())
 
     # ── Cleanup ───────────────────────────────────────────────────
 
@@ -565,16 +559,20 @@ class BackendServer:
             model = getattr(team, "model", None)
             client = getattr(model, "http_client", None) if model else None
             if isinstance(client, _httpx.AsyncClient):
-                await client.aclose()
-                model.http_client = _httpx.AsyncClient(
-                    limits=_httpx.Limits(
-                        max_connections=10,
-                        max_keepalive_connections=5,
-                        keepalive_expiry=30,
-                    ),
-                )
+                await asyncio.wait_for(client.aclose(), timeout=3)
         except Exception as exc:
             logger.debug("Failed to close model HTTP client: %s", exc)
+
+        # Always ensure a fresh client, even if close failed.
+        # The old client's connections will eventually timeout.
+        if model is not None:
+            model.http_client = _httpx.AsyncClient(
+                limits=_httpx.Limits(
+                    max_connections=10,
+                    max_keepalive_connections=5,
+                    keepalive_expiry=30,
+                ),
+            )
 
     def cancel_run(self) -> None:
         """Cancel the currently running agent and kill any foreground process."""

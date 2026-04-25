@@ -1258,13 +1258,17 @@ class EmberApp(App):
         import os
         import signal
 
-        # Close login dialog if open
-        try:
-            login = self.query_one(LoginWidget)
-            login.cancel()
-            return
-        except NoMatches:
-            pass
+        # Close any open dialog/panel first
+        for widget_cls in (LoginWidget, HelpPanelWidget, ModelPickerWidget, SessionPickerWidget):
+            try:
+                widget = self.query_one(widget_cls)
+                if isinstance(widget, LoginWidget):
+                    widget.cancel()
+                else:
+                    widget.remove()
+                return
+            except NoMatches:
+                continue
 
         # Kill running inline shell command first
         if self._shell_proc is not None:

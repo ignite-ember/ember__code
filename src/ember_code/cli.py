@@ -64,16 +64,20 @@ def cli(
     # ── Debug logging ──────────────────────────────────────────────
     if debug:
         import logging
+        from logging.handlers import RotatingFileHandler
         from pathlib import Path
 
         log_path = Path.home() / ".ember" / "debug.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        logging.basicConfig(
-            filename=str(log_path),
-            level=logging.DEBUG,
-            format="%(asctime)s %(name)s %(levelname)s %(message)s",
-            force=True,
+        handler = RotatingFileHandler(
+            str(log_path),
+            maxBytes=10_000_000,
+            backupCount=2,  # 10MB, keep 2 old
         )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+        logging.root.handlers.clear()
+        logging.root.addHandler(handler)
+        logging.root.setLevel(logging.DEBUG)
         logging.getLogger("ember_code").setLevel(logging.DEBUG)
         click.echo(f"Debug logging enabled → {log_path}")
 

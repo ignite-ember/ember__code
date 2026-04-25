@@ -56,6 +56,34 @@ models:
 
 See [Quickstart](QUICKSTART.md) for the full setup guide.
 
+## Upgrading
+
+**v0.3.6** includes the following changes:
+
+- **Problem:** Debug logs grow unbounded and can fill up disk space.
+  - **Solution:** Switched to RotatingFileHandler with 10MB limit and 2 backup files.
+
+- **Problem:** Shell command output can be extremely large, causing issues when sending to the LLM.
+  - **Solution:** Truncate tool results to 30,000 characters, keeping start and end of output.
+
+- **Problem:** TUI escape key only closes the login dialog, leaving other panels open.
+  - **Solution:** Now closes any open panel: login, help, model picker, or session picker.
+
+- **Problem:** Learning features get stuck and never complete (caused by httpx connection pool issues in threads).
+  - **Solution:** Run learning extraction as an async task on the main event loop instead of a separate thread.
+
+To upgrade Ember Code to the latest version:
+
+```bash
+brew upgrade ignite-ember/tap/ignite-ember
+```
+
+If `brew upgrade` doesn't work or you encounter issues, manually reinstall:
+
+```bash
+brew uninstall ignite-ember && brew untap ignite-ember/tap && brew tap ignite-ember/tap && brew install ignite-ember
+```
+
 ## TUI Mode
 
 `ignite-ember` launches the Textual-based terminal UI by default. The backend runs as a separate process, connected via Unix socket.
