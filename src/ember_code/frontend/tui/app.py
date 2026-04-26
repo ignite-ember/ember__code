@@ -236,6 +236,7 @@ class EmberApp(App):
         self._conversation: ConversationView | None = None
         self._shell_context: list[str] = []  # accumulated shell results for AI context
         self._shell_mode: bool = False  # True when prompt is in $ shell mode
+        self._command_mode: bool = False  # True when prompt is in / command mode
         self._shell_proc: Any = None  # active inline shell subprocess
         self._shell_task: Any = None  # asyncio task for _run_shell_inline
         self._input_handler: InputHandler | None = None
@@ -484,13 +485,17 @@ class EmberApp(App):
         text_area = event.text_area
         text = text_area.text
 
-        # ── Shell mode toggle (! or $ prefix) ─────────────────
-        if not self._shell_mode and text in ("!", "$"):
-            self._shell_mode = True
+        # ── Mode toggles (/, !, $) ─────────────────────────────
+        if not self._shell_mode and not self._command_mode and text in ("/", "!", "$"):
+            if text == "/":
+                self._command_mode = True
+                self._update_command_mode_indicator()
+            else:
+                self._shell_mode = True
+                self._update_shell_mode_indicator()
             text_area.clear()
-            self._update_shell_mode_indicator()
             return
-        if not self._shell_mode and (text.startswith("! ") or text.startswith("$ ")):
+        if not self._shell_mode and not self._command_mode and (text.startswith("! ") or text.startswith("$ ")):
             self._shell_mode = True
             text_area.clear()
             text_area.insert(text[2:])
@@ -518,7 +523,12 @@ class EmberApp(App):
             widget = None
 
         if self._input_handler:
-            matches = self._input_handler.get_completions(text)
+            # In command mode, text has no / prefix — add it for autocomplete
+            completion_text = f"/{text}" if self._command_mode else text
+            matches = self._input_handler.get_completions(completion_text)
+            if self._command_mode:
+                # Strip / from suggestions since indicator already shows it
+                matches = [m.lstrip("/") for m in matches]
             if matches:
                 hint = "  ".join(matches)
                 if widget:
@@ -604,6 +614,11 @@ class EmberApp(App):
                 with contextlib.suppress(NoMatches):
                     self.query_one("#autocomplete", Static).display = False
 
+                # Command mode — prepend / and exit
+                if self._command_mode:
+                    submitted = f"/{submitted}"
+                    self._exit_command_mode()
+
                 # Shell mode — run as command, stay in shell mode
                 if self._shell_mode:
                     self._shell_task = asyncio.create_task(self._run_shell_inline(submitted))
@@ -621,6 +636,29 @@ class EmberApp(App):
                 )
                 if not self._controller.processing:
                     self._controller.set_current_task(task)
+
+    # ── Command mode ─────────────────────────────────────────
+
+    def _update_command_mode_indicator(self) -> None:
+        """Update the prompt indicator and placeholder for command mode."""
+        try:
+            indicator = self.query_one("#prompt-indicator", Static)
+            input_widget = self.query_one("#user-input", PromptInput)
+            if self._command_mode:
+                indicator.update("[bold cyan]/ [/bold cyan]")
+                input_widget.placeholder = "Command name (Esc to return to chat)"
+            else:
+                indicator.update("> ")
+                input_widget.placeholder = "Type a message or /help"
+        except NoMatches:
+            pass
+
+    def _exit_command_mode(self) -> None:
+        """Exit command mode and return to chat."""
+        self._command_mode = False
+        self._update_command_mode_indicator()
+        with contextlib.suppress(NoMatches):
+            self.query_one("#user-input", PromptInput).clear()
 
     # ── Shell mode ────────────────────────────────────────────
 
@@ -738,12 +776,18 @@ class EmberApp(App):
         if not input_widget.has_focus:
             return
 
-        # ── Shell mode: backspace on empty input exits shell mode ──
-        if self._shell_mode and event.key == "backspace" and not input_widget.text:
-            event.prevent_default()
-            event.stop()
-            self._exit_shell_mode()
-            return
+        # ── Command/shell mode: backspace on empty input exits mode ──
+        if event.key == "backspace" and not input_widget.text:
+            if self._command_mode:
+                event.prevent_default()
+                event.stop()
+                self._exit_command_mode()
+                return
+            if self._shell_mode:
+                event.prevent_default()
+                event.stop()
+                self._exit_shell_mode()
+                return
 
         # ── File picker navigation (takes priority) ─────────────
         try:
@@ -1259,13 +1303,30 @@ class EmberApp(App):
         import signal
 
         # Close any open dialog/panel first
-        for widget_cls in (LoginWidget, HelpPanelWidget, ModelPickerWidget, SessionPickerWidget):
+        # Close visible task panel first (always mounted, toggled via -hidden)
+        try:
+            task_panel = self.query_one("#task-panel", TaskPanel)
+            if not task_panel.has_class("-hidden"):
+                task_panel.add_class("-hidden")
+                with contextlib.suppress(NoMatches):
+                    self.query_one("#user-input", PromptInput).focus()
+                return
+        except NoMatches:
+            pass
+
+        _DIALOG_TYPES = (
+            LoginWidget, HelpPanelWidget, ModelPickerWidget,
+            SessionPickerWidget, MCPPanelWidget,
+        )
+        for widget_cls in _DIALOG_TYPES:
             try:
                 widget = self.query_one(widget_cls)
                 if isinstance(widget, LoginWidget):
                     widget.cancel()
                 else:
                     widget.remove()
+                with contextlib.suppress(NoMatches):
+                    self.query_one("#user-input", PromptInput).focus()
                 return
             except NoMatches:
                 continue
@@ -1277,6 +1338,11 @@ class EmberApp(App):
             with contextlib.suppress(ProcessLookupError, OSError):
                 self._shell_proc.kill()
             self._shell_proc = None
+            return
+
+        # Exit command mode
+        if self._command_mode:
+            self._exit_command_mode()
             return
 
         # Exit shell mode

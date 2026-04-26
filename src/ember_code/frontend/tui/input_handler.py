@@ -92,6 +92,7 @@ class AutocompleteProvider:
         "/model",
         "/mcp",
         "/compact",
+        "/schedule",
         "/login",
         "/logout",
         "/whoami",
@@ -123,6 +124,17 @@ class AutocompleteProvider:
         if f"/{partial}" in matches:
             return []
         return matches[:5]
+
+    def is_valid_command(self, text: str) -> bool:
+        """Check if the input is a complete, valid slash command."""
+        if not text.startswith("/"):
+            return False
+        cmd = text.split()[0] if text.split() else text
+        all_commands = list(self.BUILTIN_COMMANDS)
+        if self._skill_pool:
+            for s in self._skill_pool.list_skills():
+                all_commands.append(f"/{s.name}")
+        return cmd in all_commands
 
 
 def extract_at_mention(

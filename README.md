@@ -58,6 +58,11 @@ See [Quickstart](QUICKSTART.md) for the full setup guide.
 
 ## Upgrading
 
+**v0.3.8** includes the following changes:
+
+- **Problem:** Escape key did not close the MCP panel (`/mcp`) or the task panel.
+  - **Solution:** Added all dialog/panel widgets to the Escape handler, including MCPPanelWidget and TaskPanel.
+
 **v0.3.7** includes the following changes:
 
 - **Problem:** Edit/Write/Bash tools never asked for user confirmation, even when permissions were set to "ask".

@@ -114,7 +114,19 @@ class MessageWidget(Widget):
         return self._is_long
 
     def compose(self) -> ComposeResult:
-        role_display = "> " if self._role == "user" else "● "
+        content = self._content
+        if self._role == "user":
+            if content.startswith("$ "):
+                role_display = "$ "
+                content = content[2:]
+            elif content.startswith("/"):
+                role_display = "/ "
+                content = content[1:]
+            else:
+                role_display = "> "
+        else:
+            role_display = "● "
+            content = self._content
         role_class = f"role-{self._role}"
 
         with Horizontal(classes="message-row"):
@@ -122,18 +134,18 @@ class MessageWidget(Widget):
             with Vertical(classes="message-body"):
                 if not self._is_long:
                     if self._role == "assistant":
-                        yield Markdown(self._content, classes="message-content")
+                        yield Markdown(content, classes="message-content")
                     else:
-                        yield Static(self._content, classes="message-content")
+                        yield Static(content, classes="message-content")
                 else:
-                    truncated = "\n".join(self._content.splitlines()[: self._truncate_lines])
+                    truncated = "\n".join(content.splitlines()[: self._truncate_lines])
 
                     if self._role == "assistant":
                         yield Markdown(truncated, classes="message-content")
-                        yield Markdown(self._content, classes="message-content-full")
+                        yield Markdown(content, classes="message-content-full")
                     else:
                         yield Static(truncated, classes="message-content")
-                        yield Static(self._content, classes="message-content-full")
+                        yield Static(content, classes="message-content-full")
 
                     lines_hidden = len(self._content.splitlines()) - self._truncate_lines
                     yield Static(
