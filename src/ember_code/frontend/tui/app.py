@@ -495,7 +495,11 @@ class EmberApp(App):
                 self._update_shell_mode_indicator()
             text_area.clear()
             return
-        if not self._shell_mode and not self._command_mode and (text.startswith("! ") or text.startswith("$ ")):
+        if (
+            not self._shell_mode
+            and not self._command_mode
+            and (text.startswith("! ") or text.startswith("$ "))
+        ):
             self._shell_mode = True
             text_area.clear()
             text_area.insert(text[2:])
@@ -1315,8 +1319,11 @@ class EmberApp(App):
             pass
 
         _DIALOG_TYPES = (
-            LoginWidget, HelpPanelWidget, ModelPickerWidget,
-            SessionPickerWidget, MCPPanelWidget,
+            LoginWidget,
+            HelpPanelWidget,
+            ModelPickerWidget,
+            SessionPickerWidget,
+            MCPPanelWidget,
         )
         for widget_cls in _DIALOG_TYPES:
             try:
