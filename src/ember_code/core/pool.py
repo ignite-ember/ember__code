@@ -97,6 +97,7 @@ def build_agent(
     base_dir: str | None = None,
     mcp_clients: dict[str, Any] | None = None,
     knowledge_mgr: Any | None = None,
+    db: Any | None = None,
 ) -> Agent:
     """Build an Agno Agent from an AgentDefinition.
 
@@ -127,7 +128,7 @@ def build_agent(
 
         tools.append(ScheduleTools())
 
-    # ── Knowledge tools (shared across all agents) ────────────
+    # ── Knowledge tools (shared across all agents) ────────────────
     if tools and knowledge_mgr is not None:
         from ember_code.core.tools.knowledge import KnowledgeTools
 
@@ -175,7 +176,19 @@ def build_agent(
         "tools": tools if tools else None,
         "markdown": True,
         "num_history_runs": settings.storage.max_history_runs,
+        # Retry transient model-API failures rather than failing the
+        # whole spawn. Hung connections still need the per-request
+        # timeout in models.py to surface as an exception first;
+        # ``retries`` only kicks in when the model call raises.
+        "retries": getattr(settings.models, "retries", 2),
     }
+
+    # Share the session's SQLite DB so HITL-paused runs can be resumed
+    # via ``acontinue_run(run_id, session_id)``. Without a db Agno has
+    # nowhere to look up the paused run and resume fails with
+    # ``RuntimeError: No runs found for run ID …``.
+    if db is not None:
+        kwargs["db"] = db
 
     if definition.reasoning:
         kwargs["reasoning"] = True
@@ -201,7 +214,7 @@ class AgentPool:
     to force eager construction (e.g. after MCP servers connect).
     """
 
-    def __init__(self):
+    def __init__(self, db: Any | None = None):
         self._definitions: dict[str, tuple[AgentDefinition, int]] = {}
         self._agents: dict[str, Agent] = {}
         self._settings: Settings | None = None
@@ -211,6 +224,10 @@ class AgentPool:
         self._ephemeral_count: int = 0
         self._ephemeral_dir: Path | None = None
         self._max_ephemeral: int = 5
+        # Shared with the main session so paused sub-agent runs are
+        # persisted alongside the team's runs and Agno can find them on
+        # ``acontinue_run``.
+        self._db: Any | None = db
 
     # ── Phase 1: Load definitions ─────────────────────────────────
 
@@ -280,6 +297,7 @@ class AgentPool:
             self._base_dir,
             mcp_clients=self._mcp_clients,
             knowledge_mgr=self._knowledge_mgr,
+            db=self._db,
         )
 
     # ── Convenience: load + build in one call ─────────────────────

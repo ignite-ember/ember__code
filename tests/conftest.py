@@ -1,8 +1,19 @@
 """Shared test fixtures."""
 
+from pathlib import Path
+
 import pytest
+from dotenv import load_dotenv
 
 from ember_code.core.config.settings import load_settings
+
+# Load environment variables from .env at the repo root before any test
+# runs. This lets developers keep credentials for live tests
+# (EMBER_TEST_LLM_API_KEY, etc.) in .env instead of exporting them per
+# shell. ``override=False`` so an explicit env var still wins over .env.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+if _ENV_FILE.is_file():
+    load_dotenv(_ENV_FILE, override=False)
 
 
 @pytest.fixture

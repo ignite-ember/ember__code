@@ -1,353 +1,150 @@
-"""CodeIndex tools — semantic code intelligence via Ember Cloud.
+"""CodeIndexTools — agent-facing semantic search over the local code index.
 
-These tools are only registered when the user is authenticated with Ember Cloud.
-The server resolves org/integration scope from the auth token and maps the git
-remote URL to the correct repository. No client-side repository ID resolution needed.
-
-API reference: CodeIndex endpoints at /v1/codeindex/*
+The toolkit lazy-builds a :class:`CodeIndex` for the active project on
+first call. Each tool returns a JSON string so agents can parse
+structured results.
 """
+
+from __future__ import annotations
 
 import json
 import logging
-import subprocess
+from pathlib import Path
 from typing import Any
 
-import httpx
 from agno.tools import Toolkit
+
+from ember_code.core.code_index.index import CodeIndex
 
 logger = logging.getLogger(__name__)
 
 
-def _get_git_remote(project_dir: str | None = None) -> str | None:
-    """Get the git remote URL for the current project.
-
-    Returns None if not in a git repo or no origin remote.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            cwd=project_dir,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception as exc:
-        logger.debug("Failed to get git remote: %s", exc)
-        pass
-    return None
-
-
 class CodeIndexTools(Toolkit):
-    """Semantic code intelligence powered by Ember Cloud's CodeIndex.
+    """Semantic code intelligence backed by the per-commit chroma index.
 
-    Provides semantic search, similarity lookup, item details, reference
-    graph traversal, and folder tree browsing across indexed repositories.
-
-    The server resolves the repository from the git remote URL sent with
-    each request — no client-side repository ID resolution needed.
+    Args:
+        project_dir: project root used to derive the on-disk path.
+            Defaults to ``cwd``.
+        data_dir: ember root, defaults to ``~/.ember``.
+        index: pre-built :class:`CodeIndex` (used by tests / advanced
+            callers). When provided, ``project_dir`` and ``data_dir``
+            are ignored.
     """
 
     def __init__(
         self,
-        server_url: str,
-        access_token: str,
-        project_dir: str | None = None,
+        *,
+        project_dir: str | Path | None = None,
+        data_dir: str | Path = "~/.ember",
+        index: CodeIndex | None = None,
+        **kwargs: Any,
     ):
-        super().__init__(name="codeindex")
-        self._server_url = server_url.rstrip("/")
-        self._access_token = access_token
-        self._remote_url = _get_git_remote(project_dir)
-        self._client: httpx.AsyncClient | None = None
+        super().__init__(name="codeindex", **kwargs)
+        self._explicit_index = index
+        self._project_dir = Path(str(project_dir)) if project_dir else Path.cwd()
+        self._data_dir = data_dir
 
         self.register(self.codeindex_search)
-        self.register(self.codeindex_similar)
         self.register(self.codeindex_item)
         self.register(self.codeindex_references)
-        self.register(self.codeindex_tree)
-        self.register(self.codeindex_tags)
+        self.register(self.codeindex_commits)
 
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self._server_url,
-                headers={"Authorization": f"Bearer {self._access_token}"},
-                timeout=30.0,
-            )
-        return self._client
+    @staticmethod
+    def _json(data: Any) -> str:
+        return json.dumps(data, indent=2, default=str)
 
-    def _check_remote(self) -> str | None:
-        """Return an error message if no git remote is available."""
-        if self._remote_url is None:
-            return self._json_result(
-                {
-                    "error": "No git remote found. CodeIndex requires a git repository "
-                    "with an origin remote. Use local search tools (Grep, Glob) instead."
-                }
-            )
-        return None
+    def _ensure_index(self) -> CodeIndex:
+        if self._explicit_index is None:
+            self._explicit_index = CodeIndex(project=self._project_dir, data_dir=self._data_dir)
+        return self._explicit_index
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
-        """Make an authenticated request to the CodeIndex API."""
-        client = self._get_client()
-        try:
-            response = await client.request(method, path, **kwargs)
-            if response.status_code == 401:
-                return {"error": "Authentication expired. Run /login to reconnect."}
-            if response.status_code == 404:
-                return {"error": "Repository not indexed in CodeIndex. Use local search instead."}
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After", "a few seconds")
-                return {"error": f"Rate limited. Retry after {retry_after}."}
-            if response.status_code == 503:
-                return {"error": "CodeIndex unavailable. Try again later or use local search."}
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.warning("CodeIndex request failed: %s", e)
-            return {"error": f"CodeIndex request failed: {e.response.status_code}"}
-        except httpx.RequestError as e:
-            logger.warning("CodeIndex connection error: %s", e)
-            return {"error": "Could not connect to Ember Cloud. Falling back to local search."}
-
-    def _json_result(self, data: dict) -> str:
-        return json.dumps(data, indent=2)
+    async def close(self) -> None:
+        if self._explicit_index is not None:
+            await self._explicit_index.close()
 
     # ── Tools ─────────────────────────────────────────────────────
 
     async def codeindex_search(
         self,
         query: str,
-        item_type: str = "file",
-        name: str = "",
-        file_extension: str = "",
-        tags: list[str] | None = None,
         limit: int = 20,
+        commit: str = "",
     ) -> str:
-        """Semantic code search across the current repository's indexed codebase.
-
-        Combines vector similarity with filters to find relevant code. Use this
-        when you need to find files, classes, or functions by what they do rather
-        than exact name matching.
+        """Semantic search across the indexed codebase.
 
         Args:
-            query: Natural language description of what you're looking for.
-                   Examples: "authentication middleware that validates JWT tokens",
-                   "database connection pooling", "error retry logic with backoff"
-            item_type: Filter by item type: "file", "entity", or "folder". Default "file".
-            name: Glob pattern to filter by name. Examples: "*auth*", "*.service.*"
-            file_extension: Filter by file extension without dot. Examples: "py", "ts", "go"
-            tags: List of tags to filter by (all must match). Available tags:
-                  - type:file, type:folder, type:entity — item type
-                  - type:code, type:docs — file kind (code vs documentation)
-                  - entity_type:<type> — entity kind, e.g. entity_type:class,
-                    entity_type:function, entity_type:method, entity_type:module
-                  Examples: ["type:entity", "entity_type:class"]
+            query: Natural-language description of what you're looking for.
             limit: Max results to return (default 20).
-
-        Returns:
-            JSON with matching items including file paths, summaries, relevance scores,
-            and analysis sections. Each result includes a 'sections' dict with
-            type-specific analysis:
-              - Entity sections: summary, quality_assessment, security_analysis,
-                issues_and_concerns, testing_status
-              - File sections: purpose_and_functionality, architecture_and_design,
-                code_quality, security, issues_and_technical_debt,
-                testing_and_reliability, dependencies_and_impact, recommendations
-              - Folder sections: module_purpose, organization_and_structure,
-                architectural_assessment, quality_patterns, security_posture,
-                common_issues, testing_and_reliability, module_health_score,
-                recommendations
+            commit: Optional commit SHA to query. Defaults to the indexed head.
         """
-        if err := self._check_remote():
-            return err
+        try:
+            results = await self._ensure_index().search(
+                query=query, limit=limit, commit=commit or None
+            )
+            return self._json({"items": results, "limit": limit})
+        except Exception as exc:
+            logger.exception("codeindex_search failed")
+            return self._json({"error": f"codeindex_search failed: {exc}"})
 
-        body: dict[str, Any] = {
-            "query": query,
-            "remote_url": self._remote_url,
-            "item_type": item_type,
-            "limit": limit,
-        }
-        if name:
-            body["name"] = name
-        if file_extension:
-            body["file_extension"] = file_extension
-        if tags:
-            if len(tags) == 1:
-                body["tag_filter"] = {"tag": tags[0]}
-            else:
-                body["tag_filter"] = {"all": [{"tag": t} for t in tags]}
-
-        result = await self._request("POST", "/v1/codeindex/search", json=body)
-        return self._json_result(result)
-
-    async def codeindex_similar(
-        self, item_id: str, item_type: str = "file", limit: int = 10
-    ) -> str:
-        """Find code items semantically similar to a given item.
-
-        Use this after finding an interesting file or entity to discover related
-        code — implementations of similar patterns, related modules, or files
-        that solve analogous problems.
+    async def codeindex_item(self, item_id: str, commit: str = "") -> str:
+        """Get full details for an indexed item.
 
         Args:
-            item_id: The UUID of the item to find similar items for (from a previous search result).
-            item_type: Filter results by type: "file", "entity", or "folder". Default "file".
-            limit: Max results to return (default 10).
-
-        Returns:
-            JSON with semantically similar items, ordered by similarity.
+            item_id: UUID of the item (from a previous search).
+            commit: Optional commit SHA. Defaults to head.
         """
-        if err := self._check_remote():
-            return err
-
-        body: dict[str, Any] = {
-            "item_id": item_id,
-            "remote_url": self._remote_url,
-            "item_type": item_type,
-            "limit": limit,
-        }
-        result = await self._request("POST", "/v1/codeindex/similar", json=body)
-        return self._json_result(result)
-
-    async def codeindex_item(self, item_id: str) -> str:
-        """Get full details for a specific indexed item.
-
-        Returns the item's content, AI-generated summary, code chunks,
-        and bidirectional references (imports, calls, extends, etc.).
-
-        Use this after a search to get the complete picture of a file or entity
-        before deciding whether to read the actual source file.
-
-        Args:
-            item_id: The UUID of the item (from a previous search or tree result).
-
-        Returns:
-            JSON with item content, summary, chunks, and reference graph.
-        """
-        if err := self._check_remote():
-            return err
-
-        result = await self._request(
-            "GET",
-            f"/v1/codeindex/items/{item_id}",
-            params={"remote_url": self._remote_url},
-        )
-        return self._json_result(result)
+        try:
+            result = await self._ensure_index().get_item(item_id=item_id, commit=commit or None)
+            if result is None:
+                return self._json({"error": "item not found"})
+            return self._json(result)
+        except Exception as exc:
+            logger.exception("codeindex_item failed")
+            return self._json({"error": f"codeindex_item failed: {exc}"})
 
     async def codeindex_references(self, item_id: str) -> str:
-        """Get the reference graph for a specific item.
+        """Get the reference graph for an item.
 
-        Returns incoming and outgoing references: what this item imports/calls/extends,
-        and what imports/calls/extends it. Each reference includes relationship type
-        (IMPORTS, CALLS, EXTENDS, CONTAINS, DECORATED_BY, TYPES_AS, DEPENDS_ON).
-
-        Use this to understand the blast radius before refactoring — which files
-        and entities depend on the thing you're about to change.
-
-        Args:
-            item_id: The UUID of the item (from a previous search or tree result).
-
-        Returns:
-            JSON with document_references (outgoing) and referenced_by (incoming),
-            each with relationship tags.
+        Returns ``document_references`` (outgoing) and ``referenced_by``
+        (incoming). References are project-scoped (not commit-scoped).
         """
-        if err := self._check_remote():
-            return err
+        try:
+            file_refs = self._ensure_index()._file_reference_service()
+            edges = await file_refs.get_by_uuids(uuids=[item_id])
+            outgoing = [
+                {"from_id": r.from_uuid, "to_id": r.to_uuid, "tags": r.tags, "meta": r.meta}
+                for r in edges
+                if r.from_uuid == item_id
+            ]
+            incoming = [
+                {"from_id": r.from_uuid, "to_id": r.to_uuid, "tags": r.tags, "meta": r.meta}
+                for r in edges
+                if r.to_uuid == item_id
+            ]
+            return self._json({"document_references": outgoing, "referenced_by": incoming})
+        except Exception as exc:
+            logger.exception("codeindex_references failed")
+            return self._json({"error": f"codeindex_references failed: {exc}"})
 
-        result = await self._request(
-            "GET",
-            f"/v1/codeindex/items/{item_id}/references",
-            params={"remote_url": self._remote_url},
-        )
-        return self._json_result(result)
+    async def codeindex_commits(self) -> str:
+        """List indexed commits with their last-used timestamps.
 
-    async def codeindex_tree(
-        self,
-        parent_id: str = "",
-        item_type: str = "",
-        name: str = "",
-        query: str = "",
-        limit: int = 50,
-    ) -> str:
-        """Browse the indexed folder/file hierarchy of the repository.
-
-        Without parent_id, returns root-level items. With parent_id, returns
-        children of that folder. Can optionally filter by type, name pattern,
-        or combine with a semantic search query.
-
-        Use this to explore the high-level structure of an indexed repository
-        or to navigate into specific modules.
-
-        Args:
-            parent_id: UUID of the parent folder to browse into. Empty for root level.
-            item_type: Filter by type: "file", "entity", "folder", or empty for all.
-            name: Glob pattern to filter by name. Examples: "*service*", "*.py"
-            query: Optional semantic search query to combine with tree browsing.
-            limit: Max results to return (default 50).
-
-        Returns:
-            JSON with folder/file tree items including names, types, and summaries.
+        Returns the manifest's view of which commits we have chroma
+        files for. Useful for debugging the lineage / retention.
         """
-        if err := self._check_remote():
-            return err
-
-        body: dict[str, Any] = {
-            "remote_url": self._remote_url,
-            "limit": limit,
-        }
-        if parent_id:
-            body["parent_id"] = parent_id
-        if item_type:
-            body["item_type"] = item_type
-        if name:
-            body["name"] = name
-        if query:
-            body["query"] = query
-
-        result = await self._request("POST", "/v1/codeindex/tree", json=body)
-        return self._json_result(result)
-
-    async def codeindex_tags(self, commit_id: str = "") -> str:
-        """Get all available tags for the current repository.
-
-        Returns the complete set of tags that can be used with `codeindex_search`
-        to filter results. Tags are scoped to a specific commit (defaults to the
-        latest indexed commit). Includes:
-          - domain_tags: project-specific domain tags (e.g., "authentication",
-            "payments", "api") — these are unique to this repository
-          - concerns: project-specific concern tags (e.g., "error-handling",
-            "logging", "validation")
-          - system_tags: fixed item type tags (type:file, type:entity, etc.)
-          - quality_tags: quality assessment tags with possible values
-            (e.g., "security:secure|minor-issues|major-issues|critical")
-
-        Use domain and concern tags with the "domain:" and "concern:" prefixes
-        in codeindex_search: tags=["domain:authentication", "security:critical"]
-
-        Args:
-            commit_id: Optional commit SHA. Defaults to the latest indexed commit.
-
-        Returns:
-            JSON with domain_tags, concerns, system_tags, and quality_tags arrays.
-        """
-        if err := self._check_remote():
-            return err
-
-        params: dict[str, str] = {"remote_url": self._remote_url or ""}
-        if commit_id:
-            params["commit_id"] = commit_id
-
-        result = await self._request(
-            "GET",
-            "/v1/codeindex/tags",
-            params=params,
-        )
-        return self._json_result(result)
-
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        try:
+            state = self._ensure_index().manifest.load()
+            commits = [
+                {
+                    "sha": info.sha,
+                    "last_used_at": info.last_used_at,
+                    "branch_refs": info.branch_refs,
+                    "is_head": info.sha == state.head,
+                }
+                for info in state.commits.values()
+            ]
+            commits.sort(key=lambda c: c["last_used_at"], reverse=True)
+            return self._json({"head": state.head, "commits": commits})
+        except Exception as exc:
+            logger.exception("codeindex_commits failed")
+            return self._json({"error": f"codeindex_commits failed: {exc}"})

@@ -311,6 +311,7 @@ class EmberApp(App):
             "    [dim]●[/dim]  Read, search, and reason across your codebase",
             "    [dim]●[/dim]  Edit files and fix bugs — with your approval",
             "    [dim]●[/dim]  Run commands, tests, and multi-step workflows",
+            "    [dim]●[/dim]  Semantic code search via CodeIndex — install with [bold]/codeindex install[/bold]",
             "",
             "  [dim]Enter to send · \\ + Enter for new line · /help for commands[/dim]",
             "",
@@ -903,9 +904,9 @@ class EmberApp(App):
     def _show_model_picker(self) -> None:
         # Show models that have credentials: explicit API key, env var,
         # key command, or Ember Cloud auth (for models hosted on ignite-ember.sh)
-        from ember_code.core.auth.credentials import get_access_token
+        from ember_code.core.auth.credentials import CloudCredentials
 
-        cloud_token = get_access_token(self.settings.auth.credentials_file)
+        cloud_token = CloudCredentials(self.settings.auth.credentials_file).access_token
         models = sorted(
             name
             for name, cfg in self.settings.models.registry.items()

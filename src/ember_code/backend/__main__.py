@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,39 @@ from typing import Any
 import click
 
 logger = logging.getLogger(__name__)
+
+
+async def _watch_parent(parent_pid: int, shutdown_event: asyncio.Event) -> None:
+    """Self-terminate if the FE parent process dies.
+
+    Signals are the primary cleanup path (FE's process_manager kills the
+    BE process group on exit), but signals can be missed on hard crashes
+    or hangups. This watchdog is the belt to that suspenders — without
+    it we ended up with an 11-day-old runaway BE that had burned 117
+    hours of CPU after the FE died unexpectedly.
+    """
+    if parent_pid <= 0:
+        return
+    while not shutdown_event.is_set():
+        try:
+            os.kill(parent_pid, 0)  # signal 0 = liveness probe only
+        except ProcessLookupError:
+            logger.warning("Parent FE (pid=%s) died; BE shutting down", parent_pid)
+            shutdown_event.set()
+            # Nudge the receive loop: SIGTERM so ``transport.receive()``
+            # unblocks even if no more FE messages arrive.
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(os.getpid(), signal.SIGTERM)
+            # Last-resort escape hatch: if graceful shutdown stalls,
+            # hard-exit after a grace period so we never linger as a
+            # zombie burning CPU.
+            await asyncio.sleep(5)
+            logger.error("BE failed to shut down 5s after parent death; forcing exit")
+            os._exit(1)
+        except PermissionError:
+            # PID exists but isn't ours — treat as alive.
+            pass
+        await asyncio.sleep(2)
 
 
 @click.command()
@@ -242,6 +276,15 @@ async def _run(
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _signal_handler)
 
+    # Watchdog: exit if the FE parent dies. ``EMBER_PARENT_PID`` is
+    # injected by ``process_manager.BackendProcess.start``.
+    parent_pid_str = os.environ.get("EMBER_PARENT_PID", "0") or "0"
+    try:
+        parent_pid = int(parent_pid_str)
+    except ValueError:
+        parent_pid = 0
+    parent_watch_task = asyncio.create_task(_watch_parent(parent_pid, shutdown_event))
+
     # Queue for message injection (replaces wire_queue_hook)
     _queue: list[str] = []
     backend.wire_queue_hook(_queue)
@@ -270,22 +313,49 @@ async def _run(
     # and would block the main thread if started during __init__.
     backend._session.start_knowledge_background()
 
+    # Pull the latest code-index changeset for HEAD and watch for new commits.
+    backend._session.start_codeindex_background()
+
     try:
         await transport.wait_for_connection()
         logger.info("FE connected, processing messages")
 
+        # Each FE message is dispatched as its own task so the main loop
+        # can keep reading. Without this, a long-running streaming handler
+        # (e.g. ``run_message`` while sub-agent is paused for HITL) blocks
+        # later RPCs (e.g. ``check_permission``) from ever being read,
+        # causing the FE to hang on the RPC future.
+        # ``backend.run_message`` already rejects concurrent runs by
+        # returning an Error early when ``_processing=True``, so racing
+        # UserMessages degrades gracefully.
+        in_flight: set[asyncio.Task] = set()
+
+        async def _dispatch(message: Any) -> None:
+            try:
+                await _handle_message(message, backend, transport, rpc_table, _queue, login_state)
+            except Exception as exc:
+                logger.error("message handler crashed: %s", exc, exc_info=True)
+
         async for message in transport.receive():
             if isinstance(message, msg.Shutdown):
                 break
-
             if shutdown_event.is_set():
                 break
+            task = asyncio.create_task(_dispatch(message))
+            in_flight.add(task)
+            task.add_done_callback(in_flight.discard)
 
-            await _handle_message(message, backend, transport, rpc_table, _queue, login_state)
+        # Drain in-flight tasks before shutting down so we don't drop
+        # mid-stream messages on graceful exit.
+        if in_flight:
+            await asyncio.gather(*in_flight, return_exceptions=True)
 
     except Exception as exc:
         logger.error("Backend error: %s", exc, exc_info=True)
     finally:
+        parent_watch_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await parent_watch_task
         await backend.shutdown()
         await transport.close()
         logger.info("Backend shut down")

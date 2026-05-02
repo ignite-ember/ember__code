@@ -109,6 +109,24 @@ HELP_SECTIONS = [
         ),
     ),
     HelpSection(
+        "CodeIndex",
+        "/codeindex — semantic search over your repo",
+        "Per-commit AI summaries fetched from Ember Cloud and applied to a\n"
+        "local Chroma index. Search runs entirely on your machine.\n\n"
+        + "\n".join(
+            [
+                _row("/codeindex install", "open the GitHub App install page"),
+                _row("/codeindex sync", "pull + apply the current commit"),
+                _row("/codeindex search <q>", "semantic search the indexed commit"),
+                _row("/codeindex item <id>", "full details for one item"),
+                _row("/codeindex commits", "list locally-indexed commits"),
+                _row("/codeindex status", "show sync state and install state"),
+                _row("/codeindex prune", "drop stale, non-branch commits"),
+            ]
+        )
+        + "\n\nAuto-syncs on startup, /clear, and HEAD changes (git pull, branch switch).",
+    ),
+    HelpSection(
         "Memory",
         "/memory — what Ember has learned about you",
         "Ember learns your preferences automatically from conversations.\n\n"

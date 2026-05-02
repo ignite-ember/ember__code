@@ -313,10 +313,16 @@ class QueuePanel(Widget):
         self._items = list(items)
         if not self._items:
             self.add_class("-hidden")
+            self.remove_children()
             return
         self.remove_class("-hidden")
-        self.selected_index = min(self.selected_index, max(0, len(self._items) - 1))
+        # Rebuild children FIRST so they exist when the watcher queries
+        # them, then clamp selected_index. Reverse order would fire
+        # watch_selected_index against a tree that hasn't rebuilt yet.
         self._rebuild()
+        clamped = min(self.selected_index, max(0, len(self._items) - 1))
+        if clamped != self.selected_index:
+            self.selected_index = clamped
 
     def _rebuild(self) -> None:
         """Rebuild child widgets from current items."""
@@ -337,6 +343,11 @@ class QueuePanel(Widget):
             self.mount(Static(f"  {i + 1}. {preview}", id=f"q-{i}", classes=cls))
 
     def watch_selected_index(self, old: int, new: int) -> None:
+        # No children to update when the panel is empty/hidden. The reactive
+        # still fires (e.g. clamping in refresh_items), so bail early instead
+        # of spamming "no nodes match" debug logs.
+        if not self._items or not self.is_mounted:
+            return
         try:
             old_w = self.query_one(f"#q-{old}", Static)
             old_w.remove_class("-selected")

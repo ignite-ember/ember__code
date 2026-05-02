@@ -191,7 +191,7 @@ guardrails:
   # prompt_injection: false       # Warn on prompt injection patterns
 
 knowledge:
-  enabled: true                   # ChromaDB knowledge base
+  enabled: true                   # Weaviate-backed knowledge base
   collection_name: ember_knowledge
 
 learning:
@@ -424,30 +424,15 @@ def _write_project_config(project_dir: Path) -> None:
         path.write_text(PROJECT_CONFIG_TEMPLATE)
 
 
-# Default permissions for new projects:
-# - file_read/grep/glob/list_files: allow (safe, read-only)
-# - file_write/shell_execute/python: ask (requires user confirmation)
+# Default permissions for new projects. Use display names only —
+# tool_permissions.py:FUNC_TO_TOOL normalizes Agno function names
+# (``run_shell_command``, ``edit_file``, ``save_file``, …) to the
+# display name (``Bash``, ``Edit``, ``Write``) before any rule lookup,
+# so listing both is redundant and leaks an internal detail into a
+# user-facing config file.
 DEFAULT_PERMISSIONS = {
-    "allow": [
-        "Glob",
-        "Grep",
-        "LS",
-        "Read",
-        "ReadFile",
-        "ListFiles",
-        "WebSearch",
-        "WebFetch",
-    ],
-    "ask": [
-        "Write",
-        "CreateFile",
-        "edit_file",
-        "Edit",
-        "Bash",
-        "BashOutput",
-        "Python",
-        "run_shell_command",
-    ],
+    "allow": ["Glob", "Grep", "LS", "Read", "WebSearch", "WebFetch"],
+    "ask": ["Write", "Edit", "Bash", "BashOutput", "Python"],
 }
 
 

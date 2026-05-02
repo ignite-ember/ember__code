@@ -63,7 +63,6 @@ class BackendServer:
         the yielded messages and renders them.
         """
         from ember_code.core.hooks.events import HookEvent
-        from ember_code.protocol.agno_events import RUN_PAUSED_EVENTS
 
         self._processing = True
         team = self._session.main_team
@@ -132,25 +131,20 @@ class BackendServer:
             # Queue hook context for injection
             message = f"{message}\n<hook-context>{hook_result.message}</hook-context>"
 
-        # Stream events from Agno
+        # Stream events from Agno. We multiplex the team's stream with
+        # the sub-agent HITL coordinator — see ``_stream_with_subagent_hitl``
+        # for the full rationale. The same multiplexer is also used by
+        # ``resolve_hitl`` so a parent that pauses (top-level Bash) and
+        # then spawns a sub-agent on resume still gets the sub-agent's
+        # pauses surfaced — an earlier version only multiplexed inside
+        # ``run_message`` and the sub-agent's pauses silently sat in the
+        # coordinator forever.
         media_kwargs = media or {}
         try:
-            async for event in team.arun(message, stream=True, **media_kwargs):
-                # HITL pause — hold the requirement for FE response
-                if isinstance(event, RUN_PAUSED_EVENTS):
-                    for pause_msg in self._handle_pause(event):
-                        yield pause_msg
-                    # Don't yield further — FE must send hitl_response
-                    # and then call continue_run()
-                    return
-
-                proto = serialize_event(event)
-                if proto is not None:
-                    yield proto
-        except asyncio.TimeoutError:
-            yield msg.Error(text="Request timed out — the model took too long to respond.")
-        except Exception as e:
-            yield msg.Error(text=str(e))
+            async for proto in self._stream_with_subagent_hitl(
+                team.arun(message, stream=True, **media_kwargs)
+            ):
+                yield proto
         finally:
             self._processing = False
             await self._close_model_http_client(team)
@@ -163,8 +157,161 @@ class BackendServer:
         if stop_result.message and not stop_result.should_continue:
             yield msg.Info(text=stop_result.message)
 
-        # Compact if needed (caller provides context token count)
-        # This will be triggered by a separate status_update flow
+    async def _stream_with_subagent_hitl(
+        self, team_stream: AsyncIterator[Any]
+    ) -> AsyncIterator[msg.Message]:
+        """Multiplex a team's event stream with the sub-agent coordinator.
+
+        The team's stream and the sub-agent HITL coordinator are two
+        independent producers of messages we need to forward to the FE:
+
+        * ``team_stream`` is whatever Agno is currently driving — the
+          initial ``team.arun`` call from ``run_message``, or a
+          ``team.acontinue_run`` resumption from ``resolve_hitl``.
+        * The coordinator wakes whenever a sub-agent (running inside a
+          ``spawn_agent`` tool) hits a ``RunPausedEvent``. We have to
+          surface that pause to the FE as a ``RunPaused`` message so the
+          dialog appears.
+
+        Both paths must run concurrently with the team stream; otherwise
+        a sub-agent that pauses while the parent is still streaming
+        events would have its requirement sitting in the coordinator
+        forever with no one to forward it. Centralising this here means
+        ``run_message`` AND ``resolve_hitl`` both get the multiplexer —
+        a previous version had it only in ``run_message`` so any sub-
+        agent spawn that happened during a resumed run (parent paused
+        for top-level Bash, user approved, parent resumed and then
+        spawned an architect) silently dropped the architect's pauses.
+
+        The team's own ``RunPausedEvent`` (parent pauses for its own
+        tool) terminates this stream and is forwarded as ``RunPaused``;
+        the FE then routes resolution back through ``resolve_hitl``,
+        which calls this helper again with the resumed stream.
+        """
+        from ember_code.protocol.agno_events import RUN_PAUSED_EVENTS
+
+        sub_hitl = self._session.sub_agent_hitl
+        agno_queue: asyncio.Queue = asyncio.Queue()
+        SENTINEL = object()
+        import logging as _log
+
+        llm_log = _log.getLogger("ember_code.llm_calls")
+
+        # Direct-write trace bypassing the logging stack — see earlier
+        # debugging note. Cheap; one flushed write per pump iteration.
+        import os as _os
+        from pathlib import Path as _Path
+
+        _trace_path = _Path(_os.path.expanduser("~/.ember/hitl_trace.log"))
+        _trace_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _trace(msg_text: str) -> None:
+            try:
+                with open(_trace_path, "a") as _f:
+                    import time as _t
+
+                    _f.write(f"{_t.strftime('%H:%M:%S')} pid={_os.getpid()} {msg_text}\n")
+            except Exception:
+                pass
+
+        async def _drain_team() -> None:
+            try:
+                async for event in team_stream:
+                    await agno_queue.put(("event", event))
+            except Exception as e:
+                await agno_queue.put(("error", e))
+            finally:
+                await agno_queue.put(("done", SENTINEL))
+
+        async def _drain_subagent_hitl() -> None:
+            _trace(f"_stream_mux: drain STARTED (coord_id={id(sub_hitl)})")
+            try:
+                while True:
+                    await sub_hitl.new_arrival.wait()
+                    entries = sub_hitl.list_new_pending()
+                    _trace(f"_stream_mux: drain woke, {len(entries)} entries")
+                    if entries:
+                        await agno_queue.put(("subagent_pause", entries))
+                        _trace(f"_stream_mux: drain enqueued {[rid for rid, _ in entries]}")
+            except asyncio.CancelledError:
+                _trace("_stream_mux: drain cancelled")
+                return
+
+        _trace(f"_stream_mux: starting (coord_id={id(sub_hitl)})")
+        # Hold the team-drain reference so the task isn't GC'd mid-run
+        # (asyncio only weakly references background tasks). We
+        # deliberately don't cancel it in ``finally`` — see comment
+        # below.
+        _team_task = asyncio.create_task(_drain_team())  # noqa: F841
+        sub_task = asyncio.create_task(_drain_subagent_hitl())
+
+        try:
+            while True:
+                kind, payload = await agno_queue.get()
+                if kind == "done":
+                    return
+                if kind == "error":
+                    raise payload
+                if kind == "subagent_pause":
+                    entries = payload
+                    rp = self._build_subagent_run_paused(entries)
+                    llm_log.info(
+                        "subagent_hitl: yielding RunPaused to FE with %d req(s)",
+                        len(entries),
+                    )
+                    yield rp
+                    continue
+                event = payload
+                if isinstance(event, RUN_PAUSED_EVENTS):
+                    for pause_msg in self._handle_pause(event):
+                        yield pause_msg
+                    return
+                proto = serialize_event(event)
+                if proto is not None:
+                    yield proto
+        except asyncio.TimeoutError:
+            yield msg.Error(text="Request timed out — the model took too long to respond.")
+        except Exception as e:
+            yield msg.Error(text=str(e))
+        finally:
+            sub_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await sub_task
+            # Don't cancel team_task — the team's stream may still have
+            # a paused tool we want to drive to completion via
+            # ``resolve_hitl``. The team task naturally exits when the
+            # team's stream ends or errors.
+
+    def _build_subagent_run_paused(self, entries: list) -> msg.Message:
+        """Wrap a batch of sub-agent coordinator entries in a ``RunPaused``.
+
+        The FE renders the confirmation dialog only when it sees
+        ``RunPaused``; bare ``HITLRequest`` falls through. Sub-agent pauses
+        match the FE's expected shape so the same dialog flow applies.
+        Resolution still routes through the coordinator (not the main
+        team's ``acontinue_run``) — see ``resolve_hitl``.
+        """
+        from ember_code.protocol.agno_events import TOOL_NAMES
+
+        requirements = []
+        for req_id, entry in entries:
+            req = entry.requirement
+            tool_exec = getattr(req, "tool_execution", None)
+            raw_name = str(getattr(tool_exec, "tool_name", "") if tool_exec else "")
+            requirements.append(
+                msg.HITLRequest(
+                    requirement_id=req_id,
+                    tool_name=raw_name,
+                    friendly_name=TOOL_NAMES.get(raw_name, raw_name),
+                    tool_args=dict(getattr(tool_exec, "tool_args", {}) if tool_exec else {}),
+                    agent_path=list(getattr(entry, "agent_path", []) or []),
+                )
+            )
+        # ``run_id`` here is the sub-agent's id; the FE doesn't currently
+        # use it for sub-agent pauses (it routes through ``resolve_hitl``
+        # which picks the coordinator path), but we forward it for logs.
+        sub_run_id = entries[0][1].run_id if entries else ""
+        return msg.RunPaused(run_id=sub_run_id, requirements=requirements)
 
     def _handle_pause(self, event: Any) -> list[msg.Message]:
         """Convert a RunPausedEvent into protocol messages and store requirements."""
@@ -199,6 +346,13 @@ class BackendServer:
         self, requirement_id: str, action: str, choice: str = "once"
     ) -> AsyncIterator[msg.Message]:
         """Resolve a HITL requirement and continue the run."""
+        # Sub-agent pauses go through the coordinator: it wakes up the
+        # spawn_agent stream which then issues acontinue_run on the
+        # specialist. The parent run is still streaming separately, so
+        # we don't yield a RunPaused/Continue envelope here — the FE
+        # just knows the prompt is dismissed.
+        if self._session.sub_agent_hitl.resolve(requirement_id, action):
+            return
         entry = self._pending_requirements.pop(requirement_id, None)
         if entry is None:
             yield msg.Error(text=f"Unknown requirement: {requirement_id}")
@@ -211,38 +365,27 @@ class BackendServer:
         else:
             req.reject(note="User denied")
 
-        # Continue the run — may yield more pauses for nested tool calls
-        from ember_code.protocol.agno_events import RUN_PAUSED_EVENTS
-
+        # Continue the run via the same multiplexer used by ``run_message``
+        # so that any sub-agent pauses fired while the parent is resuming
+        # also reach the FE. (Without the multiplexer here, a parent that
+        # pauses for top-level Bash, gets resumed, and then spawns an
+        # architect would have the architect's pauses dropped on the
+        # floor.)
         team = self._session.main_team
         import logging as _log
 
         _llm = _log.getLogger("ember_code.llm_calls")
         _llm.info("resolve_hitl: action=%s, req_id=%s, run_id=%s", action, requirement_id, run_id)
-        try:
-            chunk_count = 0
-            async for event in team.acontinue_run(
+        async for proto in self._stream_with_subagent_hitl(
+            team.acontinue_run(
                 run_id=run_id,
                 session_id=self._session.session_id,
                 requirements=[req],
                 stream=True,
                 stream_events=True,
-            ):
-                chunk_count += 1
-                _llm.info("resolve_hitl chunk #%d: %s", chunk_count, type(event).__name__)
-
-                if isinstance(event, RUN_PAUSED_EVENTS):
-                    for pause_msg in self._handle_pause(event):
-                        yield pause_msg
-                    return  # FE handles the new pause
-
-                proto = serialize_event(event)
-                if proto is not None:
-                    yield proto
-            _llm.info("resolve_hitl done: %d chunks", chunk_count)
-        except Exception as e:
-            _llm.error("resolve_hitl error: %s", e, exc_info=True)
-            yield msg.Error(text=str(e))
+            )
+        ):
+            yield proto
 
         # Fire Stop hook after continuation completes
         from ember_code.core.hooks.events import HookEvent
@@ -396,7 +539,7 @@ class BackendServer:
                 return False, "Login timed out"
 
             _status("Fetching user info...")
-            user_info = await validate_token(token, self._settings.auth.server_url)
+            user_info = await validate_token(token, self._settings.api_url)
             email = user_info.get("email", "") if user_info else ""
 
             # Read expiry from JWT for accurate TTL
@@ -424,20 +567,18 @@ class BackendServer:
 
     def reload_cloud_credentials(self) -> msg.StatusUpdate:
         """Reload cloud credentials after login."""
-        from ember_code.core.auth.credentials import get_access_token, get_org_id, get_org_name
+        from ember_code.core.auth.credentials import CloudCredentials
 
-        creds_file = self._settings.auth.credentials_file
-        self._session._cloud_token = get_access_token(creds_file)
-        self._session._cloud_org_id = get_org_id(creds_file)
-        self._session._cloud_org_name = get_org_name(creds_file)
+        self._session._cloud = CloudCredentials(self._settings.auth.credentials_file)
         self._session.main_team = self._session._build_main_agent()
         return self.get_status()
 
     def clear_cloud_credentials(self) -> msg.StatusUpdate:
         """Clear cloud credentials on logout."""
-        self._session._cloud_token = None
-        self._session._cloud_org_id = None
-        self._session._cloud_org_name = None
+        from ember_code.core.auth.credentials import CloudCredentials
+
+        # Point at a path that doesn't exist so all properties resolve to None.
+        self._session._cloud = CloudCredentials(path="/dev/null")
         self._session.main_team = self._session._build_main_agent()
         return self.get_status()
 
@@ -526,13 +667,21 @@ class BackendServer:
     # ── Accessors for FE (read-only state) ──────────────────────
 
     def wire_queue_hook(self, queue: list) -> None:
-        """Wire the queue injection hook onto the agent's tool hooks."""
+        """Wire queue hooks onto the team.
+
+        - Tool-hook (injector) drains the queue after each tool call so the
+          model sees queued text on its next iteration.
+        - Post-hook (persister) records those drained items as proper
+          user-role history entries before the session is saved.
+        """
         from ember_code.core.queue_hook import create_queue_hook
 
-        hook = create_queue_hook(queue=queue)
+        injector, persister = create_queue_hook(queue=queue)
         team = self._session.main_team
-        existing = team.tool_hooks or []
-        team.tool_hooks = [*existing, hook]
+        existing_tool_hooks = team.tool_hooks or []
+        team.tool_hooks = [*existing_tool_hooks, injector]
+        existing_post_hooks = team.post_hooks or []
+        team.post_hooks = [*existing_post_hooks, persister]
 
     def wire_orchestrate_progress(self, callback) -> None:
         """Set a progress callback on the orchestrate tool."""

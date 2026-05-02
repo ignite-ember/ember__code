@@ -6,6 +6,7 @@ Pure FE — no core imports. Permission checks go through BackendClient RPC.
 from __future__ import annotations
 
 import contextlib
+import logging
 from typing import TYPE_CHECKING
 
 from ember_code.frontend.tui.widgets import PermissionDialog
@@ -13,6 +14,8 @@ from ember_code.frontend.tui.widgets import PermissionDialog
 if TYPE_CHECKING:
     from ember_code.frontend.tui.app import EmberApp
     from ember_code.frontend.tui.conversation_view import ConversationView
+
+_log = logging.getLogger("ember_code.llm_calls")
 
 
 class HITLHandler:
@@ -39,6 +42,18 @@ class HITLHandler:
         tool_name = req.friendly_name or req.tool_name
         tool_args = req.tool_args or {}
         func_name = req.tool_name
+        # Build a path-aware display name when the request came from a
+        # spawned specialist. Empty path means the main agent — show the
+        # tool name alone, same as before. Non-empty path shows the
+        # chain so the user knows which sub-agent is asking.
+        agent_path = list(getattr(req, "agent_path", []) or [])
+        display_name = " → ".join(agent_path + [tool_name]) if agent_path else tool_name
+        _log.info(
+            "hitl_handler: enter req_id=%s tool=%s path=%s",
+            req.requirement_id,
+            tool_name,
+            agent_path,
+        )
 
         # Check permission rules via BE RPC
         backend = self._app.backend
@@ -49,30 +64,45 @@ class HITLHandler:
                 func_name=func_name,
                 tool_args=tool_args,
             )
-        except Exception:
+        except Exception as exc:
+            _log.info("hitl_handler: check_permission rpc failed (%s) — defaulting to ask", exc)
             level = "ask"
+        _log.info("hitl_handler: check_permission returned level=%s", level)
 
         if level == "allow":
+            _log.info("hitl_handler: auto-approving via existing rule")
             return "confirm", "once"
         if level == "deny":
+            _log.info("hitl_handler: auto-denying via existing rule")
             return "reject", ""
 
         # Check session approvals
         args_str = _format_args_short(tool_args)
         session_key = f"{tool_name}({args_str})"
         if session_key in self._session_approvals:
+            _log.info("hitl_handler: auto-approving via session approval")
             return "confirm", "once"
 
-        # Show dialog
+        # Show dialog. For sub-agent requests, prefix the dialog title
+        # with the dispatch chain so the user knows which specialist
+        # is asking — not just the tool.
         details = _format_args_detail(tool_args)
         dialog = PermissionDialog(
-            tool_name=tool_name,
+            tool_name=display_name,
             details=details,
         )
+        _log.info("hitl_handler: about to mount dialog")
         await self._app.mount(dialog)
+        _log.info("hitl_handler: dialog mounted, focusing")
         dialog.focus()
+        _log.info("hitl_handler: awaiting user decision")
 
         approved = await dialog.wait_for_decision()
+        _log.info(
+            "hitl_handler: dialog returned approved=%s choice=%s",
+            approved,
+            getattr(dialog, "last_choice", None),
+        )
         if not approved:
             # Save deny rule via BE RPC
             rule = _build_rule(tool_name, tool_args)

@@ -25,6 +25,53 @@ _MAX_BUFFER = 1_048_576
 _MAX_RESULT_CHARS = 30_000
 
 
+def _normalize_shell_args(args: "list[str] | str") -> tuple[list[str], str]:
+    """Accept any of the shapes the model tends to emit and return ``(argv, cmd_str)``.
+
+    Models routinely send one of three shapes when asked to run a shell
+    command. We normalize all three to a proper argv list (suitable for
+    ``subprocess.Popen(argv)``) plus a printable command string.
+
+    Shapes handled:
+      1. ``["ls", "-la"]`` — proper argv. Pass through.
+      2. ``"ls -la"`` — single shell-style string. ``shlex.split`` it.
+      3. ``["ls -la"]`` — single-element list whose only element is a
+         whole shell command. Same as (2) — split it.
+      4. ``["ls -la", "cat foo"]`` — list of shell commands to run in
+         sequence. We join them with ``&&`` and run via ``sh -c``.
+
+    Shape (4) is the easiest case to misclassify as (1); we detect it by
+    checking whether ANY element contains whitespace and is not a valid
+    standalone path/option. When detected, we fall back to ``sh -c``.
+    """
+    import shlex
+
+    # String form
+    if isinstance(args, str):
+        argv = shlex.split(args)
+        return argv, args
+
+    # List form — at this point ``args`` is a list[str].
+    if not args:
+        return [], ""
+
+    # Detect shape (3): ["ls -la"] — single element with whitespace.
+    if len(args) == 1 and any(ch.isspace() for ch in args[0]):
+        argv = shlex.split(args[0])
+        return argv, args[0]
+
+    # Detect shape (4): list of multiple commands, each containing
+    # whitespace (means each element is its own shell command, not a
+    # single argv token). Fall back to sh -c chained with ``&&``.
+    multi_cmd = len(args) > 1 and all(any(ch.isspace() for ch in a) for a in args)
+    if multi_cmd:
+        joined = " && ".join(args)
+        return ["sh", "-c", joined], joined
+
+    # Default: treat as proper argv. ``["ls", "-la"]`` lands here.
+    return list(args), " ".join(args)
+
+
 def _truncate(text: str, limit: int = _MAX_RESULT_CHARS) -> str:
     """Truncate output to avoid sending huge tool results to the LLM."""
     if len(text) <= limit:
@@ -189,7 +236,7 @@ class EmberShellTools(Toolkit):
 
     def run_shell_command(
         self,
-        args: list[str],
+        args: "list[str] | str",
         timeout: int = 7,
         background: bool = False,
         tail: int = 100,
@@ -213,7 +260,11 @@ class EmberShellTools(Toolkit):
         backgrounded and its PID is returned.
 
         Args:
-            args: Command and arguments as a list, e.g. ["python", "-m", "uvicorn", "main:app"].
+            args: Either a proper argv list (``["ls", "-la"]``) OR a single
+                shell-style string (``"ls -la"``) OR a list whose elements
+                are themselves shell-style strings (``["ls -la", "cat foo"]``,
+                run sequentially via ``sh -c``). The runtime normalizes
+                whichever shape the model emits.
             timeout: Max seconds to wait for the command to finish. Default 7.
             background: If True, start in background and return PID immediately.
             tail: Number of output lines to return. Default 100.
@@ -221,12 +272,15 @@ class EmberShellTools(Toolkit):
         Returns:
             Command output, or a message with the PID for background processes.
         """
-        cmd_str = " ".join(args)
+        # Normalize the input shape. The model wants to write shell-style
+        # ("ls -la") but the underlying subprocess.Popen needs argv. Accept
+        # either and dispatch accordingly.
+        argv, cmd_str = _normalize_shell_args(args)
         logger.info("Shell: running %s (timeout=%d, bg=%s)", cmd_str, timeout, background)
 
         try:
             proc = subprocess.Popen(
-                args,
+                argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

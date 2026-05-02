@@ -202,12 +202,14 @@ class TestFileResolutionAndAttachment:
 
 
 class TestScheduleShowCancel:
+    """SQLite-backed tests; each test gets its own tmp file."""
+
     @pytest.mark.asyncio
     async def test_schedule_show_existing(self, tmp_path):
         from ember_code.core.scheduler.models import ScheduledTask, TaskStatus
         from ember_code.core.scheduler.store import TaskStore
 
-        store = TaskStore(db_path=tmp_path / "test.db")
+        store = TaskStore(db_path=tmp_path / "state.db")
         task = ScheduledTask(
             id="t1",
             description="test task",
@@ -216,7 +218,6 @@ class TestScheduleShowCancel:
             status=TaskStatus.pending,
         )
         await store.add(task)
-
         result = await store.get("t1")
         assert result is not None
         assert result.description == "test task"
@@ -226,7 +227,7 @@ class TestScheduleShowCancel:
         from ember_code.core.scheduler.models import ScheduledTask, TaskStatus
         from ember_code.core.scheduler.store import TaskStore
 
-        store = TaskStore(db_path=tmp_path / "test.db")
+        store = TaskStore(db_path=tmp_path / "state.db")
         task = ScheduledTask(
             id="t2",
             description="cancel me",
@@ -236,7 +237,6 @@ class TestScheduleShowCancel:
         )
         await store.add(task)
         await store.update_status("t2", TaskStatus.cancelled)
-
         result = await store.get("t2")
         assert result.status == TaskStatus.cancelled
 
@@ -244,8 +244,8 @@ class TestScheduleShowCancel:
     async def test_schedule_show_nonexistent(self, tmp_path):
         from ember_code.core.scheduler.store import TaskStore
 
-        store = TaskStore(db_path=tmp_path / "test.db")
-        result = await store.get("nonexistent")
+        store = TaskStore(db_path=tmp_path / "state.db")
+        result = await store.get("nonexistent_zzzz")
         assert result is None
 
 

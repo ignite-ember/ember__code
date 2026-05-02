@@ -1,6 +1,20 @@
 """Command handler — processes slash commands for the TUI."""
 
+import logging
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
+
+
+def _open_in_browser(url: str) -> None:
+    """Best-effort open in browser; failures are logged, never raised."""
+    import webbrowser
+
+    try:
+        webbrowser.open(url)
+    except Exception as exc:  # pragma: no cover — platform-dependent
+        logger.info("could not open browser for %s: %s", url, exc)
+
 
 SHORTCUT_HELP = (
     "## Keyboard Shortcuts\n"
@@ -142,6 +156,28 @@ class CommandHandler:
             "- `/knowledge search <query>` — search the knowledge base\n"
             "- `/sync-knowledge` — sync between git file and vector DB"
         ),
+        "codeindex": (
+            "## CodeIndex\n\n"
+            "Semantic code intelligence over your repo. The Ember GitHub App "
+            "indexes every commit on the server and ships per-commit changesets "
+            "to your machine, where they're applied to a local Chroma index. "
+            "Search runs entirely locally — your code summaries never leave "
+            "your laptop after the initial fetch.\n\n"
+            "**Setup (one-time):**\n"
+            "- `/codeindex install` — open the GitHub App install page,\n"
+            "  pre-pointed at your current repo. Click **Install** and you're done.\n\n"
+            "**Daily commands:**\n"
+            "- `/codeindex sync` — pull and apply the changeset for the current commit\n"
+            "- `/codeindex search <query>` — semantic search the indexed commit\n"
+            "- `/codeindex item <id>` — full details for one item\n"
+            "- `/codeindex commits` — list locally-indexed commits\n"
+            "- `/codeindex prune` — drop stale, non-branch commits\n"
+            "- `/codeindex status` — show local HEAD, last-synced sha, install state\n\n"
+            "**Auto-sync:**\n"
+            "Sync fires on app startup, on `/clear`, and whenever your local "
+            "HEAD moves (after `git pull`, branch switch, etc.) — no manual "
+            "trigger needed in the steady state."
+        ),
         "memory": (
             "## Memory & Learning\n\n"
             "Ember Code learns your preferences automatically from conversations.\n\n"
@@ -248,9 +284,12 @@ class CommandHandler:
 
     async def _cmd_clear(self, _args: str) -> "CommandResult":
         # Generate new session_id so Agno starts fresh history
+        import asyncio
         import uuid
 
         self._session.session_id = str(uuid.uuid4())[:8]
+        # New dialogue → re-pull the changeset for current HEAD (fire-and-forget).
+        asyncio.create_task(self._session.code_index_sync.sync_now())
         return CommandResult.clear()
 
     async def _cmd_sessions(self, _args: str) -> "CommandResult":
@@ -337,28 +376,24 @@ class CommandHandler:
 
     async def _cmd_knowledge(self, args: str) -> "CommandResult":
         """Handle /knowledge commands: add url|path|text, search, status."""
-        # Ensure knowledge is loaded (deferred from startup)
-        await self._session._ensure_knowledge()
-
+        mgr = self._session.knowledge_mgr
         parts = args.strip().split(None, 1)
         subcommand = parts[0].lower() if parts else ""
         sub_args = parts[1].strip() if len(parts) > 1 else ""
 
         if subcommand == "add" and sub_args:
-            # Detect if it's a URL, path, or text
-            if sub_args.startswith("http://") or sub_args.startswith("https://"):
-                result = await self._session.knowledge_mgr.add(url=sub_args)
+            if sub_args.startswith(("http://", "https://")):
+                result = await mgr.add_url(sub_args)
             elif "/" in sub_args or sub_args.startswith("."):
-                result = await self._session.knowledge_mgr.add(path=sub_args)
+                result = await mgr.add_path(sub_args)
             else:
-                result = await self._session.knowledge_mgr.add(text=sub_args)
-
+                result = await mgr.add(text=sub_args)
             if not result.success:
                 return CommandResult.error(result.error)
             return CommandResult.info(result.message)
 
         if subcommand == "search" and sub_args:
-            response = await self._session.knowledge_mgr.search(sub_args)
+            response = await mgr.search(sub_args)
             if not response.results:
                 return CommandResult.info("No results found.")
             lines = f"## Knowledge Search ({response.total} results)\n"
@@ -368,17 +403,13 @@ class CommandHandler:
             return CommandResult.markdown(lines)
 
         # Default: status
-        status = self._session.knowledge_mgr.status()
+        status = await mgr.status()
         if not status.enabled:
             if self._session.settings.knowledge.enabled:
                 if self._session._knowledge_error:
                     return CommandResult.error(
                         f"Knowledge failed to load: {self._session._knowledge_error}"
                     )
-                if self._session._knowledge_loading and not (
-                    self._session._knowledge_event and self._session._knowledge_event.is_set()
-                ):
-                    return CommandResult.info("Knowledge base is loading... Try again in a moment.")
                 return CommandResult.error("Knowledge base failed to initialize.")
             return CommandResult.info(
                 "Knowledge base is disabled. Set knowledge.enabled=true in config."
@@ -390,10 +421,150 @@ class CommandHandler:
             f"- **Documents:** {status.document_count}\n"
             f"- **Embedder:** {status.embedder}\n"
             "\n**Commands:**\n"
-            "- `/knowledge add <url>` — add a URL\n"
-            "- `/knowledge add <path>` — add a file/directory\n"
+            "- `/knowledge add <url>` — fetch and ingest a URL (web, YouTube, Wikipedia, ArXiv, PDF)\n"
+            "- `/knowledge add <path>` — ingest a file or directory\n"
             "- `/knowledge add <text>` — add inline text\n"
             "- `/knowledge search <query>` — search the knowledge base\n"
+        )
+
+    async def _cmd_codeindex(self, args: str) -> "CommandResult":
+        """Handle /codeindex commands: search, item, commits, prune, sync, status."""
+        index = self._session.code_index
+        sync = self._session.code_index_sync
+        parts = args.strip().split(None, 1)
+        subcommand = parts[0].lower() if parts else ""
+        sub_args = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcommand == "search" and sub_args:
+            results = await index.search(query=sub_args, limit=10)
+            if not results:
+                return CommandResult.info("No results.")
+            lines = f"## CodeIndex Search ({len(results)} results)\n"
+            for i, r in enumerate(results, 1):
+                lines += (
+                    f"\n**{i}. {r['name']}** (`{r['item_id']}`)"
+                    f" — {r['path']} (score {r['score']:.3f})\n"
+                    f"{r['chunk_preview']}\n"
+                )
+            return CommandResult.markdown(lines)
+
+        if subcommand == "item" and sub_args:
+            item = await index.get_item(item_id=sub_args.strip())
+            if item is None:
+                return CommandResult.error(f"Item {sub_args.strip()} not found.")
+            preview = item["content"]
+            if len(preview) > 1500:
+                preview = preview[:1500] + "..."
+            return CommandResult.markdown(
+                f"## {item['name']}\n"
+                f"- **id:** `{item['item_id']}`\n"
+                f"- **path:** {item['path']}\n"
+                f"- **type:** {item['type']}\n"
+                f"- **commit:** {item['commit']}\n\n"
+                f"```\n{preview}\n```"
+            )
+
+        if subcommand == "commits":
+            state = index.manifest.load()
+            if not state.commits:
+                return CommandResult.info("No commits indexed.")
+            lines = f"## Indexed Commits (head: `{state.head or 'none'}`)\n"
+            for sha, info in sorted(
+                state.commits.items(),
+                key=lambda kv: kv[1].last_used_at,
+                reverse=True,
+            ):
+                head_marker = " (HEAD)" if sha == state.head else ""
+                branch = f" branches: {', '.join(info.branch_refs)}" if info.branch_refs else ""
+                lines += f"\n- `{sha}`{head_marker} — last used {info.last_used_at}{branch}"
+            return CommandResult.markdown(lines)
+
+        if subcommand == "prune":
+            dropped = await index.prune()
+            if not dropped:
+                return CommandResult.info("Nothing to prune.")
+            return CommandResult.info(f"Dropped {len(dropped)} commit(s): {', '.join(dropped)}")
+
+        if subcommand == "sync":
+            target_sha = sub_args or None
+            result = await sync.sync_now(sha=target_sha)
+            if result.link_start_url:
+                _open_in_browser(result.link_start_url)
+                lines = (
+                    f"### CodeIndex needs setup\n"
+                    f"{result.reason}\n\n"
+                    f"Opening your browser to:\n"
+                    f"`{result.link_start_url}`\n\n"
+                    f"After the GitHub UI finishes, run `/codeindex sync` again."
+                )
+                return CommandResult.markdown(lines)
+            if result.skipped:
+                return CommandResult.info(f"Sync skipped: {result.reason}")
+            if result.error:
+                return CommandResult.error(
+                    f"Sync of {result.commit_sha[:8] if result.commit_sha else '?'} failed: {result.error}"
+                )
+            stats = result.stats
+            return CommandResult.info(
+                f"Synced {result.commit_sha[:8]}: "
+                f"{stats.items_upserted} upserts, {stats.items_deleted} deletes, "
+                f"{stats.references_upserted} refs."
+            )
+
+        if subcommand == "install":
+            # Explicit "open the install page for this repo" entry point —
+            # useful when `sync` already succeeded but the user wants to
+            # add a sibling repo, or revisit the install screen.
+            resolver = sync.resolver
+            if resolver is None:
+                return CommandResult.error("Resolver not available.")
+            resolved = await resolver.resolve(force=True)
+            if resolved is None:
+                return CommandResult.error(
+                    "Could not reach Ember Cloud — check `/login` and `api_url`."
+                )
+            if not resolved.needs_install:
+                return CommandResult.info(
+                    f"This repo is already registered (`{resolved.repository_id}`)."
+                )
+            if not resolved.install_url:
+                return CommandResult.error(
+                    "Server didn't return an install URL — `github_app_slug` may be unset."
+                )
+            _open_in_browser(resolved.install_url)
+            return CommandResult.markdown(
+                f"### Install Ember CodeIndex\nOpening your browser:\n`{resolved.install_url}`"
+            )
+
+        if subcommand == "status":
+            local_sha = sync.current_sha()
+            last = sync.last_synced_sha
+            head = index.head()
+            remote_url = sync.resolver.remote_url() if sync.resolver else None
+            resolved = sync.resolver.cached if sync.resolver else None
+            lines = "## CodeIndex Status\n"
+            lines += f"- local HEAD: `{local_sha or 'not a git repo'}`\n"
+            lines += f"- git remote: `{remote_url or 'not a git repo'}`\n"
+            lines += f"- last synced: `{last or 'never'}`\n"
+            lines += f"- index head: `{head or 'none'}`\n"
+            if resolved is None:
+                lines += "- discovered: `not yet (run /codeindex sync)`\n"
+            elif resolved.needs_install:
+                lines += "- discovered: `install required`\n"
+                lines += f"- install URL: `{resolved.install_url or 'unavailable'}`\n"
+            else:
+                lines += f"- discovered: `{resolved.repository_id}`\n"
+            return CommandResult.markdown(lines)
+
+        return CommandResult.markdown(
+            "## CodeIndex\n"
+            "- `/codeindex search <query>` — semantic search the head commit\n"
+            "- `/codeindex item <id>` — show full item details\n"
+            "- `/codeindex commits` — list indexed commits\n"
+            "- `/codeindex prune` — drop stale, non-branch commits\n"
+            "- `/codeindex sync [sha]` — pull and apply a changeset (defaults to HEAD)\n"
+            "- `/codeindex install` — open the GitHub App install page for this repo\n"
+            "- `/codeindex status` — show sync state and install progress\n"
         )
 
     async def _cmd_model(self, args: str) -> "CommandResult":
@@ -436,7 +607,7 @@ class CommandHandler:
             f"{'injection ' if s.guardrails.prompt_injection else ''}"
             f"{'moderation ' if s.guardrails.moderation else ''}"
             f"{'(none)' if not any([s.guardrails.pii_detection, s.guardrails.prompt_injection, s.guardrails.moderation]) else ''}\n"
-            f"- **Knowledge:** {'enabled (' + s.knowledge.embedder + ')' if s.knowledge.enabled else 'disabled'}\n"
+            f"- **Knowledge:** {'enabled' if s.knowledge.enabled else 'disabled'}\n"
             f"- **Compression:** enabled\n"
             f"- **Session summaries:** enabled\n"
             f"- **Max agents:** {s.orchestration.max_total_agents}\n"
@@ -459,9 +630,9 @@ class CommandHandler:
         # Clear in-memory cloud state and rebuild agent with direct model URL
         messages = []
         if self._session:
-            self._session._cloud_token = None
-            self._session._cloud_org_id = None
-            self._session._cloud_org_name = None
+            from ember_code.core.auth.credentials import CloudCredentials
+
+            self._session._cloud = CloudCredentials(path="/dev/null")
 
             # If current model uses cloud_token, switch to a non-cloud model
             current = self._session.settings.models.default
@@ -626,7 +797,6 @@ class CommandHandler:
         return CommandResult.markdown(format_results(results))
 
     async def _cmd_sync_knowledge(self, _args: str) -> "CommandResult":
-        await self._session._ensure_knowledge()
         if not self._session.knowledge_mgr.share_enabled():
             return CommandResult.info(
                 "Knowledge sharing is not enabled. Set knowledge.share=true in config."
@@ -674,6 +844,7 @@ class CommandHandler:
         "/rename": _cmd_rename,
         "/memory": _cmd_memory,
         "/knowledge": _cmd_knowledge,
+        "/codeindex": _cmd_codeindex,
         "/config": _cmd_config,
         "/model": _cmd_model,
         "/mcp": _cmd_mcp,

@@ -21,7 +21,12 @@ if not _llm_logger.handlers:
     _llm_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
     _llm_logger.addHandler(_llm_handler)
     _llm_logger.setLevel(logging.INFO)
-    _llm_logger.propagate = False  # don't duplicate to root
+    # Propagate to root too — so when --debug is on, llm_calls entries
+    # also land in ~/.ember/debug.log alongside everything else. Without
+    # this, BE-side diagnostics (drain task lifecycle, sub-agent pause
+    # surfacing) are silently sent only to llm_calls.log, which makes
+    # cross-referencing event flows with the FE timeline impossible.
+    _llm_logger.propagate = True
 
     # Also capture httpx connection lifecycle to diagnose hanging requests
     _httpx_logger = logging.getLogger("httpx")
@@ -220,10 +225,10 @@ class ModelRegistry:
         self.context_windows = ContextWindowResolver()
 
         # Resolve cloud credentials for inference routing
-        from ember_code.core.auth.credentials import get_access_token
+        from ember_code.core.auth.credentials import CloudCredentials
 
-        self._cloud_token = get_access_token(settings.auth.credentials_file)
-        self._cloud_server_url = settings.auth.server_url if self._cloud_token else None
+        self._cloud_token = CloudCredentials(settings.auth.credentials_file).access_token
+        self._cloud_server_url = settings.api_url if self._cloud_token else None
 
     def get_model(self, name: str | None = None) -> OpenAILike:
         """Get an Agno model instance by registry name."""
@@ -283,13 +288,19 @@ class ModelRegistry:
             kwargs["max_tokens"] = entry["max_tokens"]
 
         # Request timeout — prevents indefinite hangs when the server or
-        # upstream provider stops responding.  Configurable per model via
-        # ``timeout`` in the registry entry; defaults to 120s.
-        kwargs["timeout"] = entry.get("timeout", 120)
+        # upstream provider stops responding. Configurable per model via
+        # ``timeout`` in the registry entry; defaults to 60s. The same
+        # value goes on BOTH the OpenAI-SDK ``timeout`` kwarg AND the
+        # underlying ``httpx.AsyncClient`` we pass in — without setting
+        # it on the AsyncClient too, the SDK-level timeout is shadowed
+        # by httpx's defaults and hung connections can wedge forever.
+        timeout_s = entry.get("timeout", 60)
+        kwargs["timeout"] = timeout_s
 
         # Short keepalive expiry avoids stale connections that hang
         # when reused after idle periods (e.g. between user messages).
         kwargs["http_client"] = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_s),
             limits=httpx.Limits(
                 max_connections=10,
                 max_keepalive_connections=5,
@@ -342,8 +353,8 @@ class ModelRegistry:
 
         # Fall back to stored login credentials for Ember-hosted models
         if "ignite-ember.sh" in entry.get("url", ""):
-            from ember_code.core.auth.credentials import get_access_token
+            from ember_code.core.auth.credentials import CloudCredentials
 
-            return get_access_token()
+            return CloudCredentials().access_token
 
         return None

@@ -113,6 +113,12 @@ class HITLRequest(Message):
     friendly_name: str = ""
     tool_args: dict[str, Any] = Field(default_factory=dict)
     details: str = ""
+    # Chain of agents that produced this request, parent → leaf.
+    # Empty / single-entry means it's from the main agent. For sub-agent
+    # HITL it's the dispatch path, e.g. ["architect"] when the main agent
+    # spawned the architect, or ["architect", "reviewer"] if the architect
+    # then spawned a reviewer that asked for shell access.
+    agent_path: list[str] = Field(default_factory=list)
 
 
 class TaskCreated(Message):

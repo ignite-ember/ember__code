@@ -138,9 +138,11 @@ class TestNextOccurrence:
 
 
 class TestTaskStore:
+    """Each test gets its own SQLite tmp file. No cross-test interference."""
+
     @pytest.fixture
     def store(self, tmp_path):
-        return TaskStore(db_path=tmp_path / "test_scheduler.db")
+        return TaskStore(db_path=tmp_path / "state.db")
 
     def _make_task(self, **kwargs):
         defaults = {
@@ -189,8 +191,8 @@ class TestTaskStore:
         )
 
         due = await store.get_due_tasks()
-        assert len(due) == 1
-        assert due[0].id == "past"
+        ids = [t.id for t in due]
+        assert ids == ["past"]
 
     @pytest.mark.asyncio
     async def test_get_all_excludes_done(self, store):
@@ -199,11 +201,10 @@ class TestTaskStore:
         await store.update_status("b", TaskStatus.completed)
 
         active = await store.get_all(include_done=False)
-        assert len(active) == 1
-        assert active[0].id == "a"
+        assert [t.id for t in active] == ["a"]
 
         all_tasks = await store.get_all(include_done=True)
-        assert len(all_tasks) == 2
+        assert {t.id for t in all_tasks} == {"a", "b"}
 
     @pytest.mark.asyncio
     async def test_recurrence_persisted(self, store):

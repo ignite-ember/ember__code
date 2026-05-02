@@ -113,10 +113,10 @@ class RunController:
 
     def _has_usable_model(self) -> bool:
         """Check if there's at least one model with valid credentials."""
-        from ember_code.core.auth.credentials import get_access_token
+        from ember_code.core.auth.credentials import CloudCredentials
 
         settings = self._app.settings
-        cloud_token = get_access_token(settings.auth.credentials_file)
+        cloud_token = CloudCredentials(settings.auth.credentials_file).access_token
         for cfg in settings.models.registry.values():
             key = cfg.get("api_key", "")
             if key == "cloud_token" and cloud_token:
@@ -422,6 +422,12 @@ class RunController:
                 self._finalize_spinner()
                 self._status.end_run()
                 self._status.update_context_usage()
+            elif self._spinner:
+                # Mid-run iteration finished. The next model call hasn't
+                # started yet — flip the label back to "Thinking" so the
+                # idle counter in the activity widget resets and the user
+                # sees a fresh signal rather than a stale "Streaming".
+                self._spinner.set_label("Thinking")
 
         elif isinstance(proto, msg.RunStarted):
             await self._on_agent_started(

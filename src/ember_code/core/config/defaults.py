@@ -2,7 +2,6 @@
 
 DEFAULT_CONFIG = {
     "api_url": "https://api.ignite-ember.sh",
-    "version_endpoint": "/v1/cli/version",
     "update_check_ttl": 0,
     "models": {
         "default": "MiniMax-M2.5",
@@ -53,9 +52,7 @@ DEFAULT_CONFIG = {
         ],
     },
     "storage": {
-        "backend": "sqlite",
-        "session_db": "~/.ember/sessions.db",
-        "memory_db": "~/.ember/memory.db",
+        "data_dir": "~/.ember",
         "audit_log": "~/.ember/audit.log",
         "max_history_runs": 10000,
     },
@@ -104,23 +101,10 @@ DEFAULT_CONFIG = {
         "prompt_injection": False,
         "moderation": False,
     },
-    "embeddings": {
-        "default": "ember",
-        "registry": {
-            "ember": {
-                "provider": "openai_compatible",
-                "model_id": "text2vec-transformers",
-                "url": "https://api.ignite-ember.sh",
-                "dimensions": 384,
-            },
-        },
-    },
     "knowledge": {
         "enabled": True,
         "collection_name": "ember_knowledge",
-        "chroma_db_path": "~/.ember/chromadb",
         "max_results": 10,
-        "embedder": "local",
     },
     "agents": {
         "cross_tool_support": True,

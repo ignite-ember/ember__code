@@ -34,16 +34,30 @@ class EvalSuite(BaseModel):
 
     @classmethod
     def load_all(cls, project_dir: Path) -> list["EvalSuite"]:
-        """Discover and load all eval suites from .ember/evals/."""
-        evals_dir = project_dir / ".ember" / "evals"
-        if not evals_dir.is_dir():
-            return []
+        """Discover and load all eval suites.
 
-        suites = []
-        for path in sorted(evals_dir.glob("*.yaml")):
-            suite = load_eval_file(path)
-            if suite:
-                suites.append(suite)
+        Looks in two locations:
+          - ``<project_dir>/evals/`` — committed, for built-in agent
+            datasets shipped with the repo (e.g. ember-code's own evals).
+          - ``<project_dir>/.ember/evals/`` — local user-authored evals
+            (gitignored), for custom agents in the user's project.
+
+        Both are merged. Same-named files in ``.ember/evals/`` win on
+        conflict — the user's local copy overrides the shipped one.
+        """
+        suites: list[EvalSuite] = []
+        seen_files: set[str] = set()
+
+        for evals_dir in (project_dir / ".ember" / "evals", project_dir / "evals"):
+            if not evals_dir.is_dir():
+                continue
+            for path in sorted(evals_dir.glob("*.yaml")):
+                if path.name in seen_files:
+                    continue
+                seen_files.add(path.name)
+                suite = load_eval_file(path)
+                if suite:
+                    suites.append(suite)
         return suites
 
 

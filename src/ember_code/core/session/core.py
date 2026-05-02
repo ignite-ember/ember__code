@@ -11,7 +11,8 @@ from typing import Any
 from agno.agent import Agent
 from agno.compression.manager import CompressionManager
 
-from ember_code.core.auth.credentials import get_access_token, get_org_id, get_org_name
+from ember_code.core.auth.credentials import CloudCredentials
+from ember_code.core.code_index import CodeIndex, CodeIndexSyncManager
 from ember_code.core.config.models import ModelRegistry
 from ember_code.core.config.permissions import PermissionGuard
 from ember_code.core.config.settings import Settings
@@ -69,25 +70,26 @@ class Session:
         initialize_project(self.project_dir)
 
         # ── Storage (Agno AsyncBaseDb) ────────────────────────────────
-        self.db = setup_db(settings)
+        self.db = setup_db(settings, project_dir=self.project_dir)
 
-        # ── Knowledge (ChromaDB + Agno Knowledge) ─────────────────────
-        # Model download can take 30s+ on first run, so we load in a
-        # background thread.  The session is fully usable while it loads;
-        # once ready, knowledge + dependent managers are hot-swapped in.
+        # ── Knowledge (Chroma-backed) ─────────────────────────────────
+        # Construction of ``KnowledgeIndex`` is cheap (no model load —
+        # the embedder is the shared singleton). We initialize eagerly
+        # and treat ``_knowledge_ready`` as already set.
         self._knowledge_error: str | None = None
         self._knowledge_ready = threading.Event()
+        self._knowledge_ready.set()
         if pre_knowledge is not None:
             self.knowledge = pre_knowledge
-            self._knowledge_ready.set()
             logger.info("Knowledge: using pre-loaded instance")
         elif settings.knowledge.enabled:
-            self.knowledge = None
-            # Thread is started later via start_knowledge_background()
-            # to avoid GIL contention with the main thread during startup.
+            from ember_code.core.knowledge.manager import KnowledgeManager
+
+            self.knowledge = KnowledgeManager(
+                settings, project_dir=self.project_dir
+            ).create_knowledge()
         else:
             self.knowledge = None
-            self._knowledge_ready.set()
             logger.info("Knowledge: disabled in settings")
 
         # ── Permission Guard ─────────────────────────────────────────
@@ -111,7 +113,12 @@ class Session:
         )
 
         # ── Agent Pool (definitions only — agents built after MCP connects) ─
-        self.pool = AgentPool()
+        # Share the session's SQLite ``db`` so paused sub-agent runs land
+        # in the same store as the main team's runs. Agno's
+        # ``acontinue_run`` looks up the run by ``(run_id, session_id)``
+        # in the agent's db; without one HITL resume fails with
+        # "No runs found for run ID …".
+        self.pool = AgentPool(db=self.db)
         self.pool.load_definitions(settings, self.project_dir)
         if settings.orchestration.generate_ephemeral:
             self.pool.init_ephemeral(
@@ -132,11 +139,9 @@ class Session:
         # ── Learning (Agno LearningMachine) ─────────────────────────
         self._learning = create_learning_machine(settings, self.db)
 
-        # ── Ember Cloud auth (for CodeIndex + cloud indicator) ─────
-        self._cloud_token = get_access_token(settings.auth.credentials_file)
-        self._cloud_server_url = settings.auth.server_url
-        self._cloud_org_id = get_org_id(settings.auth.credentials_file)
-        self._cloud_org_name = get_org_name(settings.auth.credentials_file)
+        # ── Ember Cloud auth (cloud-routed models + status indicator) ─
+        self._cloud = CloudCredentials(settings.auth.credentials_file)
+        self._cloud_server_url = settings.api_url
 
         # ── MCP Client Manager (user-configured servers only) ────────
         self.mcp_manager = MCPClientManager(self.project_dir)
@@ -145,12 +150,27 @@ class Session:
         # ── Guardrails ───────────────────────────────────────────────
         self.guardrail_runner = GuardrailRunner(settings)
 
+        # ── Sub-agent HITL bridge ────────────────────────────────────
+        # Sub-agents spawned by the orchestrator emit RunPausedEvents
+        # inside the parent's tool execution; without this coordinator
+        # the pauses are lost and tool calls return empty. See
+        # core/sub_agent_hitl.py.
+        from ember_code.core.sub_agent_hitl import SubAgentHITLCoordinator
+
+        self.sub_agent_hitl = SubAgentHITLCoordinator()
+
         # ── Delegated managers ───────────────────────────────────────
         self.persistence = SessionPersistence(self.db, self.session_id)
         self.memory_mgr = SessionMemoryManager(self.db, settings, self.user_id)
         self.knowledge_mgr = SessionKnowledgeManager(self.knowledge, settings, self.project_dir)
-        # Share knowledge_mgr with the pool so all sub-agents get knowledge tools
+        # Share knowledge_mgr with the pool so all sub-agents get the toolkit.
         self.pool._knowledge_mgr = self.knowledge_mgr if self.knowledge else None
+
+        # ── CodeIndex (per-project Chroma) + sync manager ────────────
+        self.code_index = CodeIndex(project=self.project_dir, data_dir=settings.storage.data_dir)
+        self.code_index_sync = CodeIndexSyncManager.from_settings(
+            settings, project_dir=self.project_dir, code_index=self.code_index
+        )
 
         # ── Main Agent (single agent with all tools + orchestration) ──
         self.main_team = self._build_main_agent()
@@ -158,17 +178,17 @@ class Session:
     @property
     def cloud_connected(self) -> bool:
         """Whether the session is authenticated with Ember Cloud."""
-        return self._cloud_token is not None
+        return self._cloud.is_authenticated
 
     @property
     def cloud_org_id(self) -> str | None:
         """The organization ID from the Ember Cloud JWT."""
-        return self._cloud_org_id
+        return self._cloud.org_id
 
     @property
     def cloud_org_name(self) -> str | None:
         """The organization display name from the Ember Cloud JWT."""
-        return self._cloud_org_name
+        return self._cloud.org_name
 
     def reload_hooks(self) -> int:
         """Reload hooks from settings files. Returns the number of hooks loaded."""
@@ -200,16 +220,18 @@ class Session:
                 project_dir=self.project_dir,
                 settings_permissions=self.settings.permissions,
             ),
-            cloud_token=self._cloud_token,
+            cloud_token=self._cloud.access_token,
             cloud_server_url=self._cloud_server_url,
         )
+        # Shell-first toolkit: Bash handles search/find/list/read directly
+        # (`rg`, `find`, `cat`, etc.). Edit/Write are kept for surgical
+        # changes and new files because shell-based alternatives (sed,
+        # heredoc rewrites) are fragile. Grep/Glob/Read toolkits intentionally
+        # omitted — they overlapped with shell and confused the model.
         tool_names = [
-            "Read",
             "Write",
             "Edit",
             "Bash",
-            "Grep",
-            "Glob",
             "Schedule",
             "NotebookEdit",
         ]
@@ -241,6 +263,7 @@ class Session:
             current_depth=0,
             hook_executor=self.hook_executor,
             session_id=self.session_id,
+            hitl_coordinator=self.sub_agent_hitl,
         )
         tools.append(orchestrate)
 
@@ -249,7 +272,7 @@ class Session:
         if reasoning:
             tools.append(reasoning)
 
-        # Knowledge tools — lets agents search, add, and manage knowledge
+        # Knowledge tools — chroma-backed; available when knowledge is configured.
         if self.knowledge is not None:
             from ember_code.core.tools.knowledge import KnowledgeTools
 
@@ -330,6 +353,10 @@ class Session:
             tools=tools,
             instructions=instructions,
             markdown=True,
+            # Retry transient model-API failures (timeouts, 5xx) before
+            # bubbling the error up to the user. Same default as the
+            # specialist pool — see ``pool.build_agent``.
+            retries=getattr(self.settings.models, "retries", 2),
             # Session persistence
             db=self.db,
             session_id=self.session_id,
@@ -352,9 +379,13 @@ class Session:
             # Streaming
             stream=True,
             stream_events=True,
-            # Knowledge
-            knowledge=self.knowledge,
-            search_knowledge=self.knowledge is not None,
+            # Knowledge — agents reach the index via the ``KnowledgeTools`` toolkit,
+            # not Agno's built-in ``search_knowledge``. Our facade isn't an
+            # ``agno.knowledge.Knowledge`` instance and Agno's Weaviate adapter
+            # uses a different vectorizer path than our text2vec-transformers MT
+            # collections, so we pass nothing here.
+            knowledge=None,
+            search_knowledge=False,
             # Guardrails
             pre_hooks=guardrails,
             # Learning — disabled on agent to prevent blocking extraction
@@ -410,67 +441,28 @@ class Session:
             blocked_commands=self.settings.safety.blocked_commands,
         )
 
-    # ── Lazy knowledge initialization (async, runs once) ──────────
+    # ── Lazy knowledge initialization (no-op while phase 3 is pending) ──
 
     def start_knowledge_background(self) -> None:
-        """Start the background knowledge init thread.
-
-        Called after READY is printed so GIL-heavy model loading
-        doesn't block the main thread during startup.
-        """
-        if not self.settings.knowledge.enabled or self._knowledge_ready.is_set():
-            return
-        threading.Thread(
-            target=self._init_knowledge_background,
-            name="knowledge-init",
-            daemon=True,
-        ).start()
-
-    def _init_knowledge_background(self) -> None:
-        """Load knowledge in a background thread (model download may be slow)."""
-        import os
-
-        try:
-            from ember_code.core.knowledge.manager import KnowledgeManager
-
-            # Suppress stdout from SentenceTransformers/HuggingFace model loading
-            # to avoid corrupting the READY protocol on the BE stdout pipe.
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            old_stdout = os.dup(1)
-            os.dup2(devnull, 1)
-            try:
-                mgr = KnowledgeManager(self.settings, project_dir=self.project_dir)
-                knowledge = mgr.create_knowledge()
-            finally:
-                os.dup2(old_stdout, 1)
-                os.close(old_stdout)
-                os.close(devnull)
-
-            # Hot-swap into the live session — only set references.
-            # Do NOT call pool.build_agents() here: the main thread may
-            # still be building agents, and concurrent mutation deadlocks.
-            # Agents are rebuilt on next MCP connect or _ensure_knowledge().
-            self.knowledge = knowledge
-            self.knowledge_mgr = SessionKnowledgeManager(knowledge, self.settings, self.project_dir)
-            self.pool._knowledge_mgr = self.knowledge_mgr
-            logger.info("Knowledge: background init complete")
-        except Exception as e:
-            logger.warning("Knowledge: background init failed: %s", e, exc_info=True)
-            self._knowledge_error = str(e)
-        finally:
-            self._knowledge_ready.set()
+        """Stub — the chroma-backed knowledge index is rebuilt in phase 3."""
+        return
 
     async def _ensure_knowledge(self) -> None:
-        """Wait for background knowledge init if still in progress."""
-        if self._knowledge_ready.is_set():
-            return
-        # Don't block the event loop — poll the threading event
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._knowledge_ready.wait)
-        # Rebuild agents now that knowledge is available (safe — main thread only)
-        if self.knowledge is not None:
-            self.pool.build_agents()
-            logger.info("Knowledge: agents rebuilt with knowledge tools")
+        """Stub — knowledge is offline during the chroma migration."""
+        return
+
+    def start_codeindex_background(self) -> None:
+        """Fire an initial sync and start the HEAD watcher (fire-and-forget)."""
+
+        async def _bootstrap() -> None:
+            await self.code_index_sync.sync_now()
+            await self.code_index_sync.start_watcher()
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # No running loop yet — caller will trigger us once one exists.
+        loop.create_task(_bootstrap())
 
     # ── MCP initialization (async, runs once) ──────────────────────
 
