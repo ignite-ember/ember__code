@@ -264,6 +264,13 @@ class TestSessionLearning:
             _stop_patches(patches)
 
     def test_learning_passed_to_team(self, tmp_path):
+        """When learning is enabled the LM instance flows through to ``Agent(learning=...)``.
+
+        Agno surfaces ``update_user_memory`` as a tool when ``learning``
+        is set; ``add_learnings_to_context`` keeps the agent fed with
+        prior memories. Both stay on so the agent can reach for memory
+        without an extra plumbing round-trip.
+        """
         fake_lm = MagicMock()
         patches = _session_patches(create_learning_machine=fake_lm)
         mocks = {}
@@ -277,19 +284,19 @@ class TestSessionLearning:
 
             settings = Settings()
             settings.learning.enabled = True
-            Session(settings, project_dir=tmp_path)
+            session = Session(settings, project_dir=tmp_path)
 
-            # learning=None on Agent (extraction is fire-and-forget in run controller)
-            # learnings injected via _inject_learnings() before each run
             agent_cls = mocks["Agent"]
             assert agent_cls.called
             call_kwargs = agent_cls.call_args[1]
-            assert call_kwargs["learning"] is None
-            assert call_kwargs["add_learnings_to_context"] is False
+            assert call_kwargs["learning"] is session._learning
+            assert call_kwargs["add_learnings_to_context"] is True
         finally:
             _stop_patches(patches)
 
     def test_learning_not_passed_when_disabled(self, tmp_path):
+        """With learning disabled, ``self._learning`` stays ``None`` and the
+        Agent receives ``learning=None`` — no ``update_user_memory`` tool."""
         patches = _session_patches()
         mocks = {}
         for p in patches:
@@ -306,6 +313,5 @@ class TestSessionLearning:
             agent_cls = mocks["Agent"]
             call_kwargs = agent_cls.call_args[1]
             assert call_kwargs["learning"] is None
-            assert call_kwargs["add_learnings_to_context"] is False
         finally:
             _stop_patches(patches)

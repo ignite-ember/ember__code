@@ -460,6 +460,7 @@ These serve different purposes:
 - **TODO.md** — persistent, cross-session progress tracker. Human-readable. Future agents pick up exactly where work stopped.
 
 Use both when appropriate: Agno task mode for orchestrating the current run's work, TODO.md for tracking the bigger picture across runs.
+{{CODEINDEX_TOOLS}}
 
 ## Knowledge Base — Tool Reference
 

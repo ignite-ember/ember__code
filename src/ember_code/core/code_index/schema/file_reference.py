@@ -1,8 +1,8 @@
-"""File-to-file reference model — stored in SQLite, not Weaviate.
+"""File-to-file reference model — stored in SQLite, not the vector store.
 
 Used to express custom code relationships (imports, calls, extends, etc.)
-between two indexed items. Kept out of Weaviate so tag mutations and
-pruning don't require touching the vector store.
+between two indexed items. ``relation`` is the canonical edge kind —
+indexed in the database so filtering by relation is a real index lookup.
 """
 
 from __future__ import annotations
@@ -15,5 +15,5 @@ class FileReference(BaseModel):
 
     from_uuid: str
     to_uuid: str
-    tags: list[str] = Field(default_factory=list)
+    relation: str
     meta: dict = Field(default_factory=dict)

@@ -13,11 +13,14 @@ Contract — one object per line:
 - ``{"op": "upsert_item", "id": "...", "type": "file|folder|entity", ...}``
   Insert or replace an item. ``id`` is the producer's stable content
   hash (UUID5 of path+content); unchanged items keep their id across
-  commits.
+  commits. The full quality and category schema travels on this op —
+  see ``UpsertItemOp`` below for every field.
 - ``{"op": "delete_item", "id": "..."}`` — remove an item.
-- ``{"op": "upsert_reference", "from_id": "...", "to_id": "...", "tags": [], "meta": {}}``
-  Insert or replace a reference. References live in the per-project
-  SQLite (no commit scope) — they persist until explicitly deleted.
+- ``{"op": "upsert_reference", "from_id": "...", "to_id": "...", "relation": "...", "meta": {}}``
+  Insert or replace a reference. ``relation`` is the canonical edge
+  kind ("calls" / "called_by" / "imports" / ...). References live in
+  the per-project SQLite (no commit scope) — they persist until
+  explicitly deleted.
 - ``{"op": "delete_reference", "from_id": "...", "to_id": "..."}``
 
 Idempotent: applying the same JSONL twice yields the same state. Safe
@@ -56,21 +59,60 @@ class CommitOp(BaseModel):
 
 
 class UpsertItemOp(BaseModel):
+    """Mirrors ``ember-server/app/services/jsonl_changeset/writer.py``.
+
+    Every quality dimension is independently optional so files /
+    entities / folders only carry the dimensions that apply to them.
+    """
+
     op: Literal["upsert_item"]
     id: str
     type: str  # "file" | "folder" | "entity"
     name: str
+    content: str = ""
+
+    # Structural / scope
     path: str | None = None
     parent_id: str | None = None
-    content: str = ""
-    tags: list[str] = Field(default_factory=list)
     file_extension: str | None = None
+    repository_id: str | None = None
+    token_count: int | None = None
     line_from: int | None = None
     line_to: int | None = None
-    repository_id: str | None = None
-    parent_ids_hierarchy: list[str] = Field(default_factory=list)
-    source_documents_ids: list[str] = Field(default_factory=list)
-    token_count: int | None = None
+
+    # Code vs docs — the only place that distinction lives.
+    kind: str | None = None
+
+    # Entity classification (None for files / folders).
+    entity_type: str | None = None
+
+    # Quality categoricals.
+    quality: str | None = None
+    complexity: str | None = None
+    security: str | None = None
+    testing: str | None = None
+    testability: str | None = None
+    documentation: str | None = None
+    performance: str | None = None
+    issues: str | None = None
+    maintainability: str | None = None
+    architecture: str | None = None
+    technical_debt: str | None = None
+    cohesion: str | None = None
+    coupling: str | None = None
+    stability: str | None = None
+    priority: str | None = None
+    needs_refactoring: bool | None = None
+
+    # Multi-value categories.
+    vulnerabilities: list[str] = Field(default_factory=list)
+    frameworks: list[str] = Field(default_factory=list)
+    domain: list[str] = Field(default_factory=list)
+    concerns: list[str] = Field(default_factory=list)
+    layers: list[str] = Field(default_factory=list)
+    patterns: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    file_issues: list[str] = Field(default_factory=list)
 
 
 class DeleteItemOp(BaseModel):
@@ -82,7 +124,7 @@ class UpsertReferenceOp(BaseModel):
     op: Literal["upsert_reference"]
     from_id: str
     to_id: str
-    tags: list[str] = Field(default_factory=list)
+    relation: str
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -160,17 +202,10 @@ async def apply_delta(
     file_refs: FileReferenceService,
     jsonl_path: str | Path,
 ) -> DeltaStats:
-    """Stream a JSONL file and apply each op to the index + reference table.
-
-    The first line must be a ``commit`` op — it carries lineage so the
-    target commit's chroma directory is prepared (copy-on-write from
-    parent) before any data lands. ``set_head`` is called at the end so
-    a fresh search query hits the new commit.
-    """
+    """Stream a JSONL file and apply each op to the index + reference table."""
     stats = DeltaStats()
     ops_iter = iter_ops(jsonl_path)
 
-    # First op must be a commit header.
     try:
         first = next(ops_iter)
     except StopIteration as exc:
@@ -182,7 +217,6 @@ async def apply_delta(
 
     for op in ops_iter:
         if isinstance(op, CommitOp):
-            # Multiple commit headers in one file — surface, don't apply.
             raise DeltaError(f"unexpected second commit header at sha={op.sha}")
         elif isinstance(op, UpsertItemOp):
             await index.add_item(sha, _op_to_item(op))
@@ -194,7 +228,7 @@ async def apply_delta(
             await file_refs.create(
                 from_uuid=op.from_id,
                 to_uuid=op.to_id,
-                tags=op.tags,
+                relation=op.relation,
                 meta=op.meta,
             )
             stats.references_upserted += 1
@@ -209,14 +243,19 @@ async def apply_delta(
 
 
 def _op_to_item(op: UpsertItemOp) -> CodeIndexItem:
-    """Translate a JSONL ``upsert_item`` payload to a :class:`CodeIndexItem`."""
-    item_type = FileSystemType.FILE
-    if op.type == "folder":
-        item_type = FileSystemType.FOLDER
-    elif op.type in ("entity", "file"):
-        # Entities reuse the FILE type today — the schema doesn't yet
-        # differentiate (entity-ness lives in tags + line_from/to).
-        item_type = FileSystemType.FILE
+    """Translate a JSONL ``upsert_item`` payload to a :class:`CodeIndexItem`.
+
+    The op's ``type`` is one of ``"folder"`` / ``"file"`` / ``"entity"``;
+    that string maps to the matching :class:`FileSystemType` member so
+    the chroma metadata's ``type`` column carries the distinction (an
+    entity never collides with a file at filter time).
+    """
+    item_type_map = {
+        "folder": FileSystemType.FOLDER,
+        "file": FileSystemType.FILE,
+        "entity": FileSystemType.ENTITY,
+    }
+    item_type = item_type_map.get(op.type, FileSystemType.FILE)
 
     return CodeIndexItem(
         item_id=op.id,
@@ -224,13 +263,36 @@ def _op_to_item(op: UpsertItemOp) -> CodeIndexItem:
         type=item_type,
         path=op.path,
         parent_id=op.parent_id,
-        parent_ids_hierarchy=op.parent_ids_hierarchy,
         content=op.content,
-        tags=op.tags,
         file_extension=op.file_extension,
+        repository_id=op.repository_id,
+        token_count=op.token_count,
         line_from=op.line_from,
         line_to=op.line_to,
-        repository_id=op.repository_id,
-        source_documents_ids=op.source_documents_ids,
-        token_count=op.token_count,
+        kind=op.kind,
+        entity_type=op.entity_type,
+        quality=op.quality,
+        complexity=op.complexity,
+        security=op.security,
+        testing=op.testing,
+        testability=op.testability,
+        documentation=op.documentation,
+        performance=op.performance,
+        issues=op.issues,
+        maintainability=op.maintainability,
+        architecture=op.architecture,
+        technical_debt=op.technical_debt,
+        cohesion=op.cohesion,
+        coupling=op.coupling,
+        stability=op.stability,
+        priority=op.priority,
+        needs_refactoring=op.needs_refactoring,
+        vulnerabilities=op.vulnerabilities,
+        frameworks=op.frameworks,
+        domain=op.domain,
+        concerns=op.concerns,
+        layers=op.layers,
+        patterns=op.patterns,
+        keywords=op.keywords,
+        file_issues=op.file_issues,
     )

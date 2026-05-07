@@ -1,14 +1,11 @@
 """Domain models for files, folders, and chunks indexed by code_index.
 
-These are pure data models. Conversion from raw Weaviate objects and
-SQLite-backed reference resolution live in the service layer
-(``vectordb/files_manager.py`` and ``services/files.py``).
-
-Permission fields (``private``, ``users_with_*``, ``groups_with_*``,
-``created_by``, ``unique_identifier``) and the ``starred`` UI flag are
-intentionally absent — code_index is single-user/local. ``line_from`` /
-``line_to`` are accepted on input but persisted to SQLite commit
-metadata, not to Weaviate.
+Quality and category metadata are first-class typed fields, not a
+catch-all ``tags`` list. Each chroma row carries one column per
+quality dimension (``security``, ``complexity``, ...) and one column
+per multi-value category (``vulnerabilities``, ``frameworks``, ...).
+The agent-facing tool translates structured args into chroma
+``where`` filters; downstream code never writes raw chroma queries.
 """
 
 from __future__ import annotations
@@ -38,12 +35,7 @@ class CodeIndexItemBase(BaseModel):
         return hashlib.sha256(self.content.encode()).hexdigest()
 
     def set_agno_documents(self, agno_documents: list) -> None:
-        """Attach pre-chunked Agno reader output for downstream vectorization.
-
-        Why: Agno readers (PDF, URL, etc.) chunk semantically with overlap.
-        We keep the original full text in ``content`` (for hashing/display)
-        and the overlapping chunks in ``content_chunks`` (for retrieval).
-        """
+        """Attach pre-chunked Agno reader output for downstream vectorization."""
         self._agno_documents = agno_documents
 
     @property
@@ -80,32 +72,53 @@ class CodeIndexFileChunkBase(BaseModel):
 
 
 class CodeIndexItemCreate(CodeIndexItemBase):
+    """The shape an indexer sends in. Mirrors the JSONL ``upsert_item`` op."""
+
     item_id: str = Field(default_factory=lambda: str(uuid4()))
     name: str | None = None
     parent_id: str | None = None
-    source_documents_ids: list[str] = Field(default_factory=list)
     type: FileSystemType = FileSystemType.FILE
-    tags: list[str] = Field(default_factory=list)
+    path: str | None = None
     file_extension: str | None = None
+    repository_id: str | None = None
     token_count: int | None = None
     line_from: int | None = None
     line_to: int | None = None
-    repository_id: str | None = None
-    path: str | None = None
 
-    def to_db_format(self) -> dict:
-        """Shape for direct insert into Weaviate (Documents collection).
+    # Code vs docs — the only place that distinction lives.
+    kind: str | None = None  # "code" | "docs"
 
-        ``line_from`` / ``line_to`` are dropped — they live in SQLite
-        commit_metadata, scoped per commit SHA.
-        """
-        dump = self.model_dump()
-        dump["name_lowercase"] = self.name.lower() if self.name else None
-        dump["path_lowercase"] = self.path.lower() if self.path else None
-        dump["content_hash"] = self.content_hash
-        dump.pop("line_from", None)
-        dump.pop("line_to", None)
-        return dump
+    # Entity classification (None for files/folders).
+    entity_type: str | None = None
+
+    # Quality categoricals. Empty string is the "not assessed" sentinel
+    # since chroma metadata can't hold None.
+    quality: str | None = None
+    complexity: str | None = None
+    security: str | None = None
+    testing: str | None = None
+    testability: str | None = None
+    documentation: str | None = None
+    performance: str | None = None
+    issues: str | None = None
+    maintainability: str | None = None
+    architecture: str | None = None
+    technical_debt: str | None = None
+    cohesion: str | None = None
+    coupling: str | None = None
+    stability: str | None = None
+    priority: str | None = None
+    needs_refactoring: bool | None = None
+
+    # Multi-value categories. Stored on chroma as ``\x1f``-bracketed strings.
+    vulnerabilities: list[str] = Field(default_factory=list)
+    frameworks: list[str] = Field(default_factory=list)
+    domain: list[str] = Field(default_factory=list)
+    concerns: list[str] = Field(default_factory=list)
+    layers: list[str] = Field(default_factory=list)
+    patterns: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    file_issues: list[str] = Field(default_factory=list)
 
     def to_item(self) -> CodeIndexItem:
         return CodeIndexItem.model_validate(self.model_dump())
@@ -114,7 +127,6 @@ class CodeIndexItemCreate(CodeIndexItemBase):
 class CodeIndexItemUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    tags: list[str] | None = None
     timestamp: str | None = None
     archived: bool | None = None
 
@@ -134,17 +146,21 @@ class CodeIndexFileChunk(CodeIndexFileChunkBase):
 
 
 class Edge(BaseModel):
-    """A reference edge between two items, stored in SQLite."""
+    """A reference edge between two items, stored in SQLite.
 
+    ``relation`` is the canonical edge kind ("calls", "imports", etc.) —
+    indexed as a column for fast filter joins. ``meta`` carries the
+    identifier payload (caller/callee names, paths) — none of it
+    needs an index.
+    """
+
+    relation: str
     meta: dict = Field(default_factory=dict)
-    tags: list[str] = Field(default_factory=list)
     file: CodeIndexItem
 
 
 class References(BaseModel):
     parent: CodeIndexItem | None = None
-    source_documents: list[CodeIndexItem] = Field(default_factory=list)
-    derived_documents: list[CodeIndexItem] = Field(default_factory=list)
     document_references: list[Edge] = Field(default_factory=list)
     referenced_by: list[Edge] = Field(default_factory=list)
 
@@ -152,16 +168,104 @@ class References(BaseModel):
     def safe_to_delete(self) -> bool:
         return not any(
             [
-                self.source_documents,
-                self.derived_documents,
                 self.document_references,
                 self.referenced_by,
             ]
         )
 
 
+# ── Reference summary (agent-facing, attached to CodeIndexResult) ────
+
+
+class ReferenceTarget(BaseModel):
+    """The other end of a reference edge — what the agent needs to
+    follow up: the target's uuid (for ``codeindex_tree(id=…)``
+    drill-down), name, full path, and a one-line summary of what the
+    target *does* (extracted from the indexer's SUMMARY section,
+    truncated to ~200 chars)."""
+
+    id: str
+    name: str
+    path: str
+    summary: str = ""
+
+
+class CodeIndexResult(BaseModel):
+    """Shape returned by :meth:`CodeIndex.search` / ``filter_items`` / ``get_item``.
+
+    Mirrors the chroma metadata 1:1 plus retrieval-time fields
+    (``commit``, ``score``, ``chunk_preview``, ``content``). Distinct
+    from :class:`CodeIndexItemCreate` because:
+
+    - ``type`` here is a free string ("entity" / "file" / "folder") —
+      :class:`FileSystemType` only models the on-disk distinction and
+      doesn't carry "entity".
+    - ``score`` and ``chunk_preview`` only exist after a search hit.
+    - ``content`` is read from the chroma document, not constructed.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    item_id: str
+    name: str = ""
+    type: str = ""
+    kind: str = ""
+    entity_type: str = ""
+    path: str = ""
+    parent_id: str = ""
+    file_extension: str = ""
+    repository_id: str = ""
+    archived: bool = False
+    timestamp: str = ""
+    token_count: int = 0
+    line_from: int | None = None
+    line_to: int | None = None
+    needs_refactoring: bool = False
+
+    # Quality categoricals — empty string means "not assessed".
+    quality: str = ""
+    complexity: str = ""
+    security: str = ""
+    testing: str = ""
+    testability: str = ""
+    documentation: str = ""
+    performance: str = ""
+    issues: str = ""
+    maintainability: str = ""
+    architecture: str = ""
+    technical_debt: str = ""
+    cohesion: str = ""
+    coupling: str = ""
+    stability: str = ""
+    priority: str = ""
+
+    # Multi-value categories.
+    vulnerabilities: list[str] = Field(default_factory=list)
+    frameworks: list[str] = Field(default_factory=list)
+    domain: list[str] = Field(default_factory=list)
+    concerns: list[str] = Field(default_factory=list)
+    layers: list[str] = Field(default_factory=list)
+    patterns: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    file_issues: list[str] = Field(default_factory=list)
+
+    # Retrieval-time fields.
+    commit: str
+    content: str = ""
+    score: float | None = None
+    chunk_preview: str | None = None
+
+    # Reference graph — populated by ``codeindex_tree`` only.
+    # Maps relation name (``calls``, ``called_by``, ``imports``,
+    # ``imported_by``, …) to the full list of ``ReferenceTarget``s
+    # for that edge kind. ``None`` here means either no tree-style
+    # query was issued (``codeindex_query`` never populates it), or
+    # there are no edges of any kind on this item. ``exclude_none=True``
+    # strips the field from the response in both cases.
+    references: dict[str, list[ReferenceTarget]] | None = None
+
+
 class CodeIndexItem(CodeIndexItemCreate):
-    parent_ids_hierarchy: list[str] = Field(default_factory=list)
     references: References = Field(default_factory=References)
     archived: bool = False
 
@@ -211,17 +315,6 @@ class CodeIndexItem(CodeIndexItemCreate):
     @property
     def has_parent(self) -> bool:
         return bool(self.parent_id)
-
-    def to_db_format(self) -> dict:
-        data = self.model_dump()
-        for k in ("references", "metadata", "vector", "line_from", "line_to"):
-            data.pop(k, None)
-        fallback_name = self.name if self.name else self.content_hash
-        data["name"] = fallback_name
-        data["name_lowercase"] = fallback_name.lower() if fallback_name else None
-        data["path_lowercase"] = self.path.lower() if self.path else None
-        data["content_hash"] = self.content_hash
-        return data
 
 
 CodeIndexItem.model_rebuild()

@@ -235,16 +235,28 @@ class AgentPool:
         self,
         settings: Settings,
         project_dir: Path | None = None,
+        codeindex_available: bool = False,
     ) -> None:
         """Parse all agent .md files and resolve priorities.
 
         No Agent objects are created — just AgentDefinition data.
+
+        ``codeindex_available`` selects which variant of an agent's
+        prompt to load when both ``<name>.md`` and
+        ``<name>.codeindex.md`` exist on disk:
+
+        - ``True``  → load the ``.codeindex.md`` variant (CodeIndex-first
+                      prompt) and ignore the plain sibling.
+        - ``False`` → load the plain ``.md`` and ignore the
+                      ``.codeindex.md`` sibling (otherwise the agent
+                      would be told to call a tool it doesn't have).
         """
         if project_dir is None:
             project_dir = Path.cwd()
 
         self._settings = settings
         self._base_dir = str(project_dir)
+        self._codeindex_available = codeindex_available
 
         dirs = [
             (Path.home() / ".ember" / "agents", 1),
@@ -260,11 +272,32 @@ class AgentPool:
             self._load_directory(directory, priority)
 
     def _load_directory(self, path: Path, priority: int) -> None:
-        """Parse .md files from a directory, keeping highest-priority wins."""
+        """Parse .md files from a directory, keeping highest-priority wins.
+
+        Skips the wrong CodeIndex variant per
+        ``self._codeindex_available``: when CodeIndex is unavailable we
+        skip every ``*.codeindex.md`` file; when it's available we skip
+        any plain ``*.md`` whose sibling ``*.codeindex.md`` is also
+        present in this directory.
+        """
         if not path.exists():
             return
 
-        for md_file in sorted(path.glob("*.md")):
+        use_codeindex = getattr(self, "_codeindex_available", False)
+        all_files = sorted(path.glob("*.md"))
+        codeindex_stems = {
+            f.name[: -len(".codeindex.md")] for f in all_files if f.name.endswith(".codeindex.md")
+        }
+
+        for md_file in all_files:
+            is_codeindex_variant = md_file.name.endswith(".codeindex.md")
+            # Skip variants we don't want for this session.
+            if is_codeindex_variant and not use_codeindex:
+                continue
+            if not is_codeindex_variant and use_codeindex and md_file.stem in codeindex_stems:
+                # Plain variant has a .codeindex.md sibling in this
+                # directory; the codeindex sibling wins.
+                continue
             try:
                 definition = parse_agent_file(md_file)
                 name = definition.name

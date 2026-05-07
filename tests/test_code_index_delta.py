@@ -132,7 +132,7 @@ class TestApplyDelta:
                     "name": "auth.py",
                     "path": "src/auth.py",
                     "content": "JWT authentication issues access tokens.",
-                    "tags": ["type:file"],
+                    "kind": "code",
                     "file_extension": "py",
                 },
                 {
@@ -142,14 +142,14 @@ class TestApplyDelta:
                     "name": "user.py",
                     "path": "src/user.py",
                     "content": "User profile management.",
-                    "tags": ["type:file"],
+                    "kind": "code",
                     "file_extension": "py",
                 },
                 {
                     "op": "upsert_reference",
                     "from_id": "auth-uuid",
                     "to_id": "user-uuid",
-                    "tags": ["relation:imports"],
+                    "relation": "imports",
                     "meta": {"line": 5},
                 },
             ],
@@ -161,15 +161,15 @@ class TestApplyDelta:
 
         # Items landed in the chroma file for the named commit.
         item = await index.get_item("auth-uuid")
-        assert item is not None and item["name"] == "auth.py"
+        assert item is not None and item.name == "auth.py"
 
         # head pointer set.
         assert index.head() == "head_sha"
 
         # Reference landed in SQLite.
-        ref = await file_refs.get(from_uuid="auth-uuid", to_uuid="user-uuid")
+        ref = await file_refs.get(from_uuid="auth-uuid", to_uuid="user-uuid", relation="imports")
         assert ref is not None
-        assert ref.tags == ["relation:imports"]
+        assert ref.relation == "imports"
 
     @pytest.mark.asyncio
     async def test_idempotent_when_replayed(self, index, file_refs, tmp_path):
@@ -193,7 +193,7 @@ class TestApplyDelta:
         # Replays don't double-up — same item is upserted in place.
         results = await index.search(query="alpha", limit=10)
         # Filter to the item we just added (chunk hits are deduped to the parent).
-        matches = [r for r in results if r["item_id"] == "i1"]
+        matches = [r for r in results if r.item_id == "i1"]
         assert len(matches) == 1
 
     @pytest.mark.asyncio
@@ -228,7 +228,7 @@ class TestApplyDelta:
                     "op": "upsert_reference",
                     "from_id": "a",
                     "to_id": "b",
-                    "tags": [],
+                    "relation": "calls",
                     "meta": {},
                 },
                 {"op": "delete_reference", "from_id": "a", "to_id": "b"},
@@ -237,7 +237,7 @@ class TestApplyDelta:
         stats = await apply_delta(index=index, file_refs=file_refs, jsonl_path=path)
         assert stats.references_upserted == 1
         assert stats.references_deleted == 1
-        assert await file_refs.get(from_uuid="a", to_uuid="b") is None
+        assert await file_refs.get(from_uuid="a", to_uuid="b", relation="calls") is None
 
     @pytest.mark.asyncio
     async def test_copy_on_write_from_parent(self, index, file_refs, tmp_path):
@@ -267,7 +267,7 @@ class TestApplyDelta:
         await apply_delta(index=index, file_refs=file_refs, jsonl_path=second)
         assert index.head() == "child"
         item = await index.get_item("shared", commit="child")
-        assert item is not None and item["name"] == "shared.py"
+        assert item is not None and item.name == "shared.py"
 
     @pytest.mark.asyncio
     async def test_second_commit_header_in_file_raises(self, index, file_refs, tmp_path):

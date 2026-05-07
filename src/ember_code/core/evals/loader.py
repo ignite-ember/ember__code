@@ -53,6 +53,13 @@ class EvalSuite(BaseModel):
     agent: str
     description: str = ""
     fixtures: list[dict] | None = None
+    # Optional dotted path to a Python module that exposes
+    # ``async def setup(work_dir: Path) -> None``. Called after
+    # fixture files are copied but before any case runs. Used by the
+    # codeindex eval to git-init the work_dir and apply a JSONL
+    # changeset to chroma so the agent sees a populated index when
+    # it starts. Suite passes if the import path is empty / missing.
+    setup_module: str | None = None
     cases: list[EvalCase] = Field(default_factory=list)
 
     @classmethod
@@ -116,6 +123,7 @@ def load_eval_file(path: Path) -> EvalSuite | None:
             agent=data["agent"],
             description=data.get("description", ""),
             fixtures=data.get("fixtures"),
+            setup_module=data.get("setup_module"),
             cases=cases,
         )
     except Exception as exc:

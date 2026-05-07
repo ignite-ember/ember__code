@@ -9,10 +9,16 @@ files re-embed.
 Lifecycle:
 
 - :meth:`prepare_commit` — copy parent → child (or create empty), update manifest.
-- :meth:`apply_delta` — apply a JSONL of file-level changes (contract pending).
+- :meth:`apply_delta` — apply a JSONL of file-level changes.
 - :meth:`set_head` — point the manifest's ``head`` at a commit.
 - :meth:`search` / :meth:`get_item` — query a commit (defaults to head).
 - :meth:`prune` — drop commits not referenced by any branch and idle > N days.
+
+Quality / category metadata are first-class typed chroma fields — each
+quality dimension is its own indexed string column, each multi-value
+category is its own ``\\x1f``-bracketed string. There is no ``tags``
+field; the ``codeindex_query`` tool builds typed where-clauses from
+its enum args without any string-tag parsing.
 """
 
 from __future__ import annotations
@@ -29,13 +35,14 @@ from typing import Any
 from agno.knowledge.chunking.recursive import RecursiveChunking
 from agno.knowledge.chunking.strategy import ChunkingStrategy
 from agno.knowledge.document.base import Document
+from pydantic import BaseModel
 
 from ember_code.core.code_index.manifest import Manifest
 from ember_code.core.code_index.paths import (
     commit_chroma_path,
 )
 from ember_code.core.code_index.project import resolve_project_id
-from ember_code.core.code_index.schema.items import CodeIndexItem
+from ember_code.core.code_index.schema.items import CodeIndexItem, CodeIndexResult
 from ember_code.core.embeddings import EmbeddingFunction
 
 logger = logging.getLogger(__name__)
@@ -43,9 +50,43 @@ logger = logging.getLogger(__name__)
 DOCUMENTS_COLLECTION = "code_index_documents"
 CHUNKS_COLLECTION = "code_index_chunks"
 
-# ASCII unit separator — used to encode list metadata (tags, hierarchy)
-# into chromadb's flat-scalar metadata model.
+# ASCII unit separator — used to bracket multi-value list fields so
+# ``$contains: "\x1fsql-injection\x1f"`` exact-matches without false
+# prefix collisions (``"sql"`` would otherwise match ``"sql-injection"``).
 _LIST_SEP = "\x1f"
+
+# Quality categorical fields — each is a single-value enum string on
+# the chroma row (or ``""`` when not assessed). Listed here so the
+# flattener / read paths agree on which fields exist.
+_QUALITY_CATEGORICAL_FIELDS: tuple[str, ...] = (
+    "quality",
+    "complexity",
+    "security",
+    "testing",
+    "testability",
+    "documentation",
+    "performance",
+    "issues",
+    "maintainability",
+    "architecture",
+    "technical_debt",
+    "cohesion",
+    "coupling",
+    "stability",
+    "priority",
+)
+
+# Multi-value list fields — stored as ``\x1f``-bracketed strings.
+_LIST_FIELDS: tuple[str, ...] = (
+    "vulnerabilities",
+    "frameworks",
+    "domain",
+    "concerns",
+    "layers",
+    "patterns",
+    "keywords",
+    "file_issues",
+)
 
 
 class CommitNotFoundError(Exception):
@@ -56,16 +97,20 @@ class CommitNotFoundError(Exception):
         self.sha = sha
 
 
-class CodeIndex:
-    """Per-project, per-commit code index.
+class _BestChunkHit(BaseModel):
+    """Best-scoring chunk for one parent document during semantic search.
 
-    Args:
-        project: project directory (used to derive the on-disk path).
-        data_dir: ember root, defaults to ``~/.ember``.
-        chunker: how to split file content for chunk-level embeddings.
-            Default ``RecursiveChunking(chunk_size=800, overlap=100)`` —
-            sized for the 384-dim ``all-MiniLM-L6-v2`` embedder.
+    Internal scratch model — kept here rather than in ``schema/items.py``
+    because it never crosses the public API.
     """
+
+    score: float
+    chunk_text: str
+    chunk_id: str
+
+
+class CodeIndex:
+    """Per-project, per-commit code index."""
 
     def __init__(
         self,
@@ -89,6 +134,12 @@ class CodeIndex:
         async with self._lock:
             self._clients.clear()
 
+    def has_commit(self, sha: str) -> bool:
+        """Return True iff a chroma directory exists on disk for ``sha``."""
+        if not sha:
+            return False
+        return commit_chroma_path(self.project, sha, data_dir=self.data_dir).exists()
+
     # -- Commit lifecycle ------------------------------------------------------
 
     async def prepare_commit(
@@ -97,11 +148,7 @@ class CodeIndex:
         *,
         parent_sha: str | None = None,
     ) -> Path:
-        """Ensure ``<sha>.chroma/`` exists; copy from ``parent_sha`` if provided.
-
-        Idempotent — if the target already exists, this just updates the
-        manifest's ``last_used_at``. Returns the chroma directory path.
-        """
+        """Ensure ``<sha>.chroma/`` exists; copy from ``parent_sha`` if provided."""
         target = commit_chroma_path(self.project, sha, data_dir=self.data_dir)
         if target.exists():
             self.manifest.touch(sha)
@@ -125,14 +172,7 @@ class CodeIndex:
         return target
 
     async def apply_delta(self, jsonl_path: str | Path):
-        """Apply a producer-emitted JSONL changeset to this project.
-
-        The JSONL's first line is the ``commit`` header — the applier
-        prepares ``<sha>.chroma/`` (copy-on-write from parent if any),
-        replays each item/reference op, then sets head. See
-        :mod:`ember_code.core.code_index.delta` for the on-the-wire
-        contract.
-        """
+        """Apply a producer-emitted JSONL changeset to this project."""
         from ember_code.core.code_index.delta import apply_delta
 
         return await apply_delta(
@@ -185,6 +225,7 @@ class CodeIndex:
                     "chunk_index": i,
                     "name": item.name or "",
                     "type": item.type.value if hasattr(item.type, "value") else str(item.type),
+                    "kind": item.kind or "",
                     "path": item.path or "",
                     "file_extension": item.file_extension or "",
                     "repository_id": item.repository_id or "",
@@ -216,11 +257,13 @@ class CodeIndex:
         query: str,
         limit: int = 20,
         commit: str | None = None,
-    ) -> list[dict]:
+        where: dict[str, Any] | None = None,
+    ) -> list[CodeIndexResult]:
         """Semantic search inside one commit's index.
 
-        ``commit`` defaults to the manifest's head. Returns parent items
-        with the best-matching chunk preview, scored by cosine similarity.
+        ``where`` is the chroma metadata filter applied against the
+        chunks collection — the codeindex_query tool builds it from
+        its structured args; callers shouldn't construct it by hand.
         """
         sha = commit or self.head()
         if sha is None:
@@ -233,12 +276,26 @@ class CodeIndex:
         if await asyncio.to_thread(chunks.count) == 0:
             return []
         n = max(limit * 4, limit)
-        result = await asyncio.to_thread(
-            chunks.query,
-            query_texts=[query],
-            n_results=n,
-            include=["documents", "metadatas", "distances"],
-        )
+
+        # Quality / categorical fields live on parent doc metadata, not
+        # on chunks. So when a ``where`` filter is supplied, resolve it
+        # against the parents collection first to get matching IDs,
+        # then narrow the chunk query to ``parent_doc_id $in <ids>``.
+        chunk_where: dict[str, Any] | None = None
+        if where:
+            parent_ids = await self._resolve_parent_ids_for(docs, where)
+            if not parent_ids:
+                return []
+            chunk_where = {"parent_doc_id": {"$in": parent_ids}}
+
+        query_kwargs: dict[str, Any] = {
+            "query_texts": [query],
+            "n_results": n,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if chunk_where is not None:
+            query_kwargs["where"] = chunk_where
+        result = await asyncio.to_thread(chunks.query, **query_kwargs)
         ids = (result.get("ids") or [[]])[0]
         chunk_docs = (result.get("documents") or [[]])[0]
         chunk_metas = (result.get("metadatas") or [[]])[0]
@@ -246,7 +303,7 @@ class CodeIndex:
         if not ids:
             return []
 
-        best: dict[str, dict] = {}
+        best: dict[str, _BestChunkHit] = {}
         for chunk_id, doc_text, meta, dist in zip(
             ids, chunk_docs, chunk_metas, dists, strict=False
         ):
@@ -255,12 +312,12 @@ class CodeIndex:
                 continue
             score = 1.0 - float(dist) if dist is not None else 0.0
             current = best.get(parent_id)
-            if current is None or score > current["score"]:
-                best[parent_id] = {
-                    "score": score,
-                    "chunk": doc_text or "",
-                    "chunk_id": chunk_id,
-                }
+            if current is None or score > current.score:
+                best[parent_id] = _BestChunkHit(
+                    score=score,
+                    chunk_text=doc_text or "",
+                    chunk_id=chunk_id,
+                )
 
         if not best:
             return []
@@ -279,36 +336,68 @@ class CodeIndex:
             )
         }
 
-        out = []
-        for parent_id, entry in best.items():
+        out: list[CodeIndexResult] = []
+        for parent_id, hit in best.items():
             content_text, parent_meta = parent_rows.get(parent_id, ("", {}))
-            preview = entry["chunk"]
+            preview = hit.chunk_text
             truncated = preview[:1000] + "..." if len(preview) > 1000 else preview
             out.append(
-                {
-                    "item_id": parent_id,
-                    "name": parent_meta.get("name", ""),
-                    "type": parent_meta.get("type", ""),
-                    "path": parent_meta.get("path", ""),
-                    "file_extension": parent_meta.get("file_extension", ""),
-                    "repository_id": parent_meta.get("repository_id", ""),
-                    "tags": _decode_list(parent_meta.get("tags", "")),
-                    "score": entry["score"],
-                    "chunk_preview": truncated,
-                    "content": content_text,
-                    "commit": sha,
-                }
+                _meta_to_result(
+                    parent_id,
+                    parent_meta,
+                    sha,
+                    content=content_text,
+                    score=hit.score,
+                    chunk_preview=truncated,
+                )
             )
-        out.sort(key=lambda r: r["score"], reverse=True)
+        out.sort(key=lambda r: r.score or 0.0, reverse=True)
         self.manifest.touch(sha)
         return out[:limit]
+
+    async def filter_items(
+        self,
+        *,
+        where: dict[str, Any] | None = None,
+        ids: list[str] | None = None,
+        limit: int = 20,
+        commit: str | None = None,
+    ) -> list[CodeIndexResult]:
+        """Direct fetch / filter against the documents collection (no semantic search)."""
+        sha = commit or self.head()
+        if sha is None:
+            return []
+        chroma_dir = commit_chroma_path(self.project, sha, data_dir=self.data_dir)
+        if not chroma_dir.exists():
+            return []
+
+        docs, _ = await self._collections(sha)
+        get_kwargs: dict[str, Any] = {
+            "include": ["documents", "metadatas"],
+            "limit": limit,
+        }
+        if ids:
+            get_kwargs["ids"] = ids
+        if where:
+            get_kwargs["where"] = where
+
+        page = await asyncio.to_thread(docs.get, **get_kwargs)
+        item_ids = page.get("ids") or []
+        documents = page.get("documents") or []
+        metadatas = page.get("metadatas") or []
+
+        out: list[CodeIndexResult] = []
+        for item_id, doc_text, meta in zip(item_ids, documents, metadatas, strict=False):
+            out.append(_meta_to_result(item_id, meta or {}, sha, content=doc_text or ""))
+        self.manifest.touch(sha)
+        return out
 
     async def get_item(
         self,
         item_id: str,
         *,
         commit: str | None = None,
-    ) -> dict | None:
+    ) -> CodeIndexResult | None:
         sha = commit or self.head()
         if sha is None:
             return None
@@ -323,23 +412,7 @@ class CodeIndex:
         text = (page.get("documents") or [""])[0]
         meta = (page.get("metadatas") or [{}])[0]
         self.manifest.touch(sha)
-        return {
-            "item_id": ids[0],
-            "name": meta.get("name", ""),
-            "type": meta.get("type", ""),
-            "path": meta.get("path", ""),
-            "file_extension": meta.get("file_extension", ""),
-            "repository_id": meta.get("repository_id", ""),
-            "tags": _decode_list(meta.get("tags", "")),
-            "parent_id": meta.get("parent_id", ""),
-            "parent_ids_hierarchy": _decode_list(meta.get("parent_ids_hierarchy", "")),
-            "source_documents_ids": _decode_list(meta.get("source_documents_ids", "")),
-            "archived": bool(meta.get("archived", False)),
-            "timestamp": meta.get("timestamp", ""),
-            "token_count": int(meta.get("token_count", 0) or 0),
-            "content": text,
-            "commit": sha,
-        }
+        return _meta_to_result(ids[0], meta, sha, content=text)
 
     # -- Retention -------------------------------------------------------------
 
@@ -348,11 +421,7 @@ class CodeIndex:
         *,
         keep_recent_days: int = 30,
     ) -> list[str]:
-        """Drop commits not on a branch and idle longer than ``keep_recent_days``.
-
-        Returns the list of dropped commit SHAs. The manifest's ``head``
-        is always preserved if it still has a chroma dir.
-        """
+        """Drop commits not on a branch and idle longer than ``keep_recent_days``."""
         # Refresh branch_refs from git so retention has fresh data.
         branch_map = _branch_heads(self.project)
         per_commit_branches: dict[str, list[str]] = {}
@@ -390,6 +459,24 @@ class CodeIndex:
         docs = await asyncio.to_thread(_get_or_create_collection, client, DOCUMENTS_COLLECTION)
         chunks = await asyncio.to_thread(_get_or_create_collection, client, CHUNKS_COLLECTION)
         return docs, chunks
+
+    @staticmethod
+    async def _resolve_parent_ids_for(docs: Any, where: dict[str, Any]) -> list[str]:
+        """Find parent doc IDs matching a metadata ``where`` filter.
+
+        Used to translate a quality-field filter (which lives on parent
+        docs) into a chunk-side filter (which can only match the
+        denormalized columns on chunk metadata). Capped at 10k IDs —
+        beyond that the index user really wants ``filter_items``, not
+        a semantic search inside an enormous candidate set.
+        """
+        page = await asyncio.to_thread(
+            docs.get,
+            where=where,
+            limit=10_000,
+            include=[],
+        )
+        return list(page.get("ids") or [])
 
     async def _client_for(self, sha: str) -> Any:
         if sha in self._clients:
@@ -451,32 +538,109 @@ def _branch_heads(project: str | Path) -> dict[str, str]:
 def _flatten_item_metadata(item: CodeIndexItem) -> dict[str, Any]:
     """Pack a :class:`CodeIndexItem`'s fields into chromadb-friendly metadata.
 
-    ChromaDB only allows scalar metadata values, so list fields
-    (``tags``, ``parent_ids_hierarchy``, ``source_documents_ids``) are
-    encoded with the ASCII unit separator (``\\x1f``) and decoded on
-    read via :func:`_decode_list`.
+    Single-value fields land as exact-match strings; quality
+    categoricals use ``""`` as the "not assessed" sentinel since
+    chroma metadata can't hold ``None``. Multi-value lists use
+    ``\\x1f`` brackets so ``$contains`` is exact-on-value.
+
+    Line numbers use ``-1`` for "not applicable" (folder/file rows).
     """
-    return {
+    out: dict[str, Any] = {
         "name": item.name or "",
         "type": item.type.value if hasattr(item.type, "value") else str(item.type),
+        "kind": item.kind or "",
+        "entity_type": item.entity_type or "",
         "parent_id": item.parent_id or "",
-        "parent_ids_hierarchy": _encode_list(item.parent_ids_hierarchy or []),
-        "tags": _encode_list(item.tags or []),
-        "source_documents_ids": _encode_list(item.source_documents_ids or []),
         "file_extension": item.file_extension or "",
         "repository_id": item.repository_id or "",
         "path": item.path or "",
         "archived": bool(getattr(item, "archived", False)),
         "timestamp": item.timestamp or "",
         "token_count": int(item.token_count or 0),
+        "line_from": int(item.line_from) if item.line_from is not None else -1,
+        "line_to": int(item.line_to) if item.line_to is not None else -1,
+        "needs_refactoring": bool(item.needs_refactoring)
+        if item.needs_refactoring is not None
+        else False,
     }
+    for field in _QUALITY_CATEGORICAL_FIELDS:
+        out[field] = getattr(item, field) or ""
+    for field in _LIST_FIELDS:
+        values = getattr(item, field) or []
+        out[field] = _encode_bracketed_list(values)
+    return out
 
 
-def _encode_list(values: Iterable[str]) -> str:
-    return _LIST_SEP.join(str(v) for v in values if v)
+def _encode_bracketed_list(values: Iterable[str]) -> str:
+    """``["a", "b"]`` → ``"\x1fa\x1fb\x1f"`` for $contains exact match.
+
+    Empty list → ``""`` (so ``$contains`` against any value misses cleanly).
+    """
+    parts = [str(v) for v in values if v]
+    if not parts:
+        return ""
+    return _LIST_SEP + _LIST_SEP.join(parts) + _LIST_SEP
 
 
-def _decode_list(encoded: str) -> list[str]:
+def _decode_bracketed_list(encoded: Any) -> list[str]:
     if not encoded:
         return []
-    return [part for part in str(encoded).split(_LIST_SEP) if part]
+    text = str(encoded)
+    return [part for part in text.split(_LIST_SEP) if part]
+
+
+def _line_or_none(value: Any) -> int | None:
+    """Decode the chroma sentinel for "no line range".
+
+    ``-1`` (or any negative value) means "not applicable"; convert
+    back to ``None`` so consumers see a clean nullable.
+    """
+    if value is None:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def _meta_to_result(
+    item_id: str,
+    meta: dict[str, Any],
+    sha: str,
+    *,
+    content: str = "",
+    score: float | None = None,
+    chunk_preview: str | None = None,
+) -> CodeIndexResult:
+    """Build a :class:`CodeIndexResult` from one chroma row.
+
+    Centralized so ``search`` / ``filter_items`` / ``get_item`` all
+    return the same pydantic shape.
+    """
+    payload: dict[str, Any] = {
+        "item_id": item_id,
+        "name": meta.get("name", ""),
+        "type": meta.get("type", ""),
+        "kind": meta.get("kind", ""),
+        "entity_type": meta.get("entity_type", ""),
+        "path": meta.get("path", ""),
+        "file_extension": meta.get("file_extension", ""),
+        "repository_id": meta.get("repository_id", ""),
+        "parent_id": meta.get("parent_id", ""),
+        "archived": bool(meta.get("archived", False)),
+        "timestamp": meta.get("timestamp", ""),
+        "token_count": int(meta.get("token_count", 0) or 0),
+        "line_from": _line_or_none(meta.get("line_from")),
+        "line_to": _line_or_none(meta.get("line_to")),
+        "needs_refactoring": bool(meta.get("needs_refactoring", False)),
+        "commit": sha,
+        "content": content,
+        "score": score,
+        "chunk_preview": chunk_preview,
+    }
+    for field in _QUALITY_CATEGORICAL_FIELDS:
+        payload[field] = meta.get(field, "")
+    for field in _LIST_FIELDS:
+        payload[field] = _decode_bracketed_list(meta.get(field))
+    return CodeIndexResult.model_validate(payload)

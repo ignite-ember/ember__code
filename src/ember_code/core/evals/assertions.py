@@ -42,9 +42,7 @@ def check_unexpected_tool_calls(
     return True, "no unexpected tool calls"
 
 
-def check_file_assertion(
-    assertion: dict, work_dir: Path | None = None
-) -> tuple[bool, str]:
+def check_file_assertion(assertion: dict, work_dir: Path | None = None) -> tuple[bool, str]:
     """Run a single file assertion. Returns (passed, detail).
 
     Relative ``path`` entries are resolved against ``work_dir`` so the

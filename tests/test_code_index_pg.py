@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-from ember_code.core.code_index.enums import ReferenceTagOperation
 from ember_code.core.code_index.pg.commit_metadata import CommitMetadataService
 from ember_code.core.code_index.pg.file_reference import FileReferenceService
 from ember_code.core.db.database import Database
@@ -33,76 +32,85 @@ def commits(db):
 
 
 async def test_create_get_exists(file_refs):
-    await file_refs.create(from_uuid="a", to_uuid="b", tags=["imports"], meta={"line": 5})
-    assert await file_refs.exists(from_uuid="a", to_uuid="b")
-    assert not await file_refs.exists(from_uuid="a", to_uuid="missing")
-    ref = await file_refs.get(from_uuid="a", to_uuid="b")
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={"line": 5})
+    assert await file_refs.exists(from_uuid="a", to_uuid="b", relation="imports")
+    assert not await file_refs.exists(from_uuid="a", to_uuid="missing", relation="imports")
+    ref = await file_refs.get(from_uuid="a", to_uuid="b", relation="imports")
     assert ref is not None
-    assert ref.tags == ["imports"]
+    assert ref.relation == "imports"
     assert ref.meta == {"line": 5}
 
 
 async def test_create_is_upsert(file_refs):
-    await file_refs.create(from_uuid="a", to_uuid="b", tags=["v1"], meta={})
-    await file_refs.create(from_uuid="a", to_uuid="b", tags=["v2"], meta={"x": 1})
-    ref = await file_refs.get(from_uuid="a", to_uuid="b")
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="calls", meta={})
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="calls", meta={"x": 1})
+    ref = await file_refs.get(from_uuid="a", to_uuid="b", relation="calls")
     assert ref is not None
-    assert ref.tags == ["v2"]
     assert ref.meta == {"x": 1}
 
 
+async def test_pair_can_carry_multiple_relations(file_refs):
+    """A→B can be both ``imports`` and ``calls`` simultaneously — relation is part of the key."""
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={})
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="calls", meta={})
+    refs = await file_refs.get_by_uuids(uuids=["a"])
+    assert {r.relation for r in refs} == {"imports", "calls"}
+
+
 async def test_get_by_uuids(file_refs):
-    await file_refs.create(from_uuid="a", to_uuid="b", tags=[], meta={})
-    await file_refs.create(from_uuid="b", to_uuid="c", tags=[], meta={})
-    await file_refs.create(from_uuid="x", to_uuid="y", tags=[], meta={})
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={})
+    await file_refs.create(from_uuid="b", to_uuid="c", relation="calls", meta={})
+    await file_refs.create(from_uuid="x", to_uuid="y", relation="imports", meta={})
     refs = await file_refs.get_by_uuids(uuids=["b"])
     pairs = {(r.from_uuid, r.to_uuid) for r in refs}
     assert pairs == {("a", "b"), ("b", "c")}
 
 
-async def test_query_by_tags_any_and_all(file_refs):
-    await file_refs.create(from_uuid="a", to_uuid="b", tags=["imports", "internal"], meta={})
-    await file_refs.create(from_uuid="b", to_uuid="c", tags=["calls"], meta={})
-    await file_refs.create(from_uuid="c", to_uuid="d", tags=["imports", "external"], meta={})
+async def test_get_by_uuids_filters_relations(file_refs):
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={})
+    await file_refs.create(from_uuid="b", to_uuid="a", relation="imported_by", meta={})
+    await file_refs.create(from_uuid="b", to_uuid="c", relation="calls", meta={})
 
-    any_imports = await file_refs.query_by_tags(tags=["imports"], match_all=False)
-    assert {(r.from_uuid, r.to_uuid) for r in any_imports} == {("a", "b"), ("c", "d")}
+    only_calls = await file_refs.get_by_uuids(uuids=["a", "b", "c"], relations=["calls"])
+    assert {r.relation for r in only_calls} == {"calls"}
 
-    all_imports_internal = await file_refs.query_by_tags(
-        tags=["imports", "internal"], match_all=True
-    )
-    assert {(r.from_uuid, r.to_uuid) for r in all_imports_internal} == {("a", "b")}
-
-
-async def test_update_tags_set_add_remove(file_refs):
-    await file_refs.create(from_uuid="a", to_uuid="b", tags=["one"], meta={})
-
-    updated = await file_refs.update_tags(
-        from_uuid="a", to_uuid="b", tags=["two"], operation=ReferenceTagOperation.ADD
-    )
-    assert set(updated.tags) == {"one", "two"}
-
-    updated = await file_refs.update_tags(
-        from_uuid="a",
-        to_uuid="b",
-        tags=["one"],
-        operation=ReferenceTagOperation.REMOVE,
-    )
-    assert updated.tags == ["two"]
-
-    updated = await file_refs.update_tags(
-        from_uuid="a",
-        to_uuid="b",
-        tags=["fresh"],
-        operation=ReferenceTagOperation.SET,
-    )
-    assert updated.tags == ["fresh"]
+    import_pair = await file_refs.get_by_uuids(uuids=["a"], relations=["imports", "imported_by"])
+    assert {(r.from_uuid, r.to_uuid, r.relation) for r in import_pair} == {
+        ("a", "b", "imports"),
+        ("b", "a", "imported_by"),
+    }
 
 
-async def test_delete_by_uuid_drops_both_directions(file_refs):
-    await file_refs.create(from_uuid="a", to_uuid="b", tags=[], meta={})
-    await file_refs.create(from_uuid="b", to_uuid="c", tags=[], meta={})
-    await file_refs.create(from_uuid="x", to_uuid="y", tags=[], meta={})
+async def test_query_by_relation(file_refs):
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={})
+    await file_refs.create(from_uuid="c", to_uuid="d", relation="imports", meta={})
+    await file_refs.create(from_uuid="b", to_uuid="c", relation="calls", meta={})
+
+    imports = await file_refs.query_by_relation("imports")
+    assert {(r.from_uuid, r.to_uuid) for r in imports} == {("a", "b"), ("c", "d")}
+
+
+async def test_delete_one_relation_keeps_others(file_refs):
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={})
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="calls", meta={})
+
+    await file_refs.delete(from_uuid="a", to_uuid="b", relation="imports")
+    surviving = await file_refs.get_by_uuids(uuids=["a"])
+    assert [r.relation for r in surviving] == ["calls"]
+
+
+async def test_delete_pair_drops_all_relations(file_refs):
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={})
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="calls", meta={})
+
+    await file_refs.delete(from_uuid="a", to_uuid="b")
+    assert await file_refs.get_by_uuids(uuids=["a"]) == []
+
+
+async def test_delete_by_uuid_drops_all_directions(file_refs):
+    await file_refs.create(from_uuid="a", to_uuid="b", relation="imports", meta={})
+    await file_refs.create(from_uuid="b", to_uuid="c", relation="calls", meta={})
+    await file_refs.create(from_uuid="x", to_uuid="y", relation="imports", meta={})
 
     removed = await file_refs.delete_by_uuid(uuid="b")
     assert removed == 2
@@ -117,10 +125,10 @@ async def test_project_isolation_via_separate_files(tmp_path):
     refs_a = FileReferenceService(db_a)
     refs_b = FileReferenceService(db_b)
 
-    await refs_a.create(from_uuid="a", to_uuid="b", tags=["x"], meta={})
-    await refs_b.create(from_uuid="a", to_uuid="b", tags=["y"], meta={})
-    assert (await refs_a.get(from_uuid="a", to_uuid="b")).tags == ["x"]
-    assert (await refs_b.get(from_uuid="a", to_uuid="b")).tags == ["y"]
+    await refs_a.create(from_uuid="a", to_uuid="b", relation="imports", meta={"side": "a"})
+    await refs_b.create(from_uuid="a", to_uuid="b", relation="imports", meta={"side": "b"})
+    assert (await refs_a.get(from_uuid="a", to_uuid="b", relation="imports")).meta == {"side": "a"}
+    assert (await refs_b.get(from_uuid="a", to_uuid="b", relation="imports")).meta == {"side": "b"}
 
 
 # -- commit_metadata ----------------------------------------------------------

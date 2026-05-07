@@ -3,14 +3,16 @@
 Live in the per-project ``state.db`` (one SQLite file per project) — file
 isolation gives us project scoping, no tenant column needed.
 
-Tags are normalized into a separate ``code_index_file_reference_tag``
-table with an index on ``tag`` so ``query_by_tags`` is a real B-tree
-lookup instead of a full scan.
+References use ``relation`` as a first-class indexed column instead of
+a tag side table. One ``(from_uuid, to_uuid, relation)`` row per
+edge-kind: a function that calls another function gets one
+``relation="calls"`` row from the caller and one ``relation="called_by"``
+row from the callee.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, ForeignKeyConstraint, Index, PrimaryKeyConstraint
+from sqlalchemy import JSON, Index, PrimaryKeyConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ember_code.core.db.base import Base
@@ -21,34 +23,13 @@ class FileReferenceModel(Base):
 
     from_uuid: Mapped[str] = mapped_column(nullable=False)
     to_uuid: Mapped[str] = mapped_column(nullable=False)
+    relation: Mapped[str] = mapped_column(nullable=False)
     meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     __table_args__ = (
-        PrimaryKeyConstraint("from_uuid", "to_uuid", name="pk_cifr"),
+        PrimaryKeyConstraint("from_uuid", "to_uuid", "relation", name="pk_cifr"),
         Index("idx_cifr_to", "to_uuid"),
-    )
-
-
-class FileReferenceTagModel(Base):
-    __tablename__ = "code_index_file_reference_tag"
-
-    from_uuid: Mapped[str] = mapped_column(nullable=False)
-    to_uuid: Mapped[str] = mapped_column(nullable=False)
-    tag: Mapped[str] = mapped_column(nullable=False)
-
-    __table_args__ = (
-        PrimaryKeyConstraint("from_uuid", "to_uuid", "tag", name="pk_cifrt"),
-        # The B-tree index that makes ``query_by_tags`` actually fast.
-        Index("idx_cifrt_tag", "tag"),
-        ForeignKeyConstraint(
-            ["from_uuid", "to_uuid"],
-            [
-                "code_index_file_reference.from_uuid",
-                "code_index_file_reference.to_uuid",
-            ],
-            ondelete="CASCADE",
-            name="fk_cifrt_to_cifr",
-        ),
+        Index("idx_cifr_relation", "relation"),
     )
 
 

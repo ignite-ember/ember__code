@@ -53,9 +53,7 @@ def _full_changeset() -> list[dict]:
             "name": "src",
             "path": "src",
             "content": "Source root",
-            "tags": [f"commit:{COMMIT_OLD}", "type:folder"],
-            "parent_ids_hierarchy": [],
-            "source_documents_ids": [],
+            "kind": "code",
         },
         {
             "op": "upsert_item",
@@ -65,10 +63,11 @@ def _full_changeset() -> list[dict]:
             "path": "src/auth.py",
             "parent_id": FOLDER_ID,
             "content": "[SECTION:summary]\nHandles authentication and login.\n[/SECTION]",
-            "tags": [f"commit:{COMMIT_OLD}", "type:file", "type:code"],
+            "kind": "code",
             "file_extension": ".py",
-            "parent_ids_hierarchy": [FOLDER_ID],
-            "source_documents_ids": [],
+            "quality": "good",
+            "security": "minor-issues",
+            "domain": ["auth"],
         },
         {
             "op": "upsert_item",
@@ -78,10 +77,8 @@ def _full_changeset() -> list[dict]:
             "path": "src/helpers.py",
             "parent_id": FOLDER_ID,
             "content": "[SECTION:summary]\nUtility helpers.\n[/SECTION]",
-            "tags": [f"commit:{COMMIT_OLD}", "type:file", "type:code"],
+            "kind": "code",
             "file_extension": ".py",
-            "parent_ids_hierarchy": [FOLDER_ID],
-            "source_documents_ids": [],
         },
         {
             "op": "upsert_item",
@@ -91,25 +88,24 @@ def _full_changeset() -> list[dict]:
             "path": "src/auth.py::login",
             "parent_id": FILE_ID,
             "content": "[SECTION:summary]\nLogs a user in via OAuth.\n[/SECTION]",
-            "tags": [f"commit:{COMMIT_OLD}", "type:entity", "entity_type:function"],
+            "kind": "code",
+            "entity_type": "function",
             "file_extension": ".py",
             "line_from": 10,
             "line_to": 42,
-            "parent_ids_hierarchy": [FOLDER_ID, FILE_ID],
-            "source_documents_ids": [],
         },
         {
             "op": "upsert_reference",
             "from_id": FILE_ID,
             "to_id": CALLEE_FILE_ID,
-            "tags": [f"commit:{COMMIT_OLD}", "relation:imports"],
+            "relation": "imports",
             "meta": {"source_file": "src/auth.py", "target_file": "src/helpers.py"},
         },
         {
             "op": "upsert_reference",
             "from_id": CALLEE_FILE_ID,
             "to_id": FILE_ID,
-            "tags": [f"commit:{COMMIT_OLD}", "relation:imported_by"],
+            "relation": "imported_by",
             "meta": {"importer_file": "src/auth.py", "imported_file": "src/helpers.py"},
         },
     ]
@@ -134,11 +130,17 @@ async def test_apply_delta_indexes_items_for_search(tmp_path):
 
     # Items are searchable by their summary content.
     auth_results = await index.search(query="authentication and login")
-    auth_ids = [r["item_id"] for r in auth_results]
+    auth_ids = [r.item_id for r in auth_results]
     assert FILE_ID in auth_ids, f"expected FILE_ID in search results, got: {auth_ids}"
 
     entity_results = await index.search(query="logs a user in via OAuth")
-    assert ENTITY_ID in [r["item_id"] for r in entity_results]
+    assert ENTITY_ID in [r.item_id for r in entity_results]
+
+    # Quality fields propagated end-to-end.
+    file_row = next(r for r in auth_results if r.item_id == FILE_ID)
+    assert file_row.quality == "good"
+    assert file_row.security == "minor-issues"
+    assert file_row.domain == ["auth"]
 
 
 @pytest.mark.asyncio
@@ -152,13 +154,11 @@ async def test_apply_delta_persists_references(tmp_path):
     await index.apply_delta(jsonl)
 
     file_refs = index._file_reference_service()
-    forward = await file_refs.get(from_uuid=FILE_ID, to_uuid=CALLEE_FILE_ID)
-    reverse = await file_refs.get(from_uuid=CALLEE_FILE_ID, to_uuid=FILE_ID)
+    forward = await file_refs.get(from_uuid=FILE_ID, to_uuid=CALLEE_FILE_ID, relation="imports")
+    reverse = await file_refs.get(from_uuid=CALLEE_FILE_ID, to_uuid=FILE_ID, relation="imported_by")
 
-    assert forward is not None
-    assert "relation:imports" in forward.tags
-    assert reverse is not None
-    assert "relation:imported_by" in reverse.tags
+    assert forward is not None and forward.relation == "imports"
+    assert reverse is not None and reverse.relation == "imported_by"
 
 
 @pytest.mark.asyncio
@@ -186,12 +186,11 @@ async def test_apply_incremental_delta_after_full(tmp_path):
             "path": "src/auth.py::logout",
             "parent_id": FILE_ID,
             "content": "[SECTION:summary]\nClears the session and logs the user out.\n[/SECTION]",
-            "tags": [f"commit:{COMMIT_NEW}", "type:entity", "entity_type:function"],
+            "kind": "code",
+            "entity_type": "function",
             "file_extension": ".py",
             "line_from": 50,
             "line_to": 80,
-            "parent_ids_hierarchy": [FOLDER_ID, FILE_ID],
-            "source_documents_ids": [],
         },
         {"op": "delete_item", "id": CALLEE_FILE_ID},
         {"op": "delete_reference", "from_id": FILE_ID, "to_id": CALLEE_FILE_ID},
@@ -212,17 +211,22 @@ async def test_apply_incremental_delta_after_full(tmp_path):
 
     # New entity is searchable on the new commit.
     results = await index.search(query="clears the session")
-    assert new_entity_id in [r["item_id"] for r in results]
+    assert new_entity_id in [r.item_id for r in results]
 
     # Old commit's index is untouched (copy-on-write means the new commit
     # is independent — the parent's tree didn't have these mutations).
     parent_results = await index.search(query="clears the session", commit=COMMIT_OLD)
-    assert new_entity_id not in [r["item_id"] for r in parent_results]
+    assert new_entity_id not in [r.item_id for r in parent_results]
 
     # References for the deleted helper are gone.
     file_refs = index._file_reference_service()
-    assert await file_refs.get(from_uuid=FILE_ID, to_uuid=CALLEE_FILE_ID) is None
-    assert await file_refs.get(from_uuid=CALLEE_FILE_ID, to_uuid=FILE_ID) is None
+    assert (
+        await file_refs.get(from_uuid=FILE_ID, to_uuid=CALLEE_FILE_ID, relation="imports") is None
+    )
+    assert (
+        await file_refs.get(from_uuid=CALLEE_FILE_ID, to_uuid=FILE_ID, relation="imported_by")
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -244,5 +248,5 @@ async def test_replaying_same_delta_is_idempotent(tmp_path):
 
     # Search still finds the file once (not duplicated).
     results = await index.search(query="authentication and login")
-    file_hits = [r for r in results if r["item_id"] == FILE_ID]
+    file_hits = [r for r in results if r.item_id == FILE_ID]
     assert len(file_hits) == 1

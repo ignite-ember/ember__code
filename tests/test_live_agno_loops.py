@@ -174,12 +174,21 @@ class TestBroadcastTeam:
         )
 
         member_responses = getattr(run_output, "member_responses", []) or []
-        assert len(member_responses) == 2, (
-            f"Expected both members to run; got {len(member_responses)} "
-            f"member_responses. Leader: {(run_output.content or '')[:200]}"
+        # Agno may include the leader's synthesis pass alongside the
+        # member runs, so the count can exceed ``len(members)``. The
+        # invariant we actually care about is "both named members
+        # produced at least one response with content". Loosening
+        # ``==`` to a name-presence + non-empty check keeps the test
+        # honest without coupling to Agno's leader-bookkeeping shape.
+        names_with_content = {(resp.agent_name or "") for resp in member_responses if resp.content}
+        assert "security_expert" in names_with_content, (
+            f"security_expert produced no response. Got: {names_with_content}. "
+            f"Leader: {(run_output.content or '')[:200]}"
         )
-        for resp in member_responses:
-            assert resp.content, f"Member produced empty content: {resp}"
+        assert "quality_expert" in names_with_content, (
+            f"quality_expert produced no response. Got: {names_with_content}. "
+            f"Leader: {(run_output.content or '')[:200]}"
+        )
 
 
 # ── Test 3: Streaming + cancellation ─────────────────────────────────

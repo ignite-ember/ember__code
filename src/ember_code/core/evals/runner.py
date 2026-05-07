@@ -2,6 +2,7 @@
 
 import logging
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -174,6 +175,22 @@ class SuiteResult(BaseModel):
         fixtures_root = builtin_fixtures if builtin_fixtures.is_dir() else user_fixtures
         work_dir = _setup_fixtures(suite.fixtures, fixtures_root)
 
+        # Optional Python setup hook — runs after fixtures land but
+        # before any case starts. The codeindex eval uses this to
+        # git-init the work_dir and apply a JSONL changeset so the
+        # agent's CodeIndexTools see a populated chroma index.
+        if suite.setup_module:
+            try:
+                await _run_setup_module(suite.setup_module, work_dir, project_dir)
+            except Exception as exc:
+                logger.exception("setup_module %s failed", suite.setup_module)
+                for case in suite.cases:
+                    suite_result.case_results.append(
+                        CaseResult(case=case, error=f"setup_module failed: {exc}")
+                    )
+                _cleanup_work_dir(work_dir)
+                return suite_result
+
         # Get judge model for accuracy evals
         judge_model = None
         try:
@@ -186,9 +203,25 @@ class SuiteResult(BaseModel):
         except Exception as exc:
             logger.debug("Could not load judge model: %s", exc)
 
-        # Run each case
-        for case in suite.cases:
+        # Run each case. Per-case progress prints help when the runner is
+        # launched as a background process and stdout is otherwise silent
+        # for minutes at a time.
+        import time as _time
+
+        total = len(suite.cases)
+        for idx, case in enumerate(suite.cases, start=1):
+            print(
+                f"  [case {idx}/{total}] {case.name} starting...",
+                flush=True,
+            )
+            t0 = _time.monotonic()
             case_result = await run_eval_case(case, agent, judge_model)
+            elapsed = _time.monotonic() - t0
+            verdict = "PASS" if case_result.passed else "FAIL"
+            print(
+                f"  [case {idx}/{total}] {case.name} → {verdict} in {elapsed:.1f}s",
+                flush=True,
+            )
             suite_result.case_results.append(case_result)
 
         _cleanup_work_dir(work_dir)
@@ -247,6 +280,33 @@ def _check_tool_arg_assertions(
     if failures:
         return False, "missing tool-arg matches: " + ", ".join(failures)
     return True, "all tool-arg assertions matched"
+
+
+async def _run_setup_module(module_path: str, work_dir: Path, project_dir: Path) -> None:
+    """Import ``module_path`` and call its ``setup(work_dir, project_dir)``.
+
+    The setup function is the eval's own pre-run hook — it's where
+    custom suites do work that ``_setup_fixtures`` (which only copies
+    files) can't express: git-initing the work_dir, applying a JSONL
+    changeset, seeding a database. Two args go in: the per-case
+    work_dir (where the agent runs) and project_dir (the repo root,
+    so the setup can find sibling fixture files like a snapshot).
+    """
+    import importlib
+    import inspect
+
+    # Make the project's evals/ importable so suites in
+    # ``evals/<name>.yaml`` can reference ``evals.<name>.setup``.
+    if str(project_dir) not in sys.path:
+        sys.path.insert(0, str(project_dir))
+
+    module = importlib.import_module(module_path)
+    setup_fn = getattr(module, "setup", None)
+    if setup_fn is None:
+        raise RuntimeError(f"setup_module {module_path!r} has no ``setup`` callable")
+    result = setup_fn(work_dir, project_dir)
+    if inspect.isawaitable(result):
+        await result
 
 
 def _setup_fixtures(
@@ -506,6 +566,7 @@ async def run_eval_case(
         current_only = [m for m in msgs if not getattr(m, "from_history", False)]
         if len(current_only) != len(msgs):
             from copy import copy as _shallow_copy
+
             response = _shallow_copy(response)
             response.messages = current_only
 
@@ -575,9 +636,7 @@ async def run_eval_case(
 
         # 3b. Tool-arg assertions (e.g. "spawn_team called with mode=coordinate")
         if case.tool_arg_assertions:
-            passed, detail = _check_tool_arg_assertions(
-                result.tool_trace, case.tool_arg_assertions
-            )
+            passed, detail = _check_tool_arg_assertions(result.tool_trace, case.tool_arg_assertions)
             result.tool_arg_passed = passed
             result.tool_arg_detail = detail
             if not passed:

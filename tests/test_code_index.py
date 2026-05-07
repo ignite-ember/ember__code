@@ -12,8 +12,8 @@ from ember_code.core.code_index.enums import FileSystemType
 from ember_code.core.code_index.index import (
     CodeIndex,
     _branch_heads,
-    _decode_list,
-    _encode_list,
+    _decode_bracketed_list,
+    _encode_bracketed_list,
     _flatten_item_metadata,
 )
 from ember_code.core.code_index.manifest import Manifest
@@ -22,17 +22,26 @@ from ember_code.core.code_index.schema.items import CodeIndexItem
 
 
 def _make_item(
-    *, name: str, content: str, path: str | None = None, tags: list[str] | None = None
+    *,
+    name: str,
+    content: str,
+    path: str | None = None,
+    domain: list[str] | None = None,
+    quality: str | None = None,
+    security: str | None = None,
 ) -> CodeIndexItem:
     return CodeIndexItem(
         item_id=str(uuid.uuid4()),
         name=name,
         content=content,
         type=FileSystemType.FILE,
+        kind="code",
         path=path or f"src/{name}",
         repository_id="test-repo",
         file_extension=name.rsplit(".", 1)[-1] if "." in name else None,
-        tags=tags or ["type:file", "type:code"],
+        domain=domain or [],
+        quality=quality,
+        security=security,
     )
 
 
@@ -64,7 +73,6 @@ class TestManifest:
         m = Manifest(project=tmp_path / "p", data_dir=str(tmp_path / "data"))
         m.upsert_commit("abc")
         original = m.load().commits["abc"].last_used_at
-        # Force a fresh ISO timestamp.
         import time
 
         time.sleep(1.1)
@@ -90,23 +98,37 @@ class TestManifest:
 
 
 class TestMetadata:
-    def test_encode_decode_round_trip(self):
+    def test_bracketed_round_trip(self):
         original = ["alpha", "beta", "gamma"]
-        encoded = _encode_list(original)
-        assert _decode_list(encoded) == original
+        encoded = _encode_bracketed_list(original)
+        # Bracketed on both sides for $contains exact match.
+        assert encoded.startswith("\x1f") and encoded.endswith("\x1f")
+        assert _decode_bracketed_list(encoded) == original
 
-    def test_encode_drops_empty_strings(self):
-        assert _encode_list(["a", "", "b"]) == "a\x1fb"
+    def test_bracketed_drops_empty_strings(self):
+        assert _decode_bracketed_list(_encode_bracketed_list(["a", "", "b"])) == ["a", "b"]
 
-    def test_decode_empty(self):
-        assert _decode_list("") == []
+    def test_bracketed_empty_round_trip(self):
+        assert _encode_bracketed_list([]) == ""
+        assert _decode_bracketed_list("") == []
 
-    def test_flatten_item_keeps_lists_as_strings(self):
-        item = _make_item(name="x.py", content="x", tags=["a", "b"])
+    def test_flatten_promotes_quality_and_lists(self):
+        item = _make_item(
+            name="x.py",
+            content="x",
+            quality="poor",
+            security="critical",
+            domain=["auth", "api"],
+        )
         meta = _flatten_item_metadata(item)
-        # Lists encoded; chromadb only takes scalars.
-        assert isinstance(meta["tags"], str)
-        assert _decode_list(meta["tags"]) == ["a", "b"]
+        assert meta["quality"] == "poor"
+        assert meta["security"] == "critical"
+        # Domain is bracketed for exact $contains match.
+        assert meta["domain"] == "\x1fauth\x1fapi\x1f"
+        # Categoricals not set come through as empty strings.
+        assert meta["complexity"] == ""
+        # No legacy ``tags`` field on the chroma metadata.
+        assert "tags" not in meta
 
 
 # -- prepare_commit -----------------------------------------------------------
@@ -128,21 +150,18 @@ class TestPrepareCommit:
 
         time.sleep(1.1)
         await index.prepare_commit("sha_0")
-        # last_used_at should bump on the second call.
         assert index.manifest.load().commits["sha_0"].last_used_at != first_used
 
     @pytest.mark.asyncio
     async def test_copy_from_parent(self, index):
-        # Seed the parent with one item so we can verify copy worked.
         await index.prepare_commit("parent")
         item = _make_item(name="seed.py", content="seed content")
         await index.add_item("parent", item)
 
         await index.prepare_commit("child", parent_sha="parent")
-        # Child must serve the parent's item without us re-adding it.
         fetched = await index.get_item(item.item_id, commit="child")
         assert fetched is not None
-        assert fetched["name"] == "seed.py"
+        assert fetched.name == "seed.py"
 
 
 # -- add_item / search / get_item ---------------------------------------------
@@ -170,8 +189,8 @@ class TestSearchAndGet:
 
         results = await index.search(query="JWT signing", limit=5)
         assert results
-        assert results[0]["name"] == "auth.py"
-        assert results[0]["commit"] == "head_sha"
+        assert results[0].name == "auth.py"
+        assert results[0].commit == "head_sha"
 
     @pytest.mark.asyncio
     async def test_search_uses_head_when_no_commit_specified(self, index):
@@ -179,12 +198,37 @@ class TestSearchAndGet:
         await index.prepare_commit("a")
         await index.add_item("a", _make_item(name="head_only.py", content="head only"))
         results = await index.search(query="head only", limit=3)
-        assert results and results[0]["name"] == "head_only.py"
+        assert results and results[0].name == "head_only.py"
 
     @pytest.mark.asyncio
     async def test_search_no_head_returns_empty(self, index):
-        # No commit set — nothing to query.
         assert await index.search(query="anything") == []
+
+    @pytest.mark.asyncio
+    async def test_search_with_where_filter(self, index):
+        """Quality fields land as exact-match chroma metadata — verify a
+        ``security="critical"`` filter actually narrows results."""
+        await index.prepare_commit("c")
+        await index.set_head("c")
+        await index.add_item(
+            "c",
+            _make_item(
+                name="risky.py",
+                content="raw SQL with user input",
+                security="critical",
+            ),
+        )
+        await index.add_item(
+            "c",
+            _make_item(
+                name="safe.py",
+                content="parameterized SQL queries",
+                security="secure",
+            ),
+        )
+
+        critical = await index.search(query="SQL", limit=5, where={"security": "critical"})
+        assert {r.name for r in critical} == {"risky.py"}
 
     @pytest.mark.asyncio
     async def test_get_item_round_trip(self, index):
@@ -193,13 +237,31 @@ class TestSearchAndGet:
         item = _make_item(
             name="ref.py",
             content="referenced content",
-            tags=["domain:billing", "type:file"],
+            domain=["billing"],
+            quality="good",
         )
         await index.add_item("c", item)
         fetched = await index.get_item(item.item_id)
         assert fetched is not None
-        assert fetched["name"] == "ref.py"
-        assert fetched["tags"] == ["domain:billing", "type:file"]
+        assert fetched.name == "ref.py"
+        assert fetched.domain == ["billing"]
+        assert fetched.quality == "good"
+        assert fetched.kind == "code"
+
+
+# -- filter_items -------------------------------------------------------------
+
+
+class TestFilterItems:
+    @pytest.mark.asyncio
+    async def test_filter_by_quality(self, index):
+        await index.prepare_commit("c")
+        await index.set_head("c")
+        await index.add_item("c", _make_item(name="poor.py", content="...", quality="poor"))
+        await index.add_item("c", _make_item(name="good.py", content="...", quality="good"))
+
+        rows = await index.filter_items(where={"quality": "poor"}, limit=10)
+        assert {r.name for r in rows} == {"poor.py"}
 
 
 # -- remove_item --------------------------------------------------------------
@@ -234,7 +296,6 @@ class TestPrune:
         await index.set_head("head")
         await index.prepare_commit("head")
 
-        # Backdate the stale commit past the retention cutoff.
         state = index.manifest.load()
         state.commits["stale"].last_used_at = (
             datetime.now(timezone.utc) - timedelta(days=60)
@@ -244,7 +305,6 @@ class TestPrune:
         dropped = await index.prune(keep_recent_days=30)
         assert "stale" in dropped
         assert "head" not in dropped
-        # Chroma dir for the dropped commit should be gone.
         assert not commit_chroma_path(index.project, "stale", data_dir=index.data_dir).exists()
 
     @pytest.mark.asyncio
@@ -264,7 +324,6 @@ class TestBranchHeads:
         assert _branch_heads(tmp_path) == {}
 
     def test_real_git_returns_branches(self, tmp_path):
-        # Initialize a tiny repo to verify the helper actually parses output.
         env_args = ["-c", "user.email=t@t", "-c", "user.name=t"]
         subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_path, check=True)
         (tmp_path / "x.txt").write_text("x")
@@ -274,5 +333,4 @@ class TestBranchHeads:
 
         heads = _branch_heads(tmp_path)
         assert set(heads.keys()) == {"main", "feature/foo"}
-        # Both branches point at the same commit at this point.
         assert len(set(heads.values())) == 1

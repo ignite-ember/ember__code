@@ -112,6 +112,22 @@ class Session:
             read_claude_md=settings.rules.cross_tool_support,
         )
 
+        # ── CodeIndex availability check (eager — pool needs the flag) ─
+        # Construct CodeIndex + sync-manager here so we can determine
+        # whether a populated chroma index exists for the current HEAD
+        # *before* loading agent definitions. The pool uses the flag to
+        # pick CodeIndex-first prompt variants (``<name>.codeindex.md``)
+        # over the plain ``<name>.md`` ones; the main-agent prompt
+        # loader uses the same flag to pick ``main_agent.codeindex.md``.
+        # Doing this once here avoids re-deriving the same fact in
+        # multiple places later in __init__.
+        self.code_index = CodeIndex(project=self.project_dir, data_dir=settings.storage.data_dir)
+        self.code_index_sync = CodeIndexSyncManager.from_settings(
+            settings, project_dir=self.project_dir, code_index=self.code_index
+        )
+        _head_sha = self.code_index_sync.current_sha()
+        self._codeindex_available = bool(_head_sha and self.code_index.has_commit(_head_sha))
+
         # ── Agent Pool (definitions only — agents built after MCP connects) ─
         # Share the session's SQLite ``db`` so paused sub-agent runs land
         # in the same store as the main team's runs. Agno's
@@ -119,7 +135,9 @@ class Session:
         # in the agent's db; without one HITL resume fails with
         # "No runs found for run ID …".
         self.pool = AgentPool(db=self.db)
-        self.pool.load_definitions(settings, self.project_dir)
+        self.pool.load_definitions(
+            settings, self.project_dir, codeindex_available=self._codeindex_available
+        )
         if settings.orchestration.generate_ephemeral:
             self.pool.init_ephemeral(
                 self.project_dir, settings.orchestration.max_ephemeral_per_session
@@ -165,12 +183,6 @@ class Session:
         self.knowledge_mgr = SessionKnowledgeManager(self.knowledge, settings, self.project_dir)
         # Share knowledge_mgr with the pool so all sub-agents get the toolkit.
         self.pool._knowledge_mgr = self.knowledge_mgr if self.knowledge else None
-
-        # ── CodeIndex (per-project Chroma) + sync manager ────────────
-        self.code_index = CodeIndex(project=self.project_dir, data_dir=settings.storage.data_dir)
-        self.code_index_sync = CodeIndexSyncManager.from_settings(
-            settings, project_dir=self.project_dir, code_index=self.code_index
-        )
 
         # ── Main Agent (single agent with all tools + orchestration) ──
         self.main_team = self._build_main_agent()
@@ -249,9 +261,15 @@ class Session:
                 tool_names.append("WebFetch")
             except (ImportError, ValueError):
                 pass
-        # TODO: Enable CodeIndex when the service is online
-        # if registry.cloud_connected:
-        #     tool_names.append("CodeIndex")
+        # CodeIndex tools are only exposed when there's a usable local
+        # chroma index for the current git HEAD. Without one,
+        # ``codeindex_search`` would return empty results and waste a
+        # tool slot in the agent's catalog — hide it entirely. The
+        # ``self._codeindex_available`` flag was set in __init__ before
+        # pool.load_definitions ran (so the pool could pick the right
+        # ``<name>.codeindex.md`` vs ``<name>.md`` variant per agent).
+        if self._codeindex_available:
+            tool_names.append("CodeIndex")
         tools = registry.resolve(tool_names)
 
         # Orchestration tools — lets the agent delegate to specialists
@@ -293,11 +311,20 @@ class Session:
         # Tool event hooks (PreToolUse/PostToolUse/PostToolUseFailure)
         tool_event_hook = self._create_tool_event_hook()
 
-        # System prompt with substitutions
-        prompt = load_prompt("main_agent")
+        # System prompt with substitutions. When CodeIndex is available
+        # we load ``main_agent.codeindex.md`` — a wholly CodeIndex-first
+        # variant — instead of the plain ``main_agent.md``. The
+        # CodeIndex variant has the tool reference inline and re-frames
+        # tool preferences / read-before-edit / search guidance around
+        # the index. The ``{{CODEINDEX_TOOLS}}`` placeholder only exists
+        # in the plain variant; for the codeindex variant we substitute
+        # the empty string (no-op since the placeholder isn't present).
+        prompt_name = "main_agent.codeindex" if self._codeindex_available else "main_agent"
+        prompt = load_prompt(prompt_name)
         prompt = prompt.replace(
             "{{AGENT_CATALOG}}", self._build_agent_catalog() or "(no agents loaded)"
         )
+        prompt = prompt.replace("{{CODEINDEX_TOOLS}}", "")
 
         # Append skill descriptions if any
         skill_descriptions = self.skill_pool.describe()
