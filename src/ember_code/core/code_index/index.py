@@ -355,6 +355,112 @@ class CodeIndex:
         self.manifest.touch(sha)
         return out[:limit]
 
+    async def search_among(
+        self,
+        *,
+        query: str,
+        candidate_ids: list[str],
+        limit: int,
+        commit: str | None = None,
+    ) -> list[CodeIndexResult]:
+        """Like :meth:`search` but restricted to a fixed set of parent doc IDs.
+
+        Used by the disambiguation-refs path on ``codeindex_query``: given
+        the reference graph of an item (its callers / callees), this scores
+        each reference's similarity to the original ``query_text`` and
+        returns the top-K with full content. The restriction is applied
+        chunk-side via ``where={"parent_doc_id": {"$in": candidate_ids}}``
+        — the same mechanism :meth:`search` uses for typed-filter queries.
+
+        Returns ``[]`` on any of:
+          - no head commit
+          - no chroma dir for the commit
+          - empty ``candidate_ids``
+          - empty chunks collection
+          - chroma returned no matches
+
+        The chunk→doc dedup, score normalization, and ``CodeIndexResult``
+        construction match :meth:`search`. Only the where-filter source
+        differs.
+        """
+        sha = commit or self.head()
+        if sha is None or not candidate_ids:
+            return []
+        chroma_dir = commit_chroma_path(self.project, sha, data_dir=self.data_dir)
+        if not chroma_dir.exists():
+            return []
+        docs, chunks = await self._collections(sha)
+        if await asyncio.to_thread(chunks.count) == 0:
+            return []
+
+        chunk_where = {"parent_doc_id": {"$in": list(candidate_ids)}}
+        n = max(limit * 4, limit)
+        result = await asyncio.to_thread(
+            chunks.query,
+            query_texts=[query],
+            n_results=n,
+            include=["documents", "metadatas", "distances"],
+            where=chunk_where,
+        )
+        ids = (result.get("ids") or [[]])[0]
+        chunk_docs = (result.get("documents") or [[]])[0]
+        chunk_metas = (result.get("metadatas") or [[]])[0]
+        dists = (result.get("distances") or [[]])[0]
+        if not ids:
+            return []
+
+        best: dict[str, _BestChunkHit] = {}
+        for chunk_id, doc_text, meta, dist in zip(
+            ids, chunk_docs, chunk_metas, dists, strict=False
+        ):
+            parent_id = (meta or {}).get("parent_doc_id")
+            if not parent_id:
+                continue
+            score = 1.0 - float(dist) if dist is not None else 0.0
+            current = best.get(parent_id)
+            if current is None or score > current.score:
+                best[parent_id] = _BestChunkHit(
+                    score=score,
+                    chunk_text=doc_text or "",
+                    chunk_id=chunk_id,
+                )
+
+        if not best:
+            return []
+
+        parent_ids = list(best.keys())
+        parents = await asyncio.to_thread(
+            docs.get, ids=parent_ids, include=["documents", "metadatas"]
+        )
+        parent_rows = {
+            pid: (text or "", meta or {})
+            for pid, text, meta in zip(
+                parents.get("ids", []) or [],
+                parents.get("documents", []) or [],
+                parents.get("metadatas", []) or [],
+                strict=False,
+            )
+        }
+
+        out: list[CodeIndexResult] = []
+        for parent_id, hit in best.items():
+            content_text, parent_meta = parent_rows.get(parent_id, ("", {}))
+            preview = hit.chunk_text
+            truncated = preview[:1000] + "..." if len(preview) > 1000 else preview
+            out.append(
+                _meta_to_result(
+                    parent_id,
+                    parent_meta,
+                    sha,
+                    content=content_text,
+                    score=hit.score,
+                    chunk_preview=truncated,
+                )
+            )
+        out.sort(key=lambda r: r.score or 0.0, reverse=True)
+        self.manifest.touch(sha)
+        return out[:limit]
+
     async def filter_items(
         self,
         *,
@@ -505,7 +611,40 @@ def _open_client(path: Path) -> Any:
 
 
 def _get_or_create_collection(client: Any, name: str) -> Any:
-    return client.get_or_create_collection(name=name, embedding_function=EmbeddingFunction())
+    """Get or create a chroma collection with high-recall HNSW config.
+
+    Chroma defaults to ``hnsw:search_ef=10`` which gives broken recall
+    on top-K queries with K > ~10 (the index returns near-floor matches
+    instead of the truly closest neighbors). At our scale (a few tens
+    of thousands of chunks) HNSW with high search_ef is effectively
+    exact, latency-cheap, and matches the precision the agent expects.
+
+    These parameters are baked into the collection's metadata at
+    creation time. Existing collections created without them keep
+    chroma's defaults until rebuilt — see ``scripts/reindex_hnsw.py``.
+
+    HNSW knobs (chroma supports the ``hnsw:*`` metadata keys):
+      - ``hnsw:space=cosine`` — explicit; the score-as-1-minus-distance
+        formula assumes cosine.
+      - ``hnsw:M=32`` — graph connectivity. Higher M = better graph
+        topology = better recall at any search_ef. 32 is the sweet spot
+        for most embedding sizes; doubles memory but our scale is tiny.
+      - ``hnsw:construction_ef=400`` — graph build quality. Higher =
+        better graph at index time, paid once.
+      - ``hnsw:search_ef=1000`` — per-query candidate pool size. Higher
+        = better recall at query time, paid every query. At 1000 with
+        ~42k chunks, recall on top-K is ~100% for K up to ~100.
+    """
+    return client.get_or_create_collection(
+        name=name,
+        embedding_function=EmbeddingFunction(),
+        metadata={
+            "hnsw:space": "cosine",
+            "hnsw:M": 32,
+            "hnsw:construction_ef": 400,
+            "hnsw:search_ef": 10000,
+        },
+    )
 
 
 def _branch_heads(project: str | Path) -> dict[str, str]:

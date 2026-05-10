@@ -30,6 +30,24 @@ from evals.codeindex.spec import fixture
 COMMIT = "f" * 40
 
 
+def _flatten(items, *, leaves_only: bool = True):
+    """Walk the nested ``codeindex_query`` response tree.
+
+    The tool returns folder→file→class→entity nesting. By default we
+    yield only the *leaves* (nodes with no nested ``matches``) — those
+    are the actually-matched items, ignoring the structural wrappers.
+    Pass ``leaves_only=False`` to also yield every ancestor.
+    """
+    for item in items:
+        children = item.get("matches") or []
+        if children:
+            if not leaves_only:
+                yield item
+            yield from _flatten(children, leaves_only=leaves_only)
+        else:
+            yield item
+
+
 @pytest.fixture
 async def populated_index(tmp_path):
     """Build the eval JSONL and apply it to a fresh CodeIndex."""
@@ -87,7 +105,7 @@ async def test_critical_security_finds_login_and_upload(populated_index):
     tools = CodeIndexTools(index=populated_index)
     raw = await tools.codeindex_query(security=SecurityLevel.CRITICAL, type="file")
     result = json.loads(raw)
-    paths = {item["path"] for item in result["items"]}
+    paths = {item["path"] for item in _flatten(result["items"])}
     assert "src/auth/login.py" in paths
     assert "src/web/upload.py" in paths
     # Items with lower severity must not leak through.
@@ -102,7 +120,7 @@ async def test_xss_vulnerability_filter(populated_index):
     tools = CodeIndexTools(index=populated_index)
     raw = await tools.codeindex_query(vulnerabilities=["xss"], type="file")
     result = json.loads(raw)
-    paths = {item["path"] for item in result["items"]}
+    paths = {item["path"] for item in _flatten(result["items"])}
     assert paths == {"src/web/render.py"}
 
 
@@ -112,7 +130,7 @@ async def test_singleton_pattern_finds_settings(populated_index):
     tools = CodeIndexTools(index=populated_index)
     raw = await tools.codeindex_query(patterns=["singleton"], type="file")
     result = json.loads(raw)
-    paths = {item["path"] for item in result["items"]}
+    paths = {item["path"] for item in _flatten(result["items"])}
     assert paths == {"src/config/settings.py"}
 
 
@@ -128,7 +146,7 @@ async def test_high_complexity_but_good_quality(populated_index):
         type="file",
     )
     result = json.loads(raw)
-    paths = {item["path"] for item in result["items"]}
+    paths = {item["path"] for item in _flatten(result["items"])}
     assert paths == {"src/algorithms/graph.py"}
     # parser.py is very-high complexity AND poor quality — rejected on both.
     assert "src/legacy/parser.py" not in paths
@@ -140,7 +158,7 @@ async def test_sql_injection_vulnerability_filter(populated_index):
     tools = CodeIndexTools(index=populated_index)
     raw = await tools.codeindex_query(vulnerabilities=["sql-injection"], type="file")
     result = json.loads(raw)
-    paths = {item["path"] for item in result["items"]}
+    paths = {item["path"] for item in _flatten(result["items"])}
     assert "src/auth/login.py" in paths
 
 
@@ -150,7 +168,7 @@ async def test_refactor_candidates_surface_legacy_and_db(populated_index):
     tools = CodeIndexTools(index=populated_index)
     raw = await tools.codeindex_query(needs_refactoring=True, type="file")
     result = json.loads(raw)
-    paths = {item["path"] for item in result["items"]}
+    paths = {item["path"] for item in _flatten(result["items"])}
     assert "src/legacy/parser.py" in paths
     assert "src/db/queries.py" in paths
     # The well-tested utility is NOT a refactor candidate.
@@ -163,7 +181,7 @@ async def test_quality_excellent_surfaces_lru(populated_index):
     tools = CodeIndexTools(index=populated_index)
     raw = await tools.codeindex_query(quality=QualityLevel.EXCELLENT, type="file")
     result = json.loads(raw)
-    paths = {item["path"] for item in result["items"]}
+    paths = {item["path"] for item in _flatten(result["items"])}
     assert paths == {"src/cache/lru.py"}
 
 
@@ -179,7 +197,12 @@ async def test_callers_of_run_raw(populated_index):
     # Find the run_raw entity id first.
     raw = await tools.codeindex_query(type="entity")
     items = json.loads(raw)["items"]
-    run_raw_id = next(i["item_id"] for i in items if i["path"].endswith("queries.py::run_raw"))
+    matches = [
+        i for i in _flatten(items)
+        if i.get("path", "").endswith("queries.py::run_raw")
+    ]
+    assert matches, "run_raw entity not found in any leaf"
+    run_raw_id = matches[0]["item_id"]
 
     raw = await tools.codeindex_tree(id=run_raw_id, relations=[Relation.CALLED_BY])
     item = json.loads(raw)["items"][0]
@@ -195,7 +218,12 @@ async def test_docs_section_retrieval(populated_index):
     tools = CodeIndexTools(index=populated_index)
     raw = await tools.codeindex_query(kind="docs", entity_type="section")
     result = json.loads(raw)
-    names = {item["name"] for item in result["items"]}
+    # Hierarchical sections — yield every node (incl. ancestors), then
+    # keep entries that are actually section entities.
+    names = {
+        item["name"] for item in _flatten(result["items"], leaves_only=False)
+        if item.get("entity_type") == "section"
+    }
     # All 6 sections of AUTH.md present.
     assert {
         "Authentication",
@@ -215,7 +243,7 @@ async def test_semantic_search_finds_token_leak(populated_index):
         query_text="session token leaks back to the caller in error", limit=5
     )
     result = json.loads(raw)
-    paths = [item["path"] for item in result["items"]]
+    paths = [item["path"] for item in _flatten(result["items"])]
     # Top hit should be auth/session.py — the file whose summary mentions
     # the token-leak. Allow some slack: it must appear in the top-3.
     assert any("session.py" in p for p in paths[:3]), f"got: {paths}"
