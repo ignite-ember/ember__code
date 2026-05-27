@@ -1,5 +1,7 @@
 # Proposal: folder-summary annotations on `codeindex_query` results
 
+> **STATUS — IMPLEMENTED.** The nested-tree response shape described below shipped in commit `c482514` ("codeindex: nested-tree response, OOP package, prompt refresh"). The `codeindex/` package now returns folder→file→class→entity trees with `summary`, `siblings`, `line_from`/`line_to`, and entity-level disambiguation refs at the leaves. A companion change (commit `0885ec0`) moved the per-commit project-map render to ember-server so every developer indexing the same commit sees the same overview — see the [Project Map](CODEINDEX.md#project-map) section in CODEINDEX.md for the live shape. This document is kept as the design record explaining *why* the response shape ended up this way.
+
 Concrete example using the failing case from v2.3 run 1 — `codewrite_slack_notifications_reuse_pattern`.
 
 ---

@@ -354,6 +354,15 @@ Built-in commands available in interactive mode:
 | `/evals [agent]` | Run agent evals (optionally filter by agent name) |
 | `/sync-knowledge` | Sync knowledge between git file and vector DB |
 | `/login` | Authenticate via device-flow (opens browser) |
+| `/schedule add <when> <prompt>` | Schedule a one-off or recurring prompt (e.g. `/schedule add review code at 5pm`, `/schedule add run linter every 2 hours`) |
+| `/loop <prompt>` | Re-fire the same prompt as the next user turn until cap, `/loop stop`, or any non-`/loop` input (default cap 30, hard cap 200). Forms: `/loop` (status), `/loop <N> <prompt>` (explicit cap), `/loop stop` (cancel) |
+| `/compact` | Manually compact session history (otherwise triggers at 80% of the context window) |
+| `/bug` | Capture a bug report with session context |
+| `/codeindex` | Show CodeIndex sync status for the current project |
+| `/mcp` | List configured MCP servers and their connection status |
+| `/model` | Switch the active model (or show current) |
+| `/whoami` | Show the active Ember Cloud login |
+| `/logout` | Clear cached Ember Cloud credentials |
 | `/<skill-name> [args]` | Invoke a skill (e.g., `/commit`, `/review-pr`) |
 
 ## Architecture Decisions
