@@ -67,6 +67,14 @@ ignite-ember /login         # opens browser for device-flow login
 
 No manual model configuration needed — the built-in registry handles everything.
 
+#### Cloud model auto-discovery
+
+When you're logged in, Ember Code fetches the deduplicated `(model, base_url)` catalogue from your Ember Cloud key pool (`GET /v1/cli/chat/models`) and merges each entry into the local registry on session start. Opening the model picker (`/model`) refreshes the catalogue so models added on the portal show up without restarting the CLI.
+
+Cloud-discovered entries always use `api_key: cloud_token` (your login credentials) and are tagged with `source: "cloud"`. **User-defined entries always win** — if your config already defines `gpt-4o`, the cloud entry with the same name is skipped, so pinned timeouts and provider overrides survive.
+
+Failure modes are all soft: missing token, network error, timeout (3 s), and non-200 responses each degrade silently to whatever's already in the local registry.
+
 ### Option 2: Bring Your Own Model (BYOM)
 
 Add entries to `models.registry` in your config. These override built-in entries with the same name, or add entirely new models.
