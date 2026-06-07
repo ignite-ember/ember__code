@@ -93,10 +93,18 @@ class SpinnerWidget(Static):
 
 
 class StatusBar(Widget):
-    """Status bar showing model, tokens (real-time), elapsed time, and context usage.
+    """Two-line status display at the footer.
 
-    Uses a reactive ``_tick`` counter so Textual re-renders automatically.
-    This avoids the Static.update() clearing issue entirely.
+    Top row: identity — model name, session id, cloud connection.
+    Bottom row: live activity — run timer, context window usage,
+    CodeIndex slot. Split by cadence (identity rarely changes,
+    activity ticks every render) so the eye has a stable anchor
+    on the top row while the bottom updates.
+
+    Uses a reactive ``_tick`` counter so Textual re-renders
+    automatically; avoids the ``Static.update()`` clearing issue.
+    The host app sizes the widget to ``height: 3`` (1 row for the
+    top border + 2 content rows) so both lines fit.
     """
 
     _tick = reactive(0)
@@ -285,25 +293,35 @@ class StatusBar(Widget):
         return format_elapsed_time(seconds)
 
     def render(self) -> Text:
-        """Build the status line. Textual calls this whenever _tick changes."""
+        """Build the status display. Two lines: identity on top, live
+        activity on the bottom.
+
+        Layout was a single ``|``-joined line until we accumulated
+        too many slots (model, session, cloud, timer, context,
+        CodeIndex) — a single 80-col row truncated on most terminals
+        and the slots all blurred into each other. Splitting by
+        *cadence* — slow-changing identity vs. ticking activity —
+        also gives the eye a stable anchor on the top row while
+        the bottom row updates on every render tick.
+
+        The ``#status-bar`` widget is sized to ``height: 2`` in the
+        app stylesheet so both lines fit.
+        """
         _ = self._tick  # access reactive to register dependency
 
-        parts = []
-
+        # ── Line 1: identity (rarely changes mid-session) ──
+        top_parts: list[str] = []
         if self._model_name:
-            parts.append(f"[bold]{self._model_name}[/bold]")
-
+            top_parts.append(f"[bold]{self._model_name}[/bold]")
         if self._session_id:
-            parts.append(f"session [bold]{self._session_id}[/bold]")
-
+            top_parts.append(f"session [bold]{self._session_id}[/bold]")
         if self._cloud_connected:
-            parts.append(f"[cyan]\u2601[/cyan] {self._cloud_org}")
+            top_parts.append(f"[cyan]\u2601[/cyan] {self._cloud_org}")
 
+        # ── Line 2: live activity (run timer, context, CodeIndex) ──
+        bottom_parts: list[str] = []
         if self._running:
-            # Show live elapsed time only while running
-            parts.append(self._fmt_time(self._run_elapsed))
-
-        # Context window state
+            bottom_parts.append(self._fmt_time(self._run_elapsed))
         if self._context_tokens:
             pct = self._context_tokens / max(self._max_context, 1) * 100
             color = ""
@@ -312,27 +330,24 @@ class StatusBar(Widget):
             elif pct >= 60:
                 color = "[yellow]"
             close = "[/]" if color else ""
-            parts.append(f"Context: {color}{self._fmt(self._context_tokens)} ({pct:.1f}%){close}")
+            bottom_parts.append(
+                f"Context: {color}{self._fmt(self._context_tokens)} ({pct:.1f}%){close}"
+            )
+        # CodeIndex slot is always rendered (no hide path) so the
+        # user sees the feature exists even before they open the
+        # ``/codeindex`` panel. MCP used to live next to it but was
+        # removed — a single slot can't honestly represent N
+        # servers, and disconnects never updated cleanly. The
+        # ``/mcp`` panel is the canonical source now.
+        bottom_parts.append(self._codeindex_badge())
 
-        # MCP server status used to render here. Removed because a
-        # single status-bar slot can't honestly represent N servers
-        # — the last ``set_ide_status`` call overwrote prior ones
-        # and disconnects didn't update at all (the
-        # auto-disconnect-on-plugin-disable path leaves the slot
-        # stale). The ``/mcp`` panel is the canonical source.
+        sep = "  |  "
+        if not top_parts and not any(p for p in bottom_parts if p):
+            return Text.from_markup(f"[dim]{self._model_name or 'Ready'}[/dim]")
 
-        # CodeIndex — always rendered. The user opened the
-        # ``/codeindex`` panel once to verify state; this slot
-        # surfaces the same indexed/uninstalled/error signal at a
-        # glance so they don't need to open it every time.
-        parts.append(self._codeindex_badge())
-
-        if not parts:
-            markup = f"[dim]{self._model_name or 'Ready'}[/dim]"
-        else:
-            markup = "[dim]" + "  |  ".join(parts) + "[/dim]"
-
-        return Text.from_markup(markup)
+        top = "[dim]" + sep.join(top_parts) + "[/dim]" if top_parts else ""
+        bottom = "[dim]" + sep.join(bottom_parts) + "[/dim]"
+        return Text.from_markup(f"{top}\n{bottom}")
 
 
 class QueuePanel(Widget):

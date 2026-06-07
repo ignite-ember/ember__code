@@ -169,7 +169,10 @@ class EmberApp(App):
     }
 
     #status-bar {
-        height: 2;
+        /* 3 rows = 1 row for ``border-top`` + 2 content rows. The
+           bar renders two lines (identity on top, live activity on
+           bottom) so any smaller height clips the second line. */
+        height: 3;
         width: 100%;
         border-top: solid ansi_bright_black;
         content-align: center middle;

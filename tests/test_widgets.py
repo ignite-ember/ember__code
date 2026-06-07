@@ -272,6 +272,53 @@ class TestStatusBar:
         badge = bar._codeindex_badge()
         assert "\u2713" in badge
 
+    # ── Two-line layout ────────────────────────────────────────────
+
+    def test_render_splits_identity_and_activity_across_two_lines(self):
+        """The bar renders identity (model, session, cloud) on the
+        top row and live activity (timer, context, CodeIndex) on the
+        bottom row. A single ``|``-joined line truncated on most
+        terminals once the slot count grew; the split anchors the
+        eye on the stable top row while the bottom row ticks."""
+        bar = StatusBar()
+        bar.update_model("gpt-4o")
+        bar.set_session_id("abc12345")
+        bar.set_context_usage(context_tokens=10_000, max_context=100_000)
+        text = bar.render().plain
+        rows = text.split("\n")
+        # Exactly two rows — neither blank.
+        assert len(rows) == 2, f"expected 2 rows, got: {rows!r}"
+        top, bottom = rows
+        # Identity on top.
+        assert "gpt-4o" in top
+        assert "abc12345" in top
+        # Activity on the bottom — context + CodeIndex (always shown).
+        assert "Context" in bottom
+        assert "CodeIndex" in bottom
+
+    def test_render_empty_identity_keeps_bottom_row(self):
+        """If the identity row is empty (e.g. model not yet loaded),
+        the bottom row still renders — the CodeIndex slot is always
+        present, so the bar is never blank."""
+        bar = StatusBar()
+        text = bar.render().plain
+        # No model + no session + no cloud → top row is empty, but
+        # the CodeIndex badge anchors the bottom row.
+        assert "CodeIndex" in text
+
+    def test_render_no_slots_falls_back_to_ready(self):
+        """The all-empty edge case (no model, no CodeIndex status
+        yet) falls back to a 'Ready' marker so the user never sees
+        a blank bar at startup."""
+        bar = StatusBar()
+        # Disable the CodeIndex badge so we exercise the truly-empty
+        # branch — set every slot to its zero state.
+        bar._codeindex_status = None
+        # Patch out the badge to simulate "no slots at all".
+        bar._codeindex_badge = lambda: ""  # type: ignore[method-assign]
+        text = bar.render().plain
+        assert "Ready" in text
+
 
 class TestToolCallLiveWidget:
     def test_initial_running(self):
