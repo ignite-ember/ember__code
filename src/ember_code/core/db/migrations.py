@@ -16,26 +16,35 @@ from alembic.config import Config
 
 from ember_code.core.db.engine import sync_url
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3].parent
-_ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
-_MIGRATIONS_DIR = _PROJECT_ROOT / "migrations"
+# ``alembic.ini`` and ``migrations/`` live inside the ``ember_code``
+# package (``src/ember_code/alembic.ini``, ``src/ember_code/migrations/``)
+# so non-source-tree installs (Homebrew, pipx, system pip) ship them as
+# package data. ``parents[2]`` walks ``db/migrations.py → db → core →
+# ember_code``.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+_ALEMBIC_INI = _PACKAGE_ROOT / "alembic.ini"
+_MIGRATIONS_DIR = _PACKAGE_ROOT / "migrations"
 
 _lock = threading.Lock()
 _upgraded_paths: set[str] = set()
 
 
 def _resolve_paths() -> tuple[Path, Path]:
-    """Locate alembic.ini + migrations/ relative to this file."""
+    """Locate ``alembic.ini`` + ``migrations/`` inside the package.
+
+    Both files are shipped as package data; the in-package layout is
+    the only supported one. Raises if either is missing so a botched
+    install fails loudly instead of silently re-running migrations
+    against a half-set-up DB.
+    """
     if _ALEMBIC_INI.exists() and _MIGRATIONS_DIR.is_dir():
         return _ALEMBIC_INI, _MIGRATIONS_DIR
-
-    candidate = Path(__file__).resolve()
-    for parent in candidate.parents:
-        ini = parent / "alembic.ini"
-        migrations = parent / "migrations"
-        if ini.exists() and migrations.is_dir():
-            return ini, migrations
-    raise FileNotFoundError("alembic.ini and migrations/ not found relative to ember_code.core.db")
+    raise FileNotFoundError(
+        f"alembic.ini and migrations/ missing from package at {_PACKAGE_ROOT}. "
+        "This usually means the wheel was built without package-data — "
+        "reinstall via `pip install --force-reinstall ignite-ember` or "
+        "`brew reinstall ignite-ember`."
+    )
 
 
 def upgrade_to_head(db_path: str | Path) -> None:
