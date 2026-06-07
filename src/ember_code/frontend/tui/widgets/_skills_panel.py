@@ -10,6 +10,7 @@ has sensible defaults.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from textual.app import ComposeResult
@@ -252,15 +253,22 @@ class SkillsPanelWidget(Widget):
     # ── Watchers ──────────────────────────────────────────────────
 
     def watch_selected_index(self, old: int, new: int) -> None:
+        new_widget: Static | None = None
         for i, marker in ((old, False), (new, True)):
             try:
                 widget = self.query_one(f"#skill-{i}", Static)
                 if marker:
                     widget.add_class("-selected")
+                    new_widget = widget
                 else:
                     widget.remove_class("-selected")
             except Exception:
                 pass
+        # Auto-scroll the newly-selected row into view so arrow nav
+        # past the visible window doesn't hide the selection.
+        if new_widget is not None:
+            with contextlib.suppress(Exception):
+                new_widget.scroll_visible(animate=False)
 
     # ── Input ─────────────────────────────────────────────────────
 

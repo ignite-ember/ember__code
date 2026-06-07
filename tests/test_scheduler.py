@@ -207,6 +207,25 @@ class TestTaskStore:
         assert {t.id for t in all_tasks} == {"a", "b"}
 
     @pytest.mark.asyncio
+    async def test_get_all_orders_by_scheduled_at_desc(self, store):
+        """Tasks scheduled furthest in the future surface first.
+
+        Both the TUI tasks panel and ``list_scheduled_tasks`` render
+        the store's order verbatim — flipping the underlying ORDER BY
+        here is the only place this contract is enforced, so a
+        regression that drops ``.desc()`` (the historical default was
+        ``scheduled_at`` ascending) would silently flip the user's
+        view back to next-to-run-first.
+        """
+        now = datetime.now()
+        await store.add(self._make_task(id="soonest", scheduled_at=now + timedelta(hours=1)))
+        await store.add(self._make_task(id="latest", scheduled_at=now + timedelta(hours=3)))
+        await store.add(self._make_task(id="middle", scheduled_at=now + timedelta(hours=2)))
+
+        tasks = await store.get_all(include_done=False)
+        assert [t.id for t in tasks] == ["latest", "middle", "soonest"]
+
+    @pytest.mark.asyncio
     async def test_recurrence_persisted(self, store):
         task = self._make_task(recurrence="every 1 days")
         await store.add(task)

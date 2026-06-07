@@ -156,6 +156,12 @@ class KnowledgePanelWidget(Widget):
         self._status = status
         self._results: list[KnowledgeSearchHit] = results or []
         self._expanded_indices: set[int] = set()
+        # When set, ``_status_text`` returns this label (e.g.
+        # "Searching for 'foo'…") instead of the static collection
+        # metadata. Toggled from the App's RPC handlers around the
+        # ``knowledge_search`` / ``knowledge_add`` awaits so the panel
+        # doesn't look frozen during the in-flight call.
+        self._busy_label: str | None = None
 
     # ── Layout ──────────────────────────────────────────────────────
 
@@ -173,6 +179,8 @@ class KnowledgePanelWidget(Widget):
         return f"[bold $accent]Knowledge · {self.mode}[/bold $accent]"
 
     def _status_text(self) -> str:
+        if self._busy_label:
+            return f"[bold $accent]{self._busy_label}[/bold $accent]"
         if not self._status.enabled:
             return "[dim red]Disabled[/dim red] — enable in `knowledge.enabled` config"
         return (
@@ -245,6 +253,18 @@ class KnowledgePanelWidget(Widget):
 
     def set_status(self, status: KnowledgeStatusInfo) -> None:
         self._status = status
+        with contextlib.suppress(Exception):
+            self.query_one(".kb-status", Static).update(self._status_text())
+
+    def set_busy(self, label: str | None) -> None:
+        """Flip the status line to a busy indicator.
+
+        ``label`` non-empty → status shows the label (e.g.
+        ``"Searching for 'foo'…"``). ``None`` restores the static
+        collection metadata. Must be paired in a try/finally around
+        the RPC so a failure doesn't leave the panel stuck spinning.
+        """
+        self._busy_label = label or None
         with contextlib.suppress(Exception):
             self.query_one(".kb-status", Static).update(self._status_text())
 
@@ -323,15 +343,22 @@ class KnowledgePanelWidget(Widget):
             self.query_one(".hint", Static).update(self._hint_text())
 
     def watch_selected_index(self, old: int, new: int) -> None:
+        new_widget: Static | None = None
         for i, marker in ((old, False), (new, True)):
             try:
                 widget = self.query_one(f"#kb-{i}", Static)
                 if marker:
                     widget.add_class("-selected")
+                    new_widget = widget
                 else:
                     widget.remove_class("-selected")
             except Exception:
                 pass
+        # Auto-scroll the newly-selected row into view so arrow nav
+        # past the visible window doesn't hide the selection.
+        if new_widget is not None:
+            with contextlib.suppress(Exception):
+                new_widget.scroll_visible(animate=False)
 
     # ── Input ─────────────────────────────────────────────────────
 

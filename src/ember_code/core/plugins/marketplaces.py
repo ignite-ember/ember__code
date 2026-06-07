@@ -21,8 +21,10 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,26 +33,132 @@ from ember_code.core.plugins.git import GitClient
 logger = logging.getLogger(__name__)
 
 
+# ── Default marketplaces ───────────────────────────────────────────
+
+
+# Marketplaces auto-registered on session start so users see plugins
+# the moment they open the panel — no ``/plugin marketplace add``
+# step required.
+#
+# Currently a single canonical entry: Anthropic's official directory
+# of ~200 Claude-Code plugins. Adding it on first run mirrors the
+# Claude Code CLI's own out-of-box behavior and gives our
+# Claude-Code-compatibility claim immediate concrete proof
+# (browse the panel, install something, watch it work).
+#
+# Each entry is ``(catalog_name, git_url)``. The ``catalog_name``
+# is what the user types after ``@`` (``@claude-plugins-official/foo``);
+# we know it ahead of time because the marketplace's own
+# ``marketplace.json`` declares it.
+DEFAULT_MARKETPLACES: list[tuple[str, str]] = [
+    (
+        "claude-plugins-official",
+        "https://github.com/anthropics/claude-plugins-official",
+    ),
+]
+
+
 # ── Schemas ─────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ResolvedSource:
+    """Normalized plugin location after resolving a marketplace entry.
+
+    The official ``marketplace.json`` schema lets ``source`` be one
+    of three things (~25% / ~25% / ~50% of the catalog in practice):
+
+    * **Bare URL string** — clone the whole repo, root is the plugin.
+    * **``"./relative/path"`` string** — the plugin lives in a
+      subdirectory of the *marketplace's own* git repo. We clone
+      the marketplace URL and descend into the path.
+    * **Object** with shape ``{"source": "url"|"git-subdir", ...}``.
+      ``"url"`` is the bare-URL case in object form; ``"git-subdir"``
+      is "clone ``url`` then descend into ``path``".
+
+    All three normalize into the same downstream operation:
+    *clone a URL, optionally descend into a subdir*. Everything
+    that consumes a marketplace entry goes through
+    :py:meth:`MarketplacePluginEntry.resolved_source` so the
+    installer doesn't have to know the catalog's surface shape.
+    """
+
+    kind: Literal["url", "git-subdir", "relative"]
+    url: str
+    subdir: str | None  # None for "url" kind; relative path for subdir/relative
+    ref: str | None  # branch / tag / sha (preferred), or None for default branch
 
 
 class MarketplacePluginEntry(BaseModel):
     """One row in a marketplace's catalog.
 
     Mirrors Claude Code's ``marketplace.json#plugins[*]`` schema.
-    ``source`` is the git URL the plugin lives at — ``install`` hands
-    this to :class:`PluginInstaller`. Extra fields are preserved for
-    forward compatibility.
+    ``source`` is intentionally typed loose (``str | dict | None``)
+    because the canonical Claude format uses all three shapes —
+    see :class:`ResolvedSource` for the normalization. Extra
+    fields are preserved for forward compatibility.
     """
 
     model_config = ConfigDict(extra="allow")
 
     name: str
-    source: str
+    source: str | dict[str, Any] | None = None
     description: str | None = None
     author: str | dict | None = None
     version: str | None = None
     branch: str | None = None
+
+    def resolved_source(self, marketplace_url: str) -> ResolvedSource | None:
+        """Normalize the raw ``source`` field into a clone-shaped spec.
+
+        ``marketplace_url`` is required because relative-path
+        entries (``"./plugins/x"``) need the marketplace's own
+        git URL to be cloneable. Returns ``None`` when the source
+        field is unparseable.
+        """
+        src = self.source
+        if src is None:
+            return None
+
+        # Bare-string forms.
+        if isinstance(src, str):
+            if src.startswith("./") or src.startswith("../"):
+                # Plugin lives inside the marketplace repo itself.
+                return ResolvedSource(
+                    kind="relative",
+                    url=marketplace_url,
+                    subdir=src.lstrip("./"),
+                    ref=self.branch,
+                )
+            # Anything else is treated as a clonable URL — works
+            # for ``https://...``, ``git@...``, ``file://...``.
+            return ResolvedSource(
+                kind="url",
+                url=src,
+                subdir=None,
+                ref=self.branch,
+            )
+
+        # Object form: ``{"source": "url"|"git-subdir", ...}``.
+        kind = src.get("source")
+        # Prefer ``sha`` over ``ref`` when both present — sha is the
+        # exact-commit pin, ref is the branch/tag that pin came from.
+        # Falling back to ``ref`` keeps moving-branch installs working.
+        ref = src.get("sha") or src.get("ref") or self.branch
+        url = src.get("url")
+        if not url:
+            return None
+        if kind == "url":
+            return ResolvedSource(kind="url", url=url, subdir=None, ref=ref)
+        if kind == "git-subdir":
+            path = src.get("path")
+            if not path:
+                return None
+            return ResolvedSource(kind="git-subdir", url=url, subdir=path, ref=ref)
+        # Unknown ``source`` kind — be conservative: treat as a
+        # plain clone of ``url``. The installer will fail loudly
+        # if the manifest isn't at the root.
+        return ResolvedSource(kind="url", url=url, subdir=None, ref=ref)
 
 
 class MarketplaceCatalog(BaseModel):
@@ -244,13 +352,19 @@ def refresh_marketplace(
 
 def resolve_install_ref(
     ref: str, *, data_dir: str | Path = "~/.ember"
-) -> tuple[str, MarketplacePluginEntry] | None:
-    """Resolve an ``@<marketplace>/<plugin>`` ref to its git URL.
+) -> tuple[ResolvedSource, MarketplacePluginEntry] | None:
+    """Resolve an ``@<marketplace>/<plugin>`` ref to a clone spec.
 
-    Returns ``(git_url, MarketplacePluginEntry)`` on hit, ``None`` if
-    the ref doesn't match an installed marketplace or doesn't contain
-    a known plugin name. Callers should fall through to treating the
-    ref as a plain git URL when this returns ``None``.
+    Returns ``(ResolvedSource, MarketplacePluginEntry)`` on hit,
+    ``None`` if the ref doesn't match a registered marketplace, the
+    catalog doesn't list the plugin, or the entry's ``source`` field
+    is unparseable. Callers should fall through to treating ``ref``
+    as a plain git URL when this returns ``None``.
+
+    The :class:`ResolvedSource` carries the clone URL, optional
+    subdirectory, and ref/sha — everything the installer needs to
+    handle the three source shapes (bare URL, git-subdir, intra-
+    marketplace relative path) uniformly.
     """
     if not ref.startswith("@") or "/" not in ref:
         return None
@@ -266,5 +380,8 @@ def resolve_install_ref(
 
     for plugin in entry.cached.plugins:
         if plugin.name == plugin_name:
-            return plugin.source, plugin
+            resolved = plugin.resolved_source(entry.url)
+            if resolved is None:
+                return None
+            return resolved, plugin
     return None

@@ -297,3 +297,50 @@ async def test_set_status_updates_header_in_place() -> None:
         text = panel._status_text()
         assert "changed" in text
         assert "999" in text
+
+
+# ── Busy indicator ────────────────────────────────────────────────
+
+
+async def test_set_busy_swaps_status_text_and_restores() -> None:
+    """The status line flips to the busy label while a search /
+    ingest RPC is in-flight, then restores the static collection
+    metadata once the awaited call's try/finally clears it.
+
+    Without this, the panel looks frozen for the embed + ANN
+    round-trip — there is no other in-panel signal that work is
+    happening (the result rows don't change until results arrive).
+    """
+    app = _Host()
+    async with app.run_test():
+        panel = app.query_one(KnowledgePanelWidget)
+
+        # Static state — collection metadata visible.
+        assert "shared" in panel._status_text()
+        assert "Searching" not in panel._status_text()
+
+        panel.set_busy("Searching for 'auth'…")
+        busy_text = panel._status_text()
+        assert "Searching" in busy_text
+        assert "'auth'" in busy_text
+        # Static metadata is hidden behind the busy label so the
+        # collection counter doesn't fight for visual space.
+        assert "shared" not in busy_text
+
+        panel.set_busy(None)
+        assert "shared" in panel._status_text()
+        assert "Searching" not in panel._status_text()
+
+
+async def test_set_busy_empty_string_clears() -> None:
+    """``set_busy("")`` is treated the same as ``set_busy(None)`` —
+    callers passing an unguarded preview string can't accidentally
+    leave the panel stuck on a blank label."""
+    app = _Host()
+    async with app.run_test():
+        panel = app.query_one(KnowledgePanelWidget)
+        panel.set_busy("Ingesting foo…")
+        assert "Ingesting" in panel._status_text()
+        panel.set_busy("")
+        assert "Ingesting" not in panel._status_text()
+        assert "shared" in panel._status_text()

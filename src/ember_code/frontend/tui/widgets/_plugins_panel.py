@@ -21,6 +21,7 @@ own model layer and isn't coupled to the RPC payload format.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Literal
 
@@ -153,7 +154,12 @@ class PluginsPanelWidget(Widget):
 
     # ── Reactive state ──────────────────────────────────────────────
 
-    active_tab: reactive[Tab] = reactive("installed")
+    # Marketplace-first because the panel's primary job is plugin
+    # *discovery* — most users open it to browse what's available,
+    # not to audit what they already have. Tab flips to "installed"
+    # for the audit view. ``(installed)`` markers next to marketplace
+    # rows make the cross-reference obvious without switching tabs.
+    active_tab: reactive[Tab] = reactive("marketplace")
     selected_index = reactive(0)
 
     def __init__(
@@ -240,11 +246,22 @@ class PluginsPanelWidget(Widget):
     def _empty_text(self) -> str:
         if self.active_tab == "installed":
             return (
-                "No plugins installed. Use `/plugin install <url>` or "
-                "open the Marketplace tab (Tab key)."
+                "No plugins installed yet. Press [bold]Tab[/bold] to browse the "
+                "Marketplace, then [bold]i[/bold] on an entry to install it."
+            )
+        # Distinguish "no marketplaces registered at all" from
+        # "registered but the catalog is still being fetched" — the
+        # background refresh on session start can take a few seconds
+        # to clone the default marketplaces, and a brand-new panel
+        # rendered in that window would otherwise read as broken.
+        if not self._marketplaces:
+            return (
+                "Marketplace catalogs are still loading. Press [bold]R[/bold] to "
+                "refresh, or reopen the panel in a few seconds."
             )
         return (
-            "No marketplaces registered. Run `/plugin marketplace add <git-url>` from the prompt."
+            "Marketplaces registered but no plugins listed yet. Press "
+            "[bold]R[/bold] to refresh the catalogs."
         )
 
     def _render_item(self, item, _i: int) -> str:
@@ -357,15 +374,25 @@ class PluginsPanelWidget(Widget):
         self._rebuild()
 
     def watch_selected_index(self, old: int, new: int) -> None:
+        new_widget: Static | None = None
         for i, marker in ((old, False), (new, True)):
             try:
                 widget = self.query_one(f"#plug-{i}", Static)
                 if marker:
                     widget.add_class("-selected")
+                    new_widget = widget
                 else:
                     widget.remove_class("-selected")
             except Exception:
                 pass
+        # Keep the highlighted row inside the viewport — without
+        # this, arrow-key nav past the visible window moves the
+        # selection off-screen and the user can't see what's
+        # selected. ``animate=False`` because rapid down-presses
+        # would otherwise stack jerky scroll animations.
+        if new_widget is not None:
+            with contextlib.suppress(Exception):
+                new_widget.scroll_visible(animate=False)
 
     # ── Input handling ─────────────────────────────────────────────
 

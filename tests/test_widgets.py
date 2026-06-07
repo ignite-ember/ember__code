@@ -153,6 +153,125 @@ class TestStatusBar:
         bar = StatusBar()
         assert bar.context_used_pct == 0.0
 
+    # ── CodeIndex slot (always rendered) ───────────────────────────
+
+    def test_codeindex_badge_checking_by_default(self):
+        """Before the first poll lands, the slot reads 'checking…'
+        rather than 'offline' (which read like a network outage)
+        or being hidden. The eager refresh in ``on_mount`` replaces
+        this within ~1s — only visible during session warm-up."""
+        bar = StatusBar()
+        badge = bar._codeindex_badge()
+        assert "CodeIndex" in badge
+        assert "checking" in badge
+
+    def test_codeindex_badge_indexed_green_check(self):
+        from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
+
+        bar = StatusBar()
+        bar.set_codeindex_status(
+            CodeIndexStatusInfo(
+                local_sha="abc",
+                head_indexed=True,
+                install_state="installed",
+            )
+        )
+        badge = bar._codeindex_badge()
+        assert "[green]" in badge
+        assert "\u2713" in badge
+
+    def test_codeindex_badge_syncing(self):
+        from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
+
+        bar = StatusBar()
+        bar.set_codeindex_status(
+            CodeIndexStatusInfo(
+                local_sha="abc",
+                sync_in_progress=True,
+                sync_progress_pct=42,  # ignored on purpose — no % in the bar
+                install_state="installed",
+            )
+        )
+        badge = bar._codeindex_badge()
+        assert "syncing" in badge
+        # The bar is tight; the panel covers progress detail. Make
+        # sure we don't render the percent here.
+        assert "42" not in badge
+        assert "%" not in badge
+
+    def test_codeindex_badge_uninstalled_when_needs_install(self):
+        """The user asked for 'uninstalled' wording specifically when
+        the GitHub App isn't installed for this repo. Yellow tone so
+        it's actionable but not alarming."""
+        from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
+
+        bar = StatusBar()
+        bar.set_codeindex_status(CodeIndexStatusInfo(install_state="needs_install"))
+        badge = bar._codeindex_badge()
+        assert "uninstalled" in badge
+        assert "[yellow]" in badge
+
+    def test_codeindex_badge_inactive_when_state_unknown(self):
+        """``unknown`` install_state (resolver not initialised — no
+        cloud auth, no git remote, or feature disabled) renders as
+        'inactive'. Earlier wording was 'offline' but that read as
+        a network outage, which isn't what's actually going on."""
+        from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
+
+        bar = StatusBar()
+        bar.set_codeindex_status(CodeIndexStatusInfo(install_state="unknown"))
+        badge = bar._codeindex_badge()
+        assert "inactive" in badge
+        # Regression guard against the old, ambiguous wording.
+        assert "offline" not in badge
+
+    def test_codeindex_badge_error_red(self):
+        from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
+
+        bar = StatusBar()
+        bar.set_codeindex_status(
+            CodeIndexStatusInfo(
+                local_sha="abc",
+                sync_error="boom",
+                install_state="installed",
+            )
+        )
+        badge = bar._codeindex_badge()
+        assert "[red]" in badge
+
+    def test_codeindex_badge_not_indexed_fallback(self):
+        """HEAD exists, install state is fine, no sync running, but
+        ``head_indexed`` is False — fall through to 'not indexed'."""
+        from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
+
+        bar = StatusBar()
+        bar.set_codeindex_status(
+            CodeIndexStatusInfo(
+                local_sha="abc",
+                head_indexed=False,
+                install_state="installed",
+            )
+        )
+        badge = bar._codeindex_badge()
+        assert "not indexed" in badge
+
+    def test_codeindex_badge_set_none_keeps_previous(self):
+        """A None update must not blank the badge — transient poll
+        failures shouldn't erase the last known good state."""
+        from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
+
+        bar = StatusBar()
+        bar.set_codeindex_status(
+            CodeIndexStatusInfo(
+                local_sha="abc",
+                head_indexed=True,
+                install_state="installed",
+            )
+        )
+        bar.set_codeindex_status(None)
+        badge = bar._codeindex_badge()
+        assert "\u2713" in badge
+
 
 class TestToolCallLiveWidget:
     def test_initial_running(self):

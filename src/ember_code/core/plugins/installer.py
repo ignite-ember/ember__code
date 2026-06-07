@@ -61,7 +61,13 @@ class PluginInstaller:
 
     # ── Install ─────────────────────────────────────────────────────
 
-    def install(self, url: str, *, ref: str | None = None) -> PluginManifest:
+    def install(
+        self,
+        url: str,
+        *,
+        ref: str | None = None,
+        subdir: str | None = None,
+    ) -> PluginManifest:
         """Install a plugin from *url* into ``~/.ember/plugins/<name>/``.
 
         ``ref`` may be a branch, tag, or SHA. Branches and tags are
@@ -69,15 +75,26 @@ class PluginInstaller:
         out after a default-branch clone (older gits don't accept
         SHAs for ``--branch``).
 
+        ``subdir`` (when set) — the cloned repo is itself a parent
+        of the plugin, and the actual plugin lives at
+        ``<clone>/<subdir>/``. Used for the official marketplace's
+        ``git-subdir`` and intra-marketplace (``./relative/path``)
+        source shapes — about half the official catalog. Without
+        this, those entries fail with "no ``.claude-plugin/plugin.json``"
+        because they look in the wrong directory.
+
         Returns the parsed :class:`PluginManifest` so the caller can
         report ``name``, ``version``, etc. The plugin's SHA at install
         time is recorded in ``plugins.json#pins`` for future
-        ``/plugin update`` drift detection.
+        ``/plugin update`` drift detection. For subdir installs the
+        recorded SHA is the parent repo's HEAD — that's the only
+        SHA git knows about; ``update`` re-clones the same shape.
 
         Raises:
             GitError: clone failed (network, auth, bad URL, …).
-            PluginError: manifest missing/malformed, or a plugin with
-                the same name is already installed.
+            PluginError: manifest missing/malformed, subdir doesn't
+                exist, or a plugin with the same name is already
+                installed.
         """
         # Stale temp from a prior crashed install — wipe before reuse.
         if self._tmp_dir.exists():
@@ -90,12 +107,25 @@ class PluginInstaller:
         if ref and _looks_like_sha(ref):
             self._git.checkout(self._tmp_dir, ref)
 
-        manifest_path = self._tmp_dir / ".claude-plugin" / "plugin.json"
-        if not manifest_path.is_file():
+        # Resolve the actual plugin root — the clone root itself for
+        # bare-URL installs, or the subdirectory for git-subdir /
+        # relative-path entries.
+        plugin_root = self._tmp_dir / subdir if subdir else self._tmp_dir
+        if subdir and not plugin_root.is_dir():
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
             raise PluginError(
-                f"The cloned repo at {url} has no .claude-plugin/plugin.json — "
-                "is this a Claude-Code-shaped plugin?"
+                f"The cloned repo at {url} has no '{subdir}' subdirectory — "
+                "the marketplace entry may be stale or the path is wrong."
+            )
+
+        manifest_path = plugin_root / ".claude-plugin" / "plugin.json"
+        if not manifest_path.is_file():
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+            location = f"{url} (subdir: {subdir})" if subdir else url
+            raise PluginError(
+                f"The cloned repo at {location} has no "
+                ".claude-plugin/plugin.json — is this a Claude-Code-"
+                "shaped plugin?"
             )
 
         try:
@@ -114,18 +144,29 @@ class PluginInstaller:
             )
 
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(self._tmp_dir), str(dest))
+        # For subdir installs we move just the plugin subtree into
+        # place, then nuke the leftover parent clone. Bare-URL
+        # installs move the whole clone as before.
+        if subdir:
+            shutil.move(str(plugin_root), str(dest))
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+        else:
+            shutil.move(str(self._tmp_dir), str(dest))
 
-        sha = self._git.current_sha(dest)
+        # Record the parent repo's SHA. For subdir installs that's
+        # the only commit ID we have; ``update`` re-clones with the
+        # same subdir spec to track upstream changes.
+        sha = self._git.current_sha(dest) if not subdir else _safe_current_sha(self._git, dest)
         state = load_state(self._data_dir)
-        state.pins[manifest.name] = sha
+        state.pins[manifest.name] = sha or ""
         save_state(state, data_dir=self._data_dir)
 
         logger.info(
-            "Installed plugin '%s' at %s (pin=%s)",
+            "Installed plugin '%s' at %s (pin=%s, subdir=%s)",
             manifest.name,
             dest,
             sha,
+            subdir or "-",
         )
         return manifest
 
@@ -201,3 +242,20 @@ def _looks_like_sha(ref: str) -> bool:
     if not (7 <= len(ref) <= 40):
         return False
     return all(c in "0123456789abcdefABCDEF" for c in ref)
+
+
+def _safe_current_sha(git: GitClient, path: Path) -> str | None:
+    """Best-effort ``git rev-parse HEAD`` for subdir-installed plugins.
+
+    For a bare-URL install the dest is a full git checkout and
+    ``current_sha`` always succeeds. Subdir installs move just a
+    subtree of the clone into place — the moved subtree isn't a
+    git repo on its own, so ``rev-parse HEAD`` would fail. We
+    swallow that error: the pin in ``plugins.json`` ends up empty
+    for subdir plugins, which is honest — there's no
+    self-contained commit identity to pin against.
+    """
+    try:
+        return git.current_sha(path)
+    except Exception:
+        return None

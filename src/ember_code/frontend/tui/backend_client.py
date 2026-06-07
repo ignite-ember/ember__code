@@ -281,6 +281,16 @@ class BackendClient:
         result = await self._rpc(RpcMethod.GET_SKILL_DETAILS)
         return result or []
 
+    # ── Hooks ──────────────────────────────────────────────────────
+
+    async def get_hooks_details(self) -> list[dict]:
+        result = await self._rpc(RpcMethod.GET_HOOKS_DETAILS)
+        return result or []
+
+    async def reload_hooks(self) -> msg.Info:
+        result = await self._rpc(RpcMethod.RELOAD_HOOKS)
+        return result if isinstance(result, msg.Info) else msg.Info(text=str(result))
+
     # ── Knowledge ──────────────────────────────────────────────────
 
     async def get_knowledge_status(self) -> dict:
@@ -294,6 +304,24 @@ class BackendClient:
     async def knowledge_add(self, source: str) -> msg.Info:
         result = await self._rpc(RpcMethod.KNOWLEDGE_ADD, source=source)
         return result if isinstance(result, msg.Info) else msg.Info(text=str(result))
+
+    # ── CodeIndex ──────────────────────────────────────────────────
+
+    async def codeindex_status(self) -> dict:
+        result = await self._rpc(RpcMethod.CODEINDEX_STATUS)
+        return result or {}
+
+    async def codeindex_sync(self, sha: str | None = None) -> dict:
+        result = await self._rpc(RpcMethod.CODEINDEX_SYNC, sha=sha)
+        return result or {}
+
+    async def codeindex_clean(self) -> dict:
+        result = await self._rpc(RpcMethod.CODEINDEX_CLEAN)
+        return result or {}
+
+    async def codeindex_install(self) -> dict:
+        result = await self._rpc(RpcMethod.CODEINDEX_INSTALL)
+        return result or {}
 
     # ── Plugins ─────────────────────────────────────────────────────
 
@@ -431,6 +459,29 @@ class BackendClient:
         """RPC: clear ``/loop`` state on the backend. Returns ``True``
         if a loop was actually cancelled."""
         result = await self._rpc(RpcMethod.CANCEL_PENDING_LOOP)
+        return bool(result)
+
+    async def loop_status(self) -> dict:
+        """RPC: snapshot the active ``/loop`` state for the panel
+        header. Cheap (just three session fields); safe to poll."""
+        result = await self._rpc(RpcMethod.LOOP_STATUS)
+        return result or {}
+
+    async def loop_resume(self) -> str:
+        """RPC: flip a paused loop to pumping. Returns the prompt
+        verbatim so the caller can fire it via ``_run`` directly
+        (bypassing the cancel guard). Empty string when nothing to
+        resume."""
+        result = await self._rpc(RpcMethod.LOOP_RESUME)
+        return result or ""
+
+    async def loop_pause(self) -> bool:
+        """RPC: pause the active loop without advancing the counter.
+
+        Called by ``_check_loop_continuation`` when an iteration's
+        ``_run`` raised — the failed iteration stays at its
+        current index so a subsequent resume retries it."""
+        result = await self._rpc(RpcMethod.LOOP_PAUSE)
         return bool(result)
 
     # ── Compaction / Learning ────────────────────────────────────

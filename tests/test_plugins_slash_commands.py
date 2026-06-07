@@ -69,6 +69,18 @@ def _make_handler(
     session.plugin_loader = loader
     session.plugin_state = state
     session.settings.storage.data_dir = str(tmp_path / "ember")
+    # ``reload_plugins`` returns a count dict that the install /
+    # update / remove paths interpolate into the chat message. The
+    # session is a MagicMock so we have to set the return value
+    # explicitly — otherwise ``counts['skills']`` would be a
+    # MagicMock and the f-string would render its repr instead of
+    # a number.
+    session.reload_plugins.return_value = {
+        "plugins": 0,
+        "skills": 0,
+        "agents": 0,
+        "hooks": 0,
+    }
 
     return CommandHandler(session)
 
@@ -107,12 +119,14 @@ def test_plugins_bare_when_loader_missing_returns_info(tmp_path: Path) -> None:
 
 def test_plugins_disable_persists_and_returns_info(tmp_path: Path) -> None:
     """`/plugins disable <name>` adds the name to state.disabled,
-    saves, and returns an info result with a restart hint."""
+    saves, and returns an info result that names the affected
+    subsystems (replaces the old "requires restart" message now
+    that hot-reload handles disable end-to-end)."""
     h = _make_handler(tmp_path, plugins=["alpha"])
     result = _run(h.handle("/plugins disable alpha"))
     assert result.kind == "info"
     assert "disabled" in result.content
-    assert "restart" in result.content.lower()
+    assert "skills" in result.content.lower()
     # State persisted.
     persisted = load_state(data_dir=tmp_path / "ember")
     assert persisted.disabled == ["alpha"]
@@ -181,7 +195,9 @@ def test_plugin_install_url_calls_installer(tmp_path: Path) -> None:
         manifest.version = "1.0.0"
         installer.install.return_value = manifest
         result = _run(h.handle("/plugin install https://x/y.git"))
-    installer.install.assert_called_once_with("https://x/y.git", ref=None)
+    # Bare-URL installs pass ``subdir=None`` since the plugin lives
+    # at the clone root.
+    installer.install.assert_called_once_with("https://x/y.git", ref=None, subdir=None)
     assert result.kind == "info"
     assert "foo" in result.content
     assert "v1.0.0" in result.content
@@ -198,7 +214,7 @@ def test_plugin_install_extracts_ref_flag(tmp_path: Path) -> None:
         installer.install.return_value.name = "m"
         installer.install.return_value.version = ""
         _run(h.handle("/plugin install https://x/y.git --ref v1.2.0"))
-    installer.install.assert_called_once_with("https://x/y.git", ref="v1.2.0")
+    installer.install.assert_called_once_with("https://x/y.git", ref="v1.2.0", subdir=None)
 
 
 def test_plugin_install_marketplace_ref_resolves_first(tmp_path: Path) -> None:
@@ -206,6 +222,8 @@ def test_plugin_install_marketplace_ref_resolves_first(tmp_path: Path) -> None:
     registry into a git URL *before* hitting the installer. The
     catalog's ``branch`` field flows through as ``--ref`` when no
     explicit ``--ref`` was given on the command line."""
+    from ember_code.core.plugins.marketplaces import ResolvedSource
+
     h = _make_handler(tmp_path)
     fake_entry = MagicMock()
     fake_entry.branch = "release-1"
@@ -218,13 +236,24 @@ def test_plugin_install_marketplace_ref_resolves_first(tmp_path: Path) -> None:
         installer.is_git_available.return_value = True
         installer.install.return_value = MagicMock(version="")
         installer.install.return_value.name = "p"
-        mock_resolve.return_value = ("https://resolved/x.git", fake_entry)
+        # Resolver now returns a ``ResolvedSource`` (with the catalog's
+        # branch promoted into the ``ref`` field) plus the entry.
+        mock_resolve.return_value = (
+            ResolvedSource(
+                kind="url",
+                url="https://resolved/x.git",
+                subdir=None,
+                ref="release-1",
+            ),
+            fake_entry,
+        )
         _run(h.handle("/plugin install @market/p"))
 
     mock_resolve.assert_called_once()
     installer.install.assert_called_once_with(
         "https://resolved/x.git",
         ref="release-1",
+        subdir=None,
     )
 
 
@@ -232,6 +261,8 @@ def test_plugin_install_marketplace_explicit_ref_wins(tmp_path: Path) -> None:
     """If the user passes ``--ref X`` on a marketplace install, it
     takes precedence over the catalog's default branch — explicit
     user choice always wins over inferred metadata."""
+    from ember_code.core.plugins.marketplaces import ResolvedSource
+
     h = _make_handler(tmp_path)
     fake_entry = MagicMock()
     fake_entry.branch = "default-branch"
@@ -244,12 +275,21 @@ def test_plugin_install_marketplace_explicit_ref_wins(tmp_path: Path) -> None:
         installer.is_git_available.return_value = True
         installer.install.return_value = MagicMock(version="")
         installer.install.return_value.name = "p"
-        mock_resolve.return_value = ("https://x.git", fake_entry)
+        mock_resolve.return_value = (
+            ResolvedSource(
+                kind="url",
+                url="https://x.git",
+                subdir=None,
+                ref="default-branch",
+            ),
+            fake_entry,
+        )
         _run(h.handle("/plugin install @market/p --ref user-pin"))
 
     installer.install.assert_called_once_with(
         "https://x.git",
         ref="user-pin",
+        subdir=None,
     )
 
 

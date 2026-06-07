@@ -163,7 +163,13 @@ async def test_refresh_passes_data_dir_through(tmp_path: Path) -> None:
     both ``load_registry`` and each ``refresh_marketplace`` call —
     if it weren't forwarded, the refresh would silently read from
     ``~/.ember`` instead of whatever the session's configured
-    data dir is (breaking custom XDG-style layouts and tests)."""
+    data dir is (breaking custom XDG-style layouts and tests).
+
+    The refresh task also auto-registers the canonical default
+    marketplaces (best-effort), which calls ``load_registry`` a
+    second time after the auto-add step. The assertion below
+    checks that *every* ``load_registry`` call used the right
+    data_dir, not just the first."""
     fake_registry = MagicMock()
     e = MagicMock()
     e.name = "m1"
@@ -173,9 +179,14 @@ async def test_refresh_passes_data_dir_through(tmp_path: Path) -> None:
     with (
         patch("ember_code.core.plugins.marketplaces.load_registry") as mock_load,
         patch("ember_code.core.plugins.marketplaces.refresh_marketplace") as mock_refresh,
+        # Auto-register step would otherwise hit the real ``add_marketplace``
+        # and try to git-clone the official catalog. Stub it out so the
+        # test stays hermetic.
+        patch("ember_code.core.plugins.marketplaces.add_marketplace") as mock_add,
     ):
         mock_load.return_value = fake_registry
         mock_refresh.return_value = MagicMock()
+        mock_add.return_value = MagicMock()
         sess = _make_session_stub(tmp_path)
         sess.start_marketplace_refresh_background()
         pending = [
@@ -184,8 +195,10 @@ async def test_refresh_passes_data_dir_through(tmp_path: Path) -> None:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-    # load_registry got the right data_dir.
-    mock_load.assert_called_once_with(expected_data_dir)
+    # Every load_registry call carried the configured data_dir.
+    assert mock_load.call_count >= 1
+    for call in mock_load.call_args_list:
+        assert call.args == (expected_data_dir,)
     # refresh_marketplace got the right data_dir as a kwarg.
     refresh_call = mock_refresh.call_args
     assert refresh_call.kwargs["data_dir"] == expected_data_dir

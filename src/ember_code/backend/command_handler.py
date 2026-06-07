@@ -40,10 +40,14 @@ class CommandResult:
         kind: str = "markdown",
         content: str = "",
         action: str | None = None,
+        display_content: str = "",
     ):
         self.kind = kind  # "markdown", "info", "error", "action"
         self.content = content
         self.action = action  # "quit", "clear", None
+        # See protocol.messages.CommandResult for the rationale.
+        # Only the loop's ``run_prompt`` flow sets this today.
+        self.display_content = display_content
 
     @classmethod
     def markdown(cls, text: str) -> "CommandResult":
@@ -96,6 +100,18 @@ class CommandResult:
     @classmethod
     def knowledge(cls) -> "CommandResult":
         return cls(kind="action", action="knowledge")
+
+    @classmethod
+    def codeindex(cls) -> "CommandResult":
+        return cls(kind="action", action="codeindex")
+
+    @classmethod
+    def hooks(cls) -> "CommandResult":
+        return cls(kind="action", action="hooks")
+
+    @classmethod
+    def loop(cls) -> "CommandResult":
+        return cls(kind="action", action="loop")
 
 
 class CommandHandler:
@@ -240,7 +256,7 @@ class CommandHandler:
             "- `/codeindex search <query>` — semantic search the indexed commit\n"
             "- `/codeindex item <id>` — full details for one item\n"
             "- `/codeindex commits` — list locally-indexed commits\n"
-            "- `/codeindex prune` — drop stale, non-branch commits\n"
+            "- `/codeindex clean` — drop stale, non-branch commits\n"
             "- `/codeindex status` — show local HEAD, last-synced sha, install state\n\n"
             "**Auto-sync:**\n"
             "Sync fires on app startup, on `/clear`, and whenever your local "
@@ -272,6 +288,37 @@ class CommandHandler:
             "**Transports:** `stdio` and `sse` supported\n"
             "**Panel controls:** Space toggle, Enter expand tools, Escape close"
         ),
+        "hooks": (
+            "## Hooks\n\n"
+            "Run a command or POST to a URL when an event fires "
+            "(before a tool runs, when a session starts, when the "
+            "user submits a prompt, etc.). Hooks gate or audit "
+            "behavior — return `should_continue=false` from a "
+            "command hook to block the triggering action.\n\n"
+            "**Commands:**\n"
+            "- `/hooks` — open the hooks panel (group by event, expand for full command, `R` to reload)\n"
+            "- `/hooks list` — markdown list to chat (scripting-friendly)\n"
+            "- `/hooks reload` — re-read settings files (chat output)\n\n"
+            "**Events** (see `core/hooks/events.py` for the full enum):\n"
+            "- `PreToolUse`, `PostToolUse`, `PostToolUseFailure`\n"
+            "- `UserPromptSubmit`, `SessionStart`, `SessionEnd`\n"
+            "- `Stop`, `SubagentStart`, `SubagentStop`, `Notification`\n\n"
+            "**Defined in** (four-root cascade, last wins):\n"
+            "- `~/.ember/settings.json` (global)\n"
+            "- `~/.ember/settings.local.json` (global, gitignored)\n"
+            "- `.ember/settings.json` (project, committed)\n"
+            "- `.ember/settings.local.json` (project, gitignored)\n\n"
+            "Plugins also contribute hooks via `<plugin>/hooks/hooks.json`; "
+            "plugin hooks are prepended per event so project hooks get "
+            "the final word.\n\n"
+            "**Hook config keys:**\n"
+            "- `type`: `command` or `http`\n"
+            "- `command` / `url`: what to run\n"
+            "- `headers`: HTTP headers (for `http` type)\n"
+            "- `matcher`: regex over tool name (empty = all)\n"
+            "- `timeout`: ms before the hook is killed (default 10000)\n"
+            "- `background`: fire-and-forget (don't block the agent)"
+        ),
         "shortcuts": SHORTCUT_HELP,
     }
 
@@ -300,9 +347,7 @@ class CommandHandler:
             # call falls through to opening the panel, silently
             # ignoring the user's intent.
             if not sub_args:
-                return CommandResult.error(
-                    "Usage: /agents promote <name>"
-                )
+                return CommandResult.error("Usage: /agents promote <name>")
             name = sub_args.strip()
             try:
                 dest = self._session.pool.promote_ephemeral(name, self._session.project_dir)
@@ -312,9 +357,7 @@ class CommandHandler:
 
         if subcommand == "discard":
             if not sub_args:
-                return CommandResult.error(
-                    "Usage: /agents discard <name>"
-                )
+                return CommandResult.error("Usage: /agents discard <name>")
             name = sub_args.strip()
             try:
                 self._session.pool.discard_ephemeral(name)
@@ -415,8 +458,11 @@ class CommandHandler:
             if not installer.is_git_available():
                 return CommandResult.error("`git` is not on PATH. Install git, then retry.")
 
-            # Resolve marketplace ref to a git URL.
+            # Resolve marketplace ref to a clone-shaped spec (URL +
+            # optional subdir + ref). Bare URLs skip this — they're
+            # installed at the clone root with no subdir.
             url = target
+            subdir: str | None = None
             mkt_meta = None
             if target.startswith("@"):
                 resolved = _resolve_install_ref(target, data_dir=data_dir)
@@ -427,23 +473,33 @@ class CommandHandler:
                         "plugin by that name. Run `/plugin marketplace list` "
                         "to see registered marketplaces."
                     )
-                url, mkt_meta = resolved
-                # If the marketplace entry pins a default branch, prefer
-                # it when the user didn't pass --ref explicitly.
-                if ref is None and mkt_meta.branch:
-                    ref = mkt_meta.branch
+                resolved_source, mkt_meta = resolved
+                url = resolved_source.url
+                subdir = resolved_source.subdir
+                # Marketplace-supplied ref/sha wins over the branch
+                # heuristic; the user's explicit --ref still takes
+                # priority and is checked first.
+                if ref is None:
+                    ref = resolved_source.ref
 
             try:
-                manifest = installer.install(url, ref=ref)
+                manifest = installer.install(url, ref=ref, subdir=subdir)
             except _GitError as e:
                 return CommandResult.error(f"git error: {e}")
             except _PluginError as e:
                 return CommandResult.error(str(e))
             version = f" v{manifest.version}" if manifest.version else ""
             via = f" via {target}" if target.startswith("@") else ""
+            # Hot-reload the new plugin's contents into the live
+            # session so the user can use its skills/agents/hooks
+            # immediately. See ``Session.reload_plugins`` for the
+            # full set of subsystems refreshed.
+            counts = self._session.reload_plugins()
             return CommandResult.info(
                 f"Installed plugin '{manifest.name}'{version}{via}. "
-                "Restart the session to activate it."
+                f"Active now — {counts['skills']} skill(s), "
+                f"{counts['agents']} agent(s), {counts['hooks']} hook(s). "
+                f"Any bundled MCP servers are starting in the background."
             )
 
         if subcommand == "update":
@@ -458,9 +514,8 @@ class CommandHandler:
                 return CommandResult.error(f"git error: {e}")
             except _PluginError as e:
                 return CommandResult.error(str(e))
-            return CommandResult.info(
-                f"Updated '{name}' to {new_sha[:12]}. Restart the session to pick up changes."
-            )
+            self._session.reload_plugins()
+            return CommandResult.info(f"Updated '{name}' to {new_sha[:12]}. Active now.")
 
         if subcommand == "remove":
             if len(positional) != 1:
@@ -470,8 +525,10 @@ class CommandHandler:
                 installer.remove(name)
             except _PluginError as e:
                 return CommandResult.error(str(e))
+            self._session.reload_plugins()
             return CommandResult.info(
-                f"Removed '{name}'. Restart the session to drop its skills/agents/hooks/MCP/tools."
+                f"Removed '{name}'. Skills/agents/hooks/tools no longer "
+                f"active; bundled MCP servers are being disconnected."
             )
 
         return CommandResult.error(
@@ -630,9 +687,22 @@ class CommandHandler:
                 disabled_set.add(name)
             state.disabled = sorted(disabled_set)
             save_state(state, data_dir=self._session.settings.storage.data_dir)
-            return CommandResult.info(
-                f"Plugin '{name}' {subcommand}d. Restart the session for the change to take effect."
-            )
+            # Hot-reload picks up the new disabled set and re-applies
+            # skills/agents/hooks accordingly. MCP servers are
+            # connected (enable) or disconnected (disable) in the
+            # background as a side-effect of the apply diff.
+            self._session.reload_plugins()
+            if subcommand == "enable":
+                tail = (
+                    "Its skills/agents/hooks/tools are active; any "
+                    "bundled MCP servers are starting in the background."
+                )
+            else:
+                tail = (
+                    "Its skills/agents/hooks/tools are no longer active; "
+                    "any bundled MCP servers are being disconnected."
+                )
+            return CommandResult.info(f"Plugin '{name}' {subcommand}d. {tail}")
 
         return CommandResult.error(
             f"Unknown /plugins subcommand: '{subcommand}'. "
@@ -641,19 +711,34 @@ class CommandHandler:
         )
 
     async def _cmd_hooks(self, args: str) -> "CommandResult":
+        """Hooks slash command.
+
+        No args → open the interactive TUI panel (browse hooks
+        grouped by event, expand for full command/headers, ``R``
+        to reload from disk). Explicit subcommands stay as
+        scripting fallbacks:
+
+        * ``/hooks reload`` — re-read disk, return count to chat.
+        * ``/hooks list`` — markdown list to chat (the legacy
+          no-args behavior; preserved for scripting / piping).
+        """
         subcommand = args.strip().lower()
         if subcommand == "reload":
             count = self._session.reload_hooks()
             return CommandResult.info(f"Hooks reloaded. {count} hook(s) loaded.")
 
-        if not self._session.hooks_map:
-            return CommandResult.info("No hooks loaded.")
-        lines = "## Hooks\n"
-        for event, hook_list in self._session.hooks_map.items():
-            for h in hook_list:
-                matcher = f" (matcher: {h.matcher})" if h.matcher else ""
-                lines += f"- **{event}**: `{h.command or h.url}`{matcher}\n"
-        return CommandResult.markdown(lines)
+        if subcommand == "list":
+            if not self._session.hooks_map:
+                return CommandResult.info("No hooks loaded.")
+            lines = "## Hooks\n"
+            for event, hook_list in self._session.hooks_map.items():
+                for h in hook_list:
+                    matcher = f" (matcher: {h.matcher})" if h.matcher else ""
+                    lines += f"- **{event}**: `{h.command or h.url}`{matcher}\n"
+            return CommandResult.markdown(lines)
+
+        # Default — open the panel.
+        return CommandResult.hooks()
 
     async def _cmd_clear(self, _args: str) -> "CommandResult":
         # Generate new session_id so Agno starts fresh history
@@ -792,12 +877,26 @@ class CommandHandler:
         return CommandResult.knowledge()
 
     async def _cmd_codeindex(self, args: str) -> "CommandResult":
-        """Handle /codeindex commands: search, item, commits, prune, sync, status."""
+        """Handle /codeindex commands.
+
+        No-arg invocation opens the TUI status panel (current-commit
+        indexed state + sync/clean/install verb keys, with a 2s live
+        status poll). Search lives on ``/codeindex search <query>``
+        and renders markdown into chat — results are better-suited
+        to chat history than to an ephemeral bottom panel.
+
+        The remaining subcommands (``item``, ``commits``, ``clean``,
+        ``sync``, ``install``, ``status``) keep their chat output as
+        a power-user / scripting fallback.
+        """
         index = self._session.code_index
         sync = self._session.code_index_sync
         parts = args.strip().split(None, 1)
         subcommand = parts[0].lower() if parts else ""
         sub_args = parts[1].strip() if len(parts) > 1 else ""
+
+        if not subcommand:
+            return CommandResult.codeindex()
 
         if subcommand == "search" and sub_args:
             results = await index.search(query=sub_args, limit=10)
@@ -843,10 +942,10 @@ class CommandHandler:
                 lines += f"\n- `{sha}`{head_marker} — last used {info.last_used_at}{branch}"
             return CommandResult.markdown(lines)
 
-        if subcommand == "prune":
-            dropped = await index.prune()
+        if subcommand == "clean":
+            dropped = await index.clean()
             if not dropped:
-                return CommandResult.info("Nothing to prune.")
+                return CommandResult.info("Nothing to clean.")
             return CommandResult.info(f"Dropped {len(dropped)} commit(s): {', '.join(dropped)}")
 
         if subcommand == "sync":
@@ -922,10 +1021,13 @@ class CommandHandler:
 
         return CommandResult.markdown(
             "## CodeIndex\n"
-            "- `/codeindex search <query>` — semantic search the head commit\n"
-            "- `/codeindex item <id>` — show full item details\n"
-            "- `/codeindex commits` — list indexed commits\n"
-            "- `/codeindex prune` — drop stale, non-branch commits\n"
+            "Run `/codeindex` with no args to open the interactive status "
+            "panel (current-commit indexed state + sync/clean/install "
+            "actions, with a 2s live poll).\n"
+            "- `/codeindex search <query>` — semantic search the head commit (chat output)\n"
+            "- `/codeindex item <id>` — show full item details in chat\n"
+            "- `/codeindex commits` — list indexed commits as markdown\n"
+            "- `/codeindex clean` — drop stale, non-branch commits\n"
             "- `/codeindex sync [sha]` — pull and apply a changeset (defaults to HEAD)\n"
             "- `/codeindex install` — open the GitHub App install page for this repo\n"
             "- `/codeindex status` — show sync state and install progress\n"
@@ -1182,8 +1284,15 @@ class CommandHandler:
     # instead of a cron schedule — runs live in the user's TUI so each
     # iteration streams normally.
 
-    _LOOP_DEFAULT_MAX_ITERATIONS = 30
-    _LOOP_HARD_CAP = 200  # Refuses values above this to prevent runaway.
+    # Defined in ``core/loop/limits.py`` so the slash command and the
+    # agent tool stay in lockstep. Kept as instance attributes so the
+    # call sites read like the legacy ``self._LOOP_*`` references.
+    from ember_code.core.loop.limits import (
+        LOOP_DEFAULT_MAX_ITERATIONS as _LOOP_DEFAULT_MAX_ITERATIONS,
+    )
+    from ember_code.core.loop.limits import (
+        LOOP_HARD_CAP as _LOOP_HARD_CAP,
+    )
 
     async def _cmd_loop(self, args: str) -> "CommandResult":
         """Drive a prompt in a loop within the current session.
@@ -1196,16 +1305,51 @@ class CommandHandler:
         """
         text = args.strip()
 
-        # Status / help — no args.
+        # No args → open the TUI panel (the panel polls
+        # ``loop_status`` live, replacing the old static chat
+        # snapshot). ``_loop_status`` is kept on the handler for
+        # any future scripted callers, but the slash command no
+        # longer reaches it.
         if not text:
-            return self._loop_status()
+            return CommandResult.loop()
 
         # Stop.
         if text.lower() in {"stop", "cancel", "off", "end"}:
-            return self._loop_stop()
+            return await self._loop_stop()
+
+        # Resume an interrupted (paused) loop. The session was killed
+        # mid-iteration; the persisted state was loaded on startup but
+        # nothing is firing yet. ``resume_loop`` flips the paused
+        # flag and returns the prompt, which we send back as a
+        # ``run_prompt`` action — the FE fires ``_run(prompt)``
+        # directly, re-running the interrupted iteration. After that
+        # finishes, the normal post-run continuation hook takes over.
+        if text.lower() == "resume":
+            sess = self._session
+            if sess.pending_loop_prompt is None:
+                return CommandResult.error("No loop to resume.")
+            if not sess.loop_paused:
+                return CommandResult.info("Loop is already running — no resume needed.")
+            prompt = await sess.resume_loop()
+            if prompt is None:
+                # Race: another caller flipped paused False between the
+                # checks above and the resume call. Treat as already
+                # running.
+                return CommandResult.info("Loop is already running.")
+            return CommandResult(
+                kind="info",
+                content=prompt,
+                action="run_prompt",
+            )
 
         # Parse leading "<N>" or "<N>x" as the iteration cap.
+        # ``cap_explicit`` tracks whether the user supplied a number
+        # at all — explicit means "exactly N", implicit means
+        # "default safety net of LOOP_DEFAULT_MAX_ITERATIONS that
+        # auto-extends past on cap-hit". The two semantics diverge
+        # inside ``Session.advance_loop``.
         max_iter = self._LOOP_DEFAULT_MAX_ITERATIONS
+        cap_explicit = False
         first, _, rest = text.partition(" ")
         first_num = first.rstrip("x")
         if first_num.isdigit():
@@ -1220,6 +1364,7 @@ class CommandHandler:
                     f"{self._LOOP_HARD_CAP}. Pick a smaller number."
                 )
             max_iter = n
+            cap_explicit = True
             prompt = rest.strip()
         else:
             prompt = text
@@ -1239,18 +1384,33 @@ class CommandHandler:
                 "Run `/loop stop` first, then start a new one."
             )
 
-        sess.pending_loop_prompt = prompt
-        sess.loop_iteration_index = 0
-        sess.loop_iterations_remaining = max_iter
+        # Slash-command path: iteration 1 fires immediately via the
+        # ``run_prompt`` action below, so we use ``immediate=True``
+        # which initializes ``index=1, remaining=max-1``. Subsequent
+        # iterations are driven by ``_check_loop_continuation`` →
+        # ``advance_loop`` in the run controller.
+        await sess.start_loop(prompt, max_iter, immediate=True, cap_explicit=cap_explicit)
 
-        # Returning ``run_prompt`` makes the FE call
-        # ``process_message(prompt)`` so iteration 1 starts immediately.
-        # Subsequent iterations are driven by ``_check_loop_continuation``
-        # in the run controller, which fires the same prompt whenever
-        # ``_drain_queue`` returns to idle.
+        # Wrap iteration 1's prompt with the autonomous-loop
+        # meta-instruction so the agent doesn't ask the user
+        # questions between iterations. Iterations 2+ get wrapped
+        # inside ``Session.advance_loop``; this branch handles
+        # iteration 1 because the slash command fires it directly
+        # via ``run_prompt`` rather than going through
+        # ``advance_loop``. ``display_content`` carries the bare
+        # prompt for chat rendering — the wrapper is only meant
+        # for the agent. ``total`` is only included in the wrapper
+        # when the user explicitly capped the run.
+        from ember_code.core.loop import wrap_iteration_prompt
+
+        wrapped = wrap_iteration_prompt(
+            prompt, iteration=1, total=max_iter if cap_explicit else None
+        )
+
         return CommandResult(
             kind="info",
-            content=prompt,
+            content=wrapped,
+            display_content=prompt,
             action="run_prompt",
         )
 
@@ -1262,7 +1422,8 @@ class CommandHandler:
                 "Usage:\n"
                 "  /loop <prompt>          start (default cap: 30 iterations)\n"
                 "  /loop <N> <prompt>      start with explicit cap N\n"
-                "  /loop stop              cancel the active loop"
+                "  /loop stop              cancel the active loop\n"
+                "  /loop resume            re-fire the interrupted iteration after a restart"
             )
         return CommandResult.info(
             f"Loop active: {sess.loop_iteration_index} done, "
@@ -1270,13 +1431,12 @@ class CommandHandler:
             f"Prompt: {sess.pending_loop_prompt!r}"
         )
 
-    def _loop_stop(self) -> "CommandResult":
+    async def _loop_stop(self) -> "CommandResult":
         sess = self._session
         if sess.pending_loop_prompt is None:
             return CommandResult.info("No loop is running.")
         done = sess.loop_iteration_index
-        sess.pending_loop_prompt = None
-        sess.loop_iterations_remaining = 0
+        await sess.cancel_loop()
         return CommandResult.info(f"Loop stopped after {done} iteration{'s' if done != 1 else ''}.")
 
     async def _cmd_bug(self, _args: str) -> "CommandResult":

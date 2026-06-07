@@ -327,9 +327,9 @@ def test_refresh_marketplace_unknown_returns_none(tmp_path: Path) -> None:
 
 
 def test_resolve_install_ref_returns_source(tmp_path: Path) -> None:
-    """``@<marketplace>/<plugin>`` resolves to the plugin's ``source``
-    URL plus the full catalog entry (so the installer can read
-    optional ``branch``)."""
+    """``@<marketplace>/<plugin>`` resolves to a :class:`ResolvedSource`
+    + the full catalog entry. The bare-URL source form normalizes
+    to ``kind='url'`` with no subdir."""
     sources = tmp_path / "sources"
     sources.mkdir()
     mkt = _make_marketplace_repo(
@@ -343,9 +343,112 @@ def test_resolve_install_ref_returns_source(tmp_path: Path) -> None:
 
     resolved = resolve_install_ref("@m1/alpha", data_dir=tmp_path / "ember")
     assert resolved is not None
-    url, entry = resolved
-    assert url == "https://x/alpha"
+    rsrc, entry = resolved
+    assert rsrc.kind == "url"
+    assert rsrc.url == "https://x/alpha"
+    assert rsrc.subdir is None
+    # branch falls through from the catalog entry when no explicit
+    # ref/sha is on the source object — see ``resolved_source``.
+    assert rsrc.ref == "release"
     assert entry.branch == "release"
+
+
+def test_resolve_install_ref_handles_git_subdir_object_form(
+    tmp_path: Path,
+) -> None:
+    """The official Anthropic catalog uses the ``{"source":
+    "git-subdir", "url": ..., "path": ..., "sha": ...}`` object
+    shape for ~25% of its entries. Resolver must normalize that
+    into ``kind='git-subdir'`` with ``subdir=path`` and ``ref=sha``."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    mkt = _make_marketplace_repo(
+        sources,
+        "m1",
+        plugins=[
+            {
+                "name": "beta",
+                "source": {
+                    "source": "git-subdir",
+                    "url": "https://example.com/skills.git",
+                    "path": "plugins/beta",
+                    "ref": "main",
+                    "sha": "abcdef1234567890abcdef1234567890abcdef12",
+                },
+            },
+        ],
+    )
+    add_marketplace(_file_url(mkt), data_dir=tmp_path / "ember")
+
+    resolved = resolve_install_ref("@m1/beta", data_dir=tmp_path / "ember")
+    assert resolved is not None
+    rsrc, _ = resolved
+    assert rsrc.kind == "git-subdir"
+    assert rsrc.url == "https://example.com/skills.git"
+    assert rsrc.subdir == "plugins/beta"
+    # sha wins over ref when both are present — the exact-commit
+    # pin is more reproducible than a moving branch reference.
+    assert rsrc.ref == "abcdef1234567890abcdef1234567890abcdef12"
+
+
+def test_resolve_install_ref_handles_relative_path_source(
+    tmp_path: Path,
+) -> None:
+    """When the catalog entry's ``source`` is ``./plugins/x``, the
+    plugin lives *inside* the marketplace's own git repo. Resolver
+    must point the installer back at the marketplace URL with the
+    relative path as the subdir."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    mkt = _make_marketplace_repo(
+        sources,
+        "m1",
+        plugins=[
+            {"name": "gamma", "source": "./plugins/gamma"},
+        ],
+    )
+    mkt_url = _file_url(mkt)
+    add_marketplace(mkt_url, data_dir=tmp_path / "ember")
+
+    resolved = resolve_install_ref("@m1/gamma", data_dir=tmp_path / "ember")
+    assert resolved is not None
+    rsrc, _ = resolved
+    assert rsrc.kind == "relative"
+    # URL points at the marketplace repo itself — clone it, then
+    # descend into the relative path.
+    assert rsrc.url == mkt_url
+    assert rsrc.subdir == "plugins/gamma"
+
+
+def test_resolve_install_ref_handles_url_object_form(tmp_path: Path) -> None:
+    """The ``{"source": "url", "url": ..., "sha": ...}`` object
+    form (used by ~50% of the official catalog) normalizes to
+    ``kind='url'``."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    mkt = _make_marketplace_repo(
+        sources,
+        "m1",
+        plugins=[
+            {
+                "name": "delta",
+                "source": {
+                    "source": "url",
+                    "url": "https://example.com/delta.git",
+                    "sha": "1234567890abcdef1234567890abcdef12345678",
+                },
+            },
+        ],
+    )
+    add_marketplace(_file_url(mkt), data_dir=tmp_path / "ember")
+
+    resolved = resolve_install_ref("@m1/delta", data_dir=tmp_path / "ember")
+    assert resolved is not None
+    rsrc, _ = resolved
+    assert rsrc.kind == "url"
+    assert rsrc.url == "https://example.com/delta.git"
+    assert rsrc.subdir is None
+    assert rsrc.ref == "1234567890abcdef1234567890abcdef12345678"
 
 
 def test_resolve_install_ref_unknown_returns_none(tmp_path: Path) -> None:
@@ -384,9 +487,9 @@ def test_marketplace_install_end_to_end(tmp_path: Path) -> None:
 
     resolved = resolve_install_ref("@m1/gadget", data_dir=data_dir)
     assert resolved is not None
-    url, _ = resolved
+    rsrc, _ = resolved
 
     installer = PluginInstaller(data_dir=data_dir)
-    manifest = installer.install(url)
+    manifest = installer.install(rsrc.url, ref=rsrc.ref, subdir=rsrc.subdir)
     assert manifest.name == "gadget"
     assert (data_dir / "plugins" / "gadget" / ".claude-plugin" / "plugin.json").is_file()

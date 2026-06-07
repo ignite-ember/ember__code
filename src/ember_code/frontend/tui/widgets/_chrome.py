@@ -10,6 +10,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from ember_code import __version__
+from ember_code.frontend.tui.widgets._codeindex_panel import CodeIndexStatusInfo
 from ember_code.frontend.tui.widgets._constants import SPINNER_FRAMES
 from ember_code.frontend.tui.widgets._formatting import format_elapsed_time, format_token_count
 
@@ -115,10 +116,19 @@ class StatusBar(Widget):
         self._last_output: int = 0
         self._total_input: int = 0
         self._total_output: int = 0
-        self._ide_name: str = ""
-        self._ide_connected: bool = False
         self._cloud_connected: bool = False
         self._cloud_org: str = ""
+        # Short session identifier (8-char uuid prefix). Rendered on
+        # the right of the model name so the user can match the
+        # current run to ``~/.ember/sessions.db`` or ``/session``
+        # picker entries. Empty until the FE has pulled the BE's
+        # cached value.
+        self._session_id: str = ""
+        # CodeIndex state — always rendered (even with no data, so
+        # the user knows the feature exists). Defaults to "unknown"
+        # which shows as ``CodeIndex offline`` until the first poll
+        # response arrives.
+        self._codeindex_status: CodeIndexStatusInfo | None = None
 
     @property
     def total_input_tokens(self) -> int:
@@ -138,6 +148,11 @@ class StatusBar(Widget):
         self._model_name = model
         self._tick += 1
 
+    def set_session_id(self, session_id: str) -> None:
+        """Update the short session identifier shown next to the model."""
+        self._session_id = session_id or ""
+        self._tick += 1
+
     def add_tokens(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
         """Accumulate session-wide token totals."""
         self._total_input += input_tokens
@@ -155,16 +170,35 @@ class StatusBar(Widget):
         self._tick += 1
 
     def set_ide_status(self, name: str, connected: bool) -> None:
-        """Update the IDE MCP connection indicator."""
-        self._ide_name = name
-        self._ide_connected = connected
-        self._tick += 1
+        """No-op shim.
+
+        Historically this surfaced the IDE-MCP connection in the
+        status bar. The bar is tight horizontal space and a single
+        slot couldn't honestly represent N MCP servers — when
+        multiple were configured the last call's name overwrote
+        the previous one, and disconnects didn't update at all.
+        State now lives exclusively in the ``/mcp`` panel.
+
+        Kept as a no-op so existing call sites (FE init,
+        ``/mcp`` panel refresh) don't need surgery on every
+        caller; they're harmless invocations now.
+        """
+        return
 
     def set_cloud_status(self, connected: bool, org_name: str = "") -> None:
         """Update the Ember Cloud connection indicator."""
         self._cloud_connected = connected
         self._cloud_org = org_name
         self._tick += 1
+
+    def set_codeindex_status(self, status: CodeIndexStatusInfo | None) -> None:
+        """Update the CodeIndex slot. Passing ``None`` keeps the
+        previous value so a transient poll failure doesn't blank the
+        badge; the slot is always rendered so callers don't need to
+        worry about hide/show toggling."""
+        if status is not None:
+            self._codeindex_status = status
+            self._tick += 1
 
     def start_run(self) -> None:
         self._running = True
@@ -192,6 +226,56 @@ class StatusBar(Widget):
         self._run_elapsed += 0.1
         self._tick += 1
 
+    def _codeindex_badge(self) -> str:
+        """One-token CodeIndex state for the status bar.
+
+        Wording priority — top wins. Each label is meant to read
+        as a self-explanatory state on its own, with no jargon
+        like "offline" that could be misread as a network outage.
+
+        1. **No data yet** (``self._codeindex_status is None``) —
+           ``checking…`` (dim). The eager refresh from ``on_mount``
+           replaces this within a second; only visible during the
+           brief warm-up window at session start.
+        2. ``sync_error`` — ``!err`` (red). User needs to act —
+           open the panel to read the full error.
+        3. ``install_state == "needs_install"`` — ``uninstalled``
+           (yellow). The GitHub App isn't installed for this repo;
+           ``I`` in the panel opens the install flow.
+        4. ``install_state == "unknown"`` — ``inactive`` (dim).
+           Resolver hasn't initialised — no cloud auth, no git
+           remote, or feature disabled at the session level. Avoids
+           "offline" because the cause isn't connectivity.
+        5. ``sync_in_progress`` — ``syncing`` (yellow). BE is
+           indexing HEAD. No ``%`` rendered here even though the BE
+           sends one — the bar is tight and the panel owns progress
+           detail.
+        6. ``head_indexed`` — ``✓`` (green). Current commit is
+           fully indexed and searchable.
+        7. Fall-through — ``not indexed`` (yellow). HEAD exists,
+           install is fine, no sync is running, but the current
+           commit hasn't been synced yet — ``S`` in the panel
+           kicks one off.
+
+        The slot is always rendered — no hide path — so the user
+        knows CodeIndex exists even when they haven't opened the
+        panel.
+        """
+        s = self._codeindex_status
+        if s is None:
+            return "CodeIndex [dim]checking\u2026[/dim]"
+        if s.sync_error:
+            return "CodeIndex [red]!err[/red]"
+        if s.install_state == "needs_install":
+            return "CodeIndex [yellow]uninstalled[/yellow]"
+        if s.install_state == "unknown":
+            return "CodeIndex [dim]inactive[/dim]"
+        if s.sync_in_progress:
+            return "CodeIndex [yellow]syncing[/yellow]"
+        if s.head_indexed:
+            return "CodeIndex [green]\u2713[/green]"
+        return "CodeIndex [yellow]not indexed[/yellow]"
+
     @staticmethod
     def _fmt(n: int) -> str:
         return format_token_count(n)
@@ -208,6 +292,9 @@ class StatusBar(Widget):
 
         if self._model_name:
             parts.append(f"[bold]{self._model_name}[/bold]")
+
+        if self._session_id:
+            parts.append(f"session [bold]{self._session_id}[/bold]")
 
         if self._cloud_connected:
             parts.append(f"[cyan]\u2601[/cyan] {self._cloud_org}")
@@ -227,11 +314,18 @@ class StatusBar(Widget):
             close = "[/]" if color else ""
             parts.append(f"Context: {color}{self._fmt(self._context_tokens)} ({pct:.1f}%){close}")
 
-        if self._ide_name:
-            if self._ide_connected:
-                parts.append(f"[green]\u25cf[/green] {self._ide_name}")
-            else:
-                parts.append(f"[red]\u25cb[/red] {self._ide_name}")
+        # MCP server status used to render here. Removed because a
+        # single status-bar slot can't honestly represent N servers
+        # — the last ``set_ide_status`` call overwrote prior ones
+        # and disconnects didn't update at all (the
+        # auto-disconnect-on-plugin-disable path leaves the slot
+        # stale). The ``/mcp`` panel is the canonical source.
+
+        # CodeIndex — always rendered. The user opened the
+        # ``/codeindex`` panel once to verify state; this slot
+        # surfaces the same indexed/uninstalled/error signal at a
+        # glance so they don't need to open it every time.
+        parts.append(self._codeindex_badge())
 
         if not parts:
             markup = f"[dim]{self._model_name or 'Ready'}[/dim]"

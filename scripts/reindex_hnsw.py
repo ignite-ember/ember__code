@@ -12,12 +12,18 @@ re-embedding — we're moving already-computed vectors.
 
 Usage::
 
+    # Default: rebuild both code_index (per-commit) and knowledge.
     python scripts/reindex_hnsw.py /path/to/target/project [--data-dir ~/.ember]
 
-Run against the eval-target project to rebuild its index. Per-commit
-chroma directories are walked under
-``<data-dir>/projects/<repo-id>/code_index/<sha>/`` so a single run
-upgrades every commit's collections.
+    # Limit to one scope.
+    python scripts/reindex_hnsw.py /path/to/target/project --scope code_index
+    python scripts/reindex_hnsw.py /path/to/target/project --scope knowledge
+
+Code-index chroma dirs are walked under
+``<data-dir>/projects/<repo-id>/code_index/<sha>.chroma/`` so a
+single run upgrades every commit's collections. The knowledge dir
+lives at ``<data-dir>/projects/<repo-id>/knowledge.chroma/`` and is
+processed in the same pass.
 """
 
 from __future__ import annotations
@@ -31,10 +37,16 @@ from pathlib import Path
 # Make ember_code importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from ember_code.core.code_index.paths import commit_chroma_path  # noqa: E402
+from ember_code.core.code_index.paths import (  # noqa: E402
+    commit_chroma_path,
+    knowledge_chroma_path,
+)
 from ember_code.core.embeddings import EmbeddingFunction  # noqa: E402
 
 # Mirror what _get_or_create_collection now sets — keep these in sync.
+# Both ``code_index.index`` and ``knowledge.index`` apply the same
+# metadata when creating new collections, so this script's target
+# matches their runtime config.
 TARGET_HNSW_METADATA = {
     "hnsw:space": "cosine",
     "hnsw:M": 32,
@@ -42,7 +54,8 @@ TARGET_HNSW_METADATA = {
     "hnsw:search_ef": 10000,
 }
 
-COLLECTION_NAMES = ("code_index_documents", "code_index_chunks")
+CODE_INDEX_COLLECTION_NAMES = ("code_index_documents", "code_index_chunks")
+KNOWLEDGE_COLLECTION_NAMES = ("knowledge_documents", "knowledge_chunks")
 BATCH_SIZE = 500
 
 
@@ -139,16 +152,17 @@ def _copy_collection(client: object, src_name: str) -> int:
     return total
 
 
-def reindex_one_commit(chroma_dir: Path) -> tuple[int, int]:
-    """Rebuild both collections under one commit's chroma dir.
+def reindex_chroma_dir(chroma_dir: Path, collection_names: tuple[str, ...]) -> tuple[int, int]:
+    """Rebuild a chroma dir's named collections.
 
-    Returns (docs_count, chunks_count) copied.
+    Returns (docs_count, chunks_count) copied — generic over which
+    pair of collections we're rebuilding (code-index or knowledge).
     """
     import chromadb
 
     client = chromadb.PersistentClient(path=str(chroma_dir))
     counts: list[int] = []
-    for name in COLLECTION_NAMES:
+    for name in collection_names:
         try:
             n = _copy_collection(client, name)
         except ValueError:
@@ -156,6 +170,59 @@ def reindex_one_commit(chroma_dir: Path) -> tuple[int, int]:
             n = 0
         counts.append(n)
     return tuple(counts)  # type: ignore[return-value]
+
+
+def _reindex_code_index(project: Path, data_dir: Path, keep_backup: bool) -> tuple[int, int]:
+    """Walk every commit's chroma dir for ``project`` and rebuild. Returns (dirs, items)."""
+    sample_path = commit_chroma_path(project, "PROBE", data_dir=data_dir)
+    code_index_root = sample_path.parent
+    if not code_index_root.exists():
+        print(f"[code_index] no dirs at {code_index_root}, skipping")
+        return (0, 0)
+
+    commit_dirs = [
+        p
+        for p in code_index_root.iterdir()
+        if p.is_dir() and p.suffix == ".chroma" and not p.name.startswith("PROBE")
+    ]
+    if not commit_dirs:
+        print(f"[code_index] no commit dirs in {code_index_root}, skipping")
+        return (0, 0)
+
+    print(f"\n[code_index] rebuilding {len(commit_dirs)} commit(s) under {code_index_root}")
+    items = 0
+    for chroma_dir in sorted(commit_dirs):
+        sha = chroma_dir.name
+        print(f"\n=== code_index {sha[:12]} ({chroma_dir}) ===")
+        if keep_backup:
+            bak = chroma_dir.with_suffix(".bak")
+            if bak.exists():
+                shutil.rmtree(bak)
+            shutil.copytree(chroma_dir, bak)
+            print(f"  backup: {bak}")
+        docs_n, chunks_n = reindex_chroma_dir(chroma_dir, CODE_INDEX_COLLECTION_NAMES)
+        print(f"  done: {docs_n} docs, {chunks_n} chunks")
+        items += docs_n + chunks_n
+    return (len(commit_dirs), items)
+
+
+def _reindex_knowledge(project: Path, data_dir: Path, keep_backup: bool) -> tuple[int, int]:
+    """Rebuild the single knowledge chroma dir for ``project``. Returns (dirs, items)."""
+    chroma_dir = knowledge_chroma_path(project, data_dir=data_dir)
+    if not chroma_dir.exists():
+        print(f"[knowledge] no dir at {chroma_dir}, skipping")
+        return (0, 0)
+
+    print(f"\n[knowledge] rebuilding {chroma_dir}")
+    if keep_backup:
+        bak = chroma_dir.with_suffix(".bak")
+        if bak.exists():
+            shutil.rmtree(bak)
+        shutil.copytree(chroma_dir, bak)
+        print(f"  backup: {bak}")
+    docs_n, chunks_n = reindex_chroma_dir(chroma_dir, KNOWLEDGE_COLLECTION_NAMES)
+    print(f"  done: {docs_n} docs, {chunks_n} chunks")
+    return (1, docs_n + chunks_n)
 
 
 def main() -> int:
@@ -169,6 +236,12 @@ def main() -> int:
         action="store_true",
         help="Move old chroma dirs to .bak before rebuilding (default: in-place)",
     )
+    parser.add_argument(
+        "--scope",
+        choices=("all", "code_index", "knowledge"),
+        default="all",
+        help="Which index to rebuild (default: all)",
+    )
     args = parser.parse_args()
 
     project = Path(args.project_dir).resolve()
@@ -177,47 +250,30 @@ def main() -> int:
         print(f"Project not found: {project}", file=sys.stderr)
         return 2
 
-    # Find all commits that have a chroma dir for this project.
-    # commit_chroma_path's parent (per-project) holds one subdir per sha.
-    sample_path = commit_chroma_path(project, "PROBE", data_dir=data_dir)
-    code_index_root = sample_path.parent
-    if not code_index_root.exists():
-        print(f"No code_index dirs at {code_index_root}", file=sys.stderr)
-        return 1
-
-    commit_dirs = [
-        p
-        for p in code_index_root.iterdir()
-        if p.is_dir() and p.suffix == ".chroma" and not p.name.startswith("PROBE")
-    ]
-    if not commit_dirs:
-        print(f"No commit dirs in {code_index_root}", file=sys.stderr)
-        return 1
-
-    print(f"Rebuilding {len(commit_dirs)} commit(s) under {code_index_root}")
-    grand_total = 0
     t0 = time.monotonic()
-    for chroma_dir in sorted(commit_dirs):
-        sha = chroma_dir.name
-        print(f"\n=== {sha[:12]} ({chroma_dir}) ===")
-        if args.keep_backup:
-            bak = chroma_dir.with_suffix(".bak")
-            if bak.exists():
-                shutil.rmtree(bak)
-            shutil.copytree(chroma_dir, bak)
-            print(f"  backup: {bak}")
-        try:
-            docs_n, chunks_n = reindex_one_commit(chroma_dir)
-            print(f"  done: {docs_n} docs, {chunks_n} chunks")
-            grand_total += docs_n + chunks_n
-        except Exception as e:
-            print(f"  FAILED: {e}", file=sys.stderr)
-            return 1
+    dirs_total = 0
+    items_total = 0
+    try:
+        if args.scope in ("all", "code_index"):
+            d, i = _reindex_code_index(project, data_dir, args.keep_backup)
+            dirs_total += d
+            items_total += i
+        if args.scope in ("all", "knowledge"):
+            d, i = _reindex_knowledge(project, data_dir, args.keep_backup)
+            dirs_total += d
+            items_total += i
+    except Exception as e:
+        print(f"  FAILED: {e}", file=sys.stderr)
+        return 1
+
+    if dirs_total == 0:
+        print("Nothing to rebuild.", file=sys.stderr)
+        return 1
 
     elapsed = time.monotonic() - t0
     print(
-        f"\nReindex complete: {grand_total} items across "
-        f"{len(commit_dirs)} commit(s) in {elapsed:.1f}s"
+        f"\nReindex complete: {items_total} items across "
+        f"{dirs_total} dir(s) in {elapsed:.1f}s"
     )
     return 0
 

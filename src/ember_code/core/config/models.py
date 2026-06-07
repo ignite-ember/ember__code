@@ -232,8 +232,8 @@ class ModelRegistry:
 
     def get_model(self, name: str | None = None) -> OpenAILike:
         """Get an Agno model instance by registry name."""
-        if name is None:
-            name = self.settings.models.default
+        if name is None or name == "":
+            name = self._effective_default()
 
         entry = self._resolve_entry(name)
         if entry is None:
@@ -315,16 +315,16 @@ class ModelRegistry:
 
     def get_context_window(self, name: str | None = None) -> int:
         """Get the context window size for a model (synchronous)."""
-        if name is None:
-            name = self.settings.models.default
+        if name is None or name == "":
+            name = self._effective_default()
         entry = self._resolve_entry(name)
         model_id = entry["model_id"] if entry else name
         return self.context_windows.resolve(model_id, entry)
 
     async def aget_context_window(self, name: str | None = None) -> int:
         """Get the context window size, with async API fallback."""
-        if name is None:
-            name = self.settings.models.default
+        if name is None or name == "":
+            name = self._effective_default()
         entry = self._resolve_entry(name)
         model_id = entry["model_id"] if entry else name
         return await self.context_windows.aresolve(model_id, entry)
@@ -332,6 +332,29 @@ class ModelRegistry:
     def register_provider(self, name: str, cls: type) -> None:
         """Register a custom provider class."""
         self.PROVIDERS[name] = cls
+
+    def _effective_default(self) -> str:
+        """Return the active default model name.
+
+        Resolution order:
+
+        1. ``settings.models.default`` if explicitly set (user override,
+           ``/model`` switch, or cloud-discovery auto-assign).
+        2. First key in ``settings.models.registry`` — works as soon as
+           cloud discovery has merged at least one entry.
+        3. Raise: there's nothing to fall back to and silent failure
+           would surface as a cryptic "Unknown model: ''" error later.
+        """
+        explicit = self.settings.models.default
+        if explicit:
+            return explicit
+        if self.settings.models.registry:
+            return next(iter(self.settings.models.registry))
+        raise ValueError(
+            "No model configured. Run `/login` to discover hosted "
+            "models from Ember Cloud, or add an entry to "
+            "`models.registry` in ~/.ember/config.yaml."
+        )
 
     def _resolve_entry(self, name: str) -> dict[str, Any] | None:
         """Resolve a model name to a registry entry."""

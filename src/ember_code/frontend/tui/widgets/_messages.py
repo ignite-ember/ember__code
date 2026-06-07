@@ -136,7 +136,14 @@ class MessageWidget(Widget):
                     if self._role == "assistant":
                         yield Markdown(content, classes="message-content")
                     else:
-                        yield Static(content, classes="message-content")
+                        # ``markup=False`` for user content: it's raw
+                        # input (could contain ``[/loop ...]``, code
+                        # snippets, BBCode-shaped strings, etc.) that
+                        # Textual would otherwise parse as markup and
+                        # crash with ``MarkupError`` on the first
+                        # unbalanced bracket. Plain-text rendering is
+                        # what we want for human input anyway.
+                        yield Static(content, classes="message-content", markup=False)
                 else:
                     truncated = "\n".join(content.splitlines()[: self._truncate_lines])
 
@@ -144,8 +151,8 @@ class MessageWidget(Widget):
                         yield Markdown(truncated, classes="message-content")
                         yield Markdown(content, classes="message-content-full")
                     else:
-                        yield Static(truncated, classes="message-content")
-                        yield Static(content, classes="message-content-full")
+                        yield Static(truncated, classes="message-content", markup=False)
+                        yield Static(content, classes="message-content-full", markup=False)
 
                     lines_hidden = len(self._content.splitlines()) - self._truncate_lines
                     yield Static(

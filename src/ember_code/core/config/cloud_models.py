@@ -1,10 +1,18 @@
 """Discover models available in the Ember Cloud key pool.
 
 The operator adds AI keys on the portal (per-org overrides or the
-global pool); the server exposes the deduplicated ``(model, base_url)``
-catalogue at ``GET /v1/cli/chat/models``. We fetch that on session
-start and merge each entry into the local registry so ``/model``
-surfaces them without the user editing config files.
+global pool); the server exposes the catalogue at
+``GET /v1/chat/models`` as ``{"models": [{"id": "..."}, ...]}`` —
+just the model identifiers. The server intentionally does **not**
+return upstream provider URLs: the CLI talks to ember-server's
+``/chat/completions`` proxy, which routes to whichever
+``(key, base_url)`` pair the pool picks. Leaking the upstream URL
+to the client would just expose routing internals.
+
+All cloud-discovered entries are wired to route through
+``{api_url}/v1`` on the local side. Older server deploys that
+still send a ``base_url`` field are tolerated — the client
+deliberately ignores it.
 
 User-defined entries always win — never overwrite an existing key in
 ``settings.models.registry``. Same-name entries from cloud become
@@ -30,7 +38,12 @@ _FETCH_TIMEOUT_SECONDS = 3.0
 
 
 def fetch_cloud_models(api_url: str, cloud_token: str | None) -> list[dict[str, Any]]:
-    """Return ``[{id, base_url}, ...]`` from the server, or empty on any failure.
+    """Return ``[{id: <model-id>}, ...]`` from the server, or empty on any failure.
+
+    The server response shape is ``{"models": [{"id": "..."}, ...]}``.
+    Older deploys may also include ``base_url`` on each entry; the
+    extra field is forwarded through this call but ignored downstream
+    in :py:func:`merge_into_registry`.
 
     Synchronous: ``Session.__init__`` is sync and runs at every CLI
     invocation, so we can't add an asyncio dependency here. The hot
@@ -45,14 +58,12 @@ def fetch_cloud_models(api_url: str, cloud_token: str | None) -> list[dict[str, 
         logger.debug("cloud_models: httpx not installed, skipping fetch")
         return []
 
-    url = f"{api_url.rstrip('/')}/v1/cli/chat/models"
+    url = f"{api_url.rstrip('/')}/v1/chat/models"
     try:
         with httpx.Client(timeout=_FETCH_TIMEOUT_SECONDS) as client:
             resp = client.get(url, headers={"Authorization": f"Bearer {cloud_token}"})
         if resp.status_code != 200:
-            logger.debug(
-                "cloud_models: %s returned %s — skipping merge", url, resp.status_code
-            )
+            logger.debug("cloud_models: %s returned %s — skipping merge", url, resp.status_code)
             return []
         payload = resp.json()
     except Exception as exc:
@@ -69,13 +80,22 @@ def fetch_cloud_models(api_url: str, cloud_token: str | None) -> list[dict[str, 
 def merge_into_registry(
     registry: dict[str, dict[str, Any]],
     cloud_models: list[dict[str, Any]],
+    api_url: str,
 ) -> int:
     """Add cloud-discovered models into ``registry`` in place.
+
+    Every cloud entry is wired to route through ``{api_url}/v1`` —
+    the Ember Cloud chat proxy that understands the
+    ``cloud_token`` JWT. Only the model ``id`` from the discovery
+    response is used; any other field the server might include
+    (legacy ``base_url`` from older deploys, etc.) is ignored on
+    purpose so the routing never accidentally bypasses the proxy.
 
     Returns the number of new entries added. Skips any name that's
     already in the registry — user/project config always wins.
     """
     added = 0
+    proxy_url = f"{api_url.rstrip('/')}/v1"
     for entry in cloud_models:
         name = entry.get("id")
         if not name or name in registry:
@@ -83,7 +103,10 @@ def merge_into_registry(
         registry[name] = {
             "provider": "openai_like",
             "model_id": name,
-            "url": entry.get("base_url") or "",
+            # All cloud entries route through ember-server, never
+            # the upstream. The ``base_url`` field the server may
+            # send back is informational and deliberately unused.
+            "url": proxy_url,
             # ``api_key: "cloud_token"`` is the existing sentinel the
             # API-key resolver understands — see ``models.py:354-358``.
             # It resolves to the stored CloudCredentials at call time.

@@ -3,18 +3,14 @@
 DEFAULT_CONFIG = {
     "api_url": "https://api.ignite-ember.sh",
     "update_check_ttl": 0,
+    # Empty by design. Hosted models come from cloud discovery
+    # (``GET /v1/chat/models`` — see ``cloud_models.py``), and the
+    # active model defaults to the first entry in the merged registry.
+    # Users add their own overrides in ``~/.ember/config.yaml``; we
+    # never ship hardcoded cloud entries so a model bump on the
+    # server doesn't require a client release or a migration.
     "models": {
-        "default": "MiniMax-M2.5",
-        "registry": {
-            "MiniMax-M2.5": {
-                "provider": "openai_like",
-                "model_id": "MiniMaxAI/MiniMax-M2.5",
-                "url": "https://api.ignite-ember.sh/v1",
-                "api_key": "cloud_token",
-                "context_window": 204_800,
-                "vision": False,
-            },
-        },
+        "registry": {},
     },
     "permissions": {
         "file_read": "allow",

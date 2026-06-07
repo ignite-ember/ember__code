@@ -221,7 +221,7 @@ Agents can pause execution to request confirmation or user input before proceedi
 - **[Quickstart](QUICKSTART.md)** — Get up and running in under 5 minutes
 - [Architecture](docs/ARCHITECTURE.md) — System design and agent topology
 - [Agents](docs/AGENTS.md) — Specialized agents and their roles
-- [Skills](docs/SKILLS.md) — Reusable prompted workflows (`/deploy`, `/review-pr`, etc.)
+- [Skills](docs/SKILLS.md) — Reusable prompted workflows (`/deploy`, `/resolve-issues`, etc.)
 - [Onboarding](docs/ONBOARDING.md) — First-run setup, CodeIndex, and agent proposals
 - [Tools](docs/TOOLS.md) — Available toolkits and capabilities
 - [MCP](docs/MCP.md) — IDE integration via Model Context Protocol

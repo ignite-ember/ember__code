@@ -162,6 +162,13 @@ class CommandResult(Message):
     kind: str = "info"  # "markdown", "info", "error"
     content: str = ""
     action: str = ""  # "quit", "clear", "login", "schedule", etc.
+    # Optional override for what to render in chat when ``action ==
+    # "run_prompt"``. The loop slash command sets this to the
+    # unwrapped prompt while ``content`` carries the wrapped form
+    # (with the ``<loop-iteration>`` meta tag) for the agent. When
+    # empty, the FE displays ``content`` directly — the normal
+    # case for skill prompts and any other ``run_prompt`` action.
+    display_content: str = ""
 
 
 class StatusUpdate(Message):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
@@ -69,7 +71,9 @@ HELP_SECTIONS = [
             [
                 _row("/commit [message]", "create a git commit"),
                 _row("/pr [base-branch]", "create PR with AI summary"),
-                _row("/review-pr [number]", "comprehensive PR review"),
+                _row(
+                    "/resolve-issues [base-branch]", "fix issues CodeIndex flagged in your branch"
+                ),
                 _row("/test-plan [target]", "generate test plan"),
                 _row("/migration <desc>", "generate database migration"),
             ]
@@ -110,18 +114,23 @@ HELP_SECTIONS = [
     ),
     HelpSection(
         "CodeIndex",
-        "/codeindex — semantic search over your repo",
+        "/codeindex — live status panel for the current commit",
         "Per-commit AI summaries fetched from Ember Cloud and applied to a\n"
-        "local Chroma index. Search runs entirely on your machine.\n\n"
+        "local Chroma index. The panel polls the indexed-state of the\n"
+        "current commit every couple of seconds, so a sync in progress\n"
+        "shows live %. Search lives on the slash command — its markdown\n"
+        "results belong in chat history, not an ephemeral panel.\n\n"
         + "\n".join(
             [
+                _row("/codeindex", "open the live status panel"),
+                _row("(in panel) S / C / I", "sync · clean · install action keys"),
+                _row("/codeindex search <q>", "semantic search the indexed commit"),
                 _row("/codeindex install", "open the GitHub App install page"),
                 _row("/codeindex sync", "pull + apply the current commit"),
-                _row("/codeindex search <q>", "semantic search the indexed commit"),
                 _row("/codeindex item <id>", "full details for one item"),
-                _row("/codeindex commits", "list locally-indexed commits"),
+                _row("/codeindex commits", "list locally-indexed commits as markdown"),
                 _row("/codeindex status", "show sync state and install state"),
-                _row("/codeindex prune", "drop stale, non-branch commits"),
+                _row("/codeindex clean", "drop stale, non-branch commits"),
             ]
         )
         + "\n\nAuto-syncs on startup, /clear, and HEAD changes (git pull, branch switch).",
@@ -195,14 +204,35 @@ HELP_SECTIONS = [
         "each of A, B, C* or *keep fixing failures until tests pass*.\n\n"
         + "\n".join(
             [
-                _row("/loop", "show status"),
+                _row("/loop", "open the live status panel (X cancel, R resume)"),
                 _row("/loop <prompt>", "start (cap: 30)"),
                 _row("/loop <N> <prompt>", "start with cap N"),
-                _row("/loop stop", "cancel"),
+                _row("/loop stop", "cancel from chat"),
+                _row("/loop resume", "continue an interrupted loop after restart"),
             ]
         )
         + "\n\nStops on: /loop stop · any non-/loop input · iteration cap\n"
         "(default 30, hard limit 200) · agent calling loop_stop().",
+    ),
+    HelpSection(
+        "Hooks",
+        "/hooks — event-triggered command + HTTP callbacks",
+        "Run a command or POST to a URL when an event fires (a tool\n"
+        "is about to execute, a session starts, the user submits a\n"
+        "prompt, etc.). Configured in the four ``settings.json``\n"
+        "files; the panel surfaces what's currently loaded.\n\n"
+        + "\n".join(
+            [
+                _row("/hooks", "open the hooks panel"),
+                _row("(in panel) Enter", "expand a row (full command, headers)"),
+                _row("(in panel) R", "reload from disk after editing settings"),
+                _row("/hooks list", "markdown list to chat (scripting)"),
+                _row("/hooks reload", "reload hooks from settings (chat)"),
+            ]
+        )
+        + "\n\nDefined in: ~/.ember/settings.json, .ember/settings.json\n"
+        "(and their .local.json overrides). Plugin-bundled hooks\n"
+        "merge in automatically.",
     ),
     HelpSection(
         "Sessions",
@@ -219,13 +249,11 @@ HELP_SECTIONS = [
     ),
     HelpSection(
         "Configuration",
-        "/config, /model, /hooks",
+        "/config, /model",
         "\n".join(
             [
                 _row("/config", "show current settings"),
                 _row("/model [name]", "switch or pick model"),
-                _row("/hooks", "list loaded hooks"),
-                _row("/hooks reload", "reload hooks from settings"),
             ]
         )
         + "\n\nConfig files:\n"
@@ -345,6 +373,10 @@ class HelpPanelWidget(Widget):
             new_widget = self.query_one(f"#help-{new}", Static)
             new_widget.add_class("-selected")
             new_widget.update(self._render_entry(new, self._sections[new]))
+            # Keep the highlighted row in view — arrow nav past
+            # the visible window would otherwise hide the selection.
+            with contextlib.suppress(Exception):
+                new_widget.scroll_visible(animate=False)
         except Exception:
             pass
 

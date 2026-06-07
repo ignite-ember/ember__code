@@ -104,6 +104,73 @@ def test_looks_like_sha() -> None:
 # ── Install ─────────────────────────────────────────────────────────
 
 
+def _make_subdir_plugin_repo(workdir: Path, *, subdir: str) -> Path:
+    """Plant a repo where the plugin lives at ``<repo>/<subdir>/``.
+
+    Used to simulate the official Anthropic marketplace's
+    ``git-subdir`` source shape (which covers ~25% of the
+    catalog). The repo's root has no ``plugin.json`` — only the
+    subdir does.
+    """
+    source = workdir / "skills-source"
+    source.mkdir(parents=True)
+    _run(["git", "init", "-q", "-b", "main"], cwd=source)
+    _run(["git", "config", "user.email", "test@example.com"], cwd=source)
+    _run(["git", "config", "user.name", "test"], cwd=source)
+
+    plugin_dir = source / subdir / ".claude-plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps({"name": "subplug", "version": "0.1.0"}),
+        encoding="utf-8",
+    )
+    # A second file in the subdir so the move-just-the-subtree
+    # behavior is verifiable end-to-end.
+    (source / subdir / "skill.md").write_text("# skill body", encoding="utf-8")
+    # Sibling content at the repo root that must NOT make it into
+    # the installed plugin dir.
+    (source / "README.md").write_text("repo readme", encoding="utf-8")
+    _run(["git", "add", "-A"], cwd=source)
+    _run(["git", "commit", "-q", "-m", "init"], cwd=source)
+    return source
+
+
+def test_install_with_subdir_uses_subtree_only(tmp_path: Path) -> None:
+    """``subdir`` install reads the manifest from
+    ``<clone>/<subdir>/.claude-plugin/plugin.json`` and moves only
+    that subtree into ``plugins/<name>/``. Repo-root files
+    (README, license, etc.) stay behind."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = _make_subdir_plugin_repo(sources, subdir="plugins/sub")
+
+    installer = PluginInstaller(data_dir=tmp_path / "ember")
+    manifest = installer.install(_file_url(source), subdir="plugins/sub")
+
+    assert manifest.name == "subplug"
+    dest = tmp_path / "ember" / "plugins" / "subplug"
+    # Subtree contents arrived...
+    assert (dest / ".claude-plugin" / "plugin.json").is_file()
+    assert (dest / "skill.md").is_file()
+    # ...but sibling repo-root files did not.
+    assert not (dest / "README.md").exists()
+    assert not (dest / "plugins").exists()
+
+
+def test_install_with_missing_subdir_raises(tmp_path: Path) -> None:
+    """A stale marketplace entry pointing at a subdir that doesn't
+    exist in the cloned repo must surface a clear error, not a
+    confusing "no plugin.json" message that suggests the manifest
+    is missing."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = _make_subdir_plugin_repo(sources, subdir="plugins/sub")
+
+    installer = PluginInstaller(data_dir=tmp_path / "ember")
+    with pytest.raises(PluginError, match="subdirectory"):
+        installer.install(_file_url(source), subdir="plugins/nowhere")
+
+
 def test_install_clones_into_named_dir(tmp_path: Path) -> None:
     """The destination dir name comes from the manifest's ``name``,
     not the URL slug. So a repo at ``alpha-source.git`` whose manifest

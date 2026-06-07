@@ -170,8 +170,14 @@ class RunController:
 
     # ── Main run loop ─────────────────────────────────────────────
 
-    async def _run(self, message: str) -> None:
-        self._conversation.append_user(message)
+    async def _run(self, message: str, *, display: str | None = None) -> None:
+        # ``display`` lets callers show one string in chat while
+        # sending a different one to the agent. The loop machinery
+        # uses this so the user sees the bare prompt while the
+        # agent gets the ``<loop-iteration>`` wrapper that tells it
+        # not to ask questions between iterations. When unset,
+        # display IS the message (the normal case).
+        self._conversation.append_user(display if display is not None else message)
 
         # Inject accumulated shell context (from ! commands) into the message
         # after displaying — the user sees clean text, the AI gets the context
@@ -189,7 +195,12 @@ class RunController:
                 logger.debug("Command result: kind=%s action=%s", proto.kind, proto.action)
                 from ember_code.protocol.messages import CommandResult
 
-                result = CommandResult(kind=proto.kind, content=proto.content, action=proto.action)
+                result = CommandResult(
+                    kind=proto.kind,
+                    content=proto.content,
+                    action=proto.action,
+                    display_content=getattr(proto, "display_content", "") or "",
+                )
                 self._app.render_command_result(result)
             except Exception as e:
                 logger.error("Command failed: %s", e, exc_info=True)
@@ -379,15 +390,65 @@ class RunController:
                 f"✓ Loop completed after {total} iteration{'s' if total != 1 else ''}."
             )
             return
+        # Safety-cap pause marker — implicit loop hit
+        # ``LOOP_HARD_CAP``. The backend has already flipped the
+        # loop to paused; the user decides whether to continue
+        # (``/loop resume``) or terminate (``/loop stop``). Don't
+        # recurse — paused loops short-circuit ``advance_loop``.
+        if descriptor.get("safety_cap_paused"):
+            n = descriptor.get("iteration", 0)
+            self._conversation.append_info(
+                f"⏸ Loop paused at iteration {n} — safety ceiling reached. "
+                f"Run /loop resume to continue, or /loop stop to terminate."
+            )
+            return
         prompt = descriptor["prompt"]
         iteration = descriptor.get("iteration", 0)
         remaining = descriptor.get("remaining", 0)
+        # The descriptor's ``prompt`` is wrapped with the autonomous-
+        # loop ``<loop-iteration>`` meta tag so the agent doesn't ask
+        # the user between iterations. ``display_prompt`` is the
+        # original (unwrapped) string — what the user sees in chat.
+        display = descriptor.get("display_prompt") or prompt
+        # When the implicit safety cap just expanded itself for
+        # another batch, surface a one-shot info line so the user
+        # knows the loop hasn't been silently retrofitted with a
+        # new ceiling — they can still ``/loop stop`` if they
+        # think it should end.
+        if descriptor.get("auto_extended"):
+            self._conversation.append_info(
+                "↻ Safety cap reached — auto-extending the loop. Run `/loop stop` to terminate."
+            )
         # Visible iteration banner so the user has an anchor between
-        # iterations. "0 remaining" means "this is the last one."
-        self._conversation.append_info(
-            f"↻ Loop iteration {iteration} ({remaining} remaining after this one)"
-        )
-        await self._run(prompt)
+        # iterations. The "N remaining" half is only meaningful when
+        # the run is explicitly capped — for an implicit safety
+        # net "X remaining" is misleading since the cap auto-extends.
+        if descriptor.get("cap_explicit"):
+            banner = f"↻ Loop iteration {iteration} ({remaining} remaining after this one)"
+        else:
+            banner = f"↻ Loop iteration {iteration}"
+        self._conversation.append_info(banner)
+        # Wrap the iteration's ``_run`` so any unhandled error
+        # (429 from the model API past Agno's retries, network
+        # failure, tool exception, etc.) *pauses* the loop instead
+        # of advancing. The counter stays at the failing iteration
+        # N, so a subsequent ``/loop resume`` retries N rather
+        # than skipping to N+1.
+        try:
+            await self._run(prompt, display=display)
+        except Exception as e:
+            logger.exception("Loop iteration %d failed", iteration)
+            try:
+                await self._app.backend.loop_pause()
+            except Exception:
+                # If even pausing fails, fall through — the loop
+                # is in a degraded state but we've at least logged
+                # the original error.
+                logger.debug("loop_pause RPC also failed", exc_info=True)
+            self._conversation.append_error(
+                f"⏸ Loop paused after iteration {iteration} failed: {e}. "
+                f"Run /loop resume to retry, or /loop stop to terminate."
+            )
 
     # ── Render protocol messages ─────────────────────────────────
 

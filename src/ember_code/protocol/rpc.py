@@ -82,6 +82,9 @@ class RpcMethod(StrEnum):
     # ── /loop continuation ───────────────────────────────────────
     POP_PENDING_LOOP_ITERATION = "pop_pending_loop_iteration"
     CANCEL_PENDING_LOOP = "cancel_pending_loop"
+    LOOP_STATUS = "loop_status"
+    LOOP_RESUME = "loop_resume"
+    LOOP_PAUSE = "loop_pause"
 
     # ── Skills ────────────────────────────────────────────────────
     GET_SKILL_NAMES = "get_skill_names"
@@ -92,6 +95,8 @@ class RpcMethod(StrEnum):
 
     # ── Hooks ─────────────────────────────────────────────────────
     FIRE_SESSION_START_HOOK = "fire_session_start_hook"
+    GET_HOOKS_DETAILS = "get_hooks_details"
+    RELOAD_HOOKS = "reload_hooks"
 
     # ── Scheduler ────────────────────────────────────────────────
     START_SCHEDULER = "start_scheduler"
@@ -127,6 +132,12 @@ class RpcMethod(StrEnum):
     GET_KNOWLEDGE_STATUS = "get_knowledge_status"
     KNOWLEDGE_SEARCH = "knowledge_search"
     KNOWLEDGE_ADD = "knowledge_add"
+
+    # ── CodeIndex ─────────────────────────────────────────────────
+    CODEINDEX_STATUS = "codeindex_status"
+    CODEINDEX_SYNC = "codeindex_sync"
+    CODEINDEX_CLEAN = "codeindex_clean"
+    CODEINDEX_INSTALL = "codeindex_install"
 
     # ── Plugins ───────────────────────────────────────────────────
     GET_PLUGIN_DETAILS = "get_plugin_details"

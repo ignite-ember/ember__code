@@ -174,6 +174,9 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         # ── /loop continuation ────────────────────────────────────
         RpcMethod.POP_PENDING_LOOP_ITERATION: lambda args: backend.pop_pending_loop_iteration(),
         RpcMethod.CANCEL_PENDING_LOOP: lambda args: backend.cancel_pending_loop(),
+        RpcMethod.LOOP_STATUS: lambda args: backend.loop_status(),
+        RpcMethod.LOOP_RESUME: lambda args: backend.loop_resume(),
+        RpcMethod.LOOP_PAUSE: lambda args: backend.loop_pause(),
         # ── Auth ───────────────────────────────────────────────────
         RpcMethod.LOGIN: _login,
         RpcMethod.RELOAD_CLOUD_CREDENTIALS: lambda args: backend.reload_cloud_credentials(),
@@ -233,12 +236,20 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.DISCARD_EPHEMERAL_AGENT: lambda args: backend.discard_ephemeral_agent(
             args["name"]
         ),
+        # ── Hooks ─────────────────────────────────────────────────
+        RpcMethod.GET_HOOKS_DETAILS: lambda args: backend.get_hooks_details(),
+        RpcMethod.RELOAD_HOOKS: lambda args: backend.reload_hooks_rpc(),
         # ── Skills ────────────────────────────────────────────────
         RpcMethod.GET_SKILL_DETAILS: lambda args: backend.get_skill_details(),
         # ── Knowledge ─────────────────────────────────────────────
         RpcMethod.GET_KNOWLEDGE_STATUS: lambda args: backend.get_knowledge_status(),
         RpcMethod.KNOWLEDGE_SEARCH: lambda args: backend.knowledge_search(args["query"]),
         RpcMethod.KNOWLEDGE_ADD: lambda args: backend.knowledge_add(args["source"]),
+        # ── CodeIndex ─────────────────────────────────────────────
+        RpcMethod.CODEINDEX_STATUS: lambda args: backend.codeindex_status(),
+        RpcMethod.CODEINDEX_SYNC: lambda args: backend.codeindex_sync(args.get("sha")),
+        RpcMethod.CODEINDEX_CLEAN: lambda args: backend.codeindex_clean(),
+        RpcMethod.CODEINDEX_INSTALL: lambda args: backend.codeindex_install(),
         # ── Plugins ───────────────────────────────────────────────
         RpcMethod.GET_PLUGIN_DETAILS: lambda args: backend.get_plugin_details(),
         RpcMethod.SET_PLUGIN_ENABLED: lambda args: backend.set_plugin_enabled(
@@ -319,6 +330,9 @@ async def _run(
         resume_session_id=resume_session_id,
         additional_dirs=additional_dirs,
     )
+    # Async post-construction wiring (currently: hydrate any
+    # persisted ``/loop`` state from the project's ``state.db``).
+    await backend.startup()
 
     # Handle SIGTERM/SIGINT
     shutdown_event = asyncio.Event()

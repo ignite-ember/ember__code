@@ -12,7 +12,7 @@ Lifecycle:
 - :meth:`apply_delta` — apply a JSONL of file-level changes.
 - :meth:`set_head` — point the manifest's ``head`` at a commit.
 - :meth:`search` / :meth:`get_item` — query a commit (defaults to head).
-- :meth:`prune` — drop commits not referenced by any branch and idle > N days.
+- :meth:`clean` — drop commits not referenced by any branch and idle > N days.
 
 Quality / category metadata are first-class typed chroma fields — each
 quality dimension is its own indexed string column, each multi-value
@@ -522,12 +522,19 @@ class CodeIndex:
 
     # -- Retention -------------------------------------------------------------
 
-    async def prune(
+    async def clean(
         self,
         *,
         keep_recent_days: int = 30,
     ) -> list[str]:
-        """Drop commits not on a branch and idle longer than ``keep_recent_days``."""
+        """Drop commits not on a branch and idle longer than ``keep_recent_days``.
+
+        Selective housekeeping — preserves HEAD and every commit
+        pointed to by a local branch. For a full wipe-and-resync,
+        the chroma dir under ``~/.ember/projects/<id>/code_index``
+        can be removed manually; there is no in-process verb for
+        that yet.
+        """
         # Refresh branch_refs from git so retention has fresh data.
         branch_map = _branch_heads(self.project)
         per_commit_branches: dict[str, list[str]] = {}

@@ -298,9 +298,29 @@ class TestDeleteItemCascadesReferences:
             tmp_path / "delta.jsonl",
             [
                 {"op": "commit", "sha": "s1"},
-                {"op": "upsert_item", "id": "a", "type": "file", "name": "a.py", "path": "a.py", "content": "A"},
-                {"op": "upsert_item", "id": "b", "type": "file", "name": "b.py", "path": "b.py", "content": "B"},
-                {"op": "upsert_reference", "from_id": "a", "to_id": "b", "relation": "imports", "meta": {}},
+                {
+                    "op": "upsert_item",
+                    "id": "a",
+                    "type": "file",
+                    "name": "a.py",
+                    "path": "a.py",
+                    "content": "A",
+                },
+                {
+                    "op": "upsert_item",
+                    "id": "b",
+                    "type": "file",
+                    "name": "b.py",
+                    "path": "b.py",
+                    "content": "B",
+                },
+                {
+                    "op": "upsert_reference",
+                    "from_id": "a",
+                    "to_id": "b",
+                    "relation": "imports",
+                    "meta": {},
+                },
                 {"op": "delete_item", "id": "a"},
             ],
         )
@@ -327,9 +347,29 @@ class TestDeleteItemCascadesReferences:
             tmp_path / "delta.jsonl",
             [
                 {"op": "commit", "sha": "s1"},
-                {"op": "upsert_item", "id": "a", "type": "file", "name": "a.py", "path": "a.py", "content": "A"},
-                {"op": "upsert_item", "id": "b", "type": "file", "name": "b.py", "path": "b.py", "content": "B"},
-                {"op": "upsert_reference", "from_id": "a", "to_id": "b", "relation": "imports", "meta": {}},
+                {
+                    "op": "upsert_item",
+                    "id": "a",
+                    "type": "file",
+                    "name": "a.py",
+                    "path": "a.py",
+                    "content": "A",
+                },
+                {
+                    "op": "upsert_item",
+                    "id": "b",
+                    "type": "file",
+                    "name": "b.py",
+                    "path": "b.py",
+                    "content": "B",
+                },
+                {
+                    "op": "upsert_reference",
+                    "from_id": "a",
+                    "to_id": "b",
+                    "relation": "imports",
+                    "meta": {},
+                },
                 {"op": "delete_item", "id": "b"},
             ],
         )
@@ -341,9 +381,7 @@ class TestDeleteItemCascadesReferences:
         assert await index.get_item("a") is not None
 
     @pytest.mark.asyncio
-    async def test_multiple_edges_around_deleted_item_all_removed(
-        self, index, file_refs, tmp_path
-    ):
+    async def test_multiple_edges_around_deleted_item_all_removed(self, index, file_refs, tmp_path):
         """Hub item ``x`` with edges to ``y1`` and ``y2`` and incoming edges
         from ``z1`` and ``z2``. Deleting ``x`` must remove all four edges."""
         path = _write_jsonl(
@@ -363,12 +401,42 @@ class TestDeleteItemCascadesReferences:
                     for iid in ("x", "y1", "y2", "z1", "z2")
                 ),
                 # Edges centered on x
-                {"op": "upsert_reference", "from_id": "x", "to_id": "y1", "relation": "calls", "meta": {}},
-                {"op": "upsert_reference", "from_id": "x", "to_id": "y2", "relation": "calls", "meta": {}},
-                {"op": "upsert_reference", "from_id": "z1", "to_id": "x", "relation": "imports", "meta": {}},
-                {"op": "upsert_reference", "from_id": "z2", "to_id": "x", "relation": "imports", "meta": {}},
+                {
+                    "op": "upsert_reference",
+                    "from_id": "x",
+                    "to_id": "y1",
+                    "relation": "calls",
+                    "meta": {},
+                },
+                {
+                    "op": "upsert_reference",
+                    "from_id": "x",
+                    "to_id": "y2",
+                    "relation": "calls",
+                    "meta": {},
+                },
+                {
+                    "op": "upsert_reference",
+                    "from_id": "z1",
+                    "to_id": "x",
+                    "relation": "imports",
+                    "meta": {},
+                },
+                {
+                    "op": "upsert_reference",
+                    "from_id": "z2",
+                    "to_id": "x",
+                    "relation": "imports",
+                    "meta": {},
+                },
                 # An unrelated edge that should survive
-                {"op": "upsert_reference", "from_id": "z1", "to_id": "y1", "relation": "calls", "meta": {}},
+                {
+                    "op": "upsert_reference",
+                    "from_id": "z1",
+                    "to_id": "y1",
+                    "relation": "calls",
+                    "meta": {},
+                },
                 {"op": "delete_item", "id": "x"},
             ],
         )
@@ -379,8 +447,7 @@ class TestDeleteItemCascadesReferences:
 
         for from_uuid, to_uuid in (("x", "y1"), ("x", "y2"), ("z1", "x"), ("z2", "x")):
             assert (
-                await file_refs.get(from_uuid=from_uuid, to_uuid=to_uuid, relation="calls")
-                is None
+                await file_refs.get(from_uuid=from_uuid, to_uuid=to_uuid, relation="calls") is None
             )
             assert (
                 await file_refs.get(from_uuid=from_uuid, to_uuid=to_uuid, relation="imports")
@@ -413,7 +480,13 @@ class TestDeleteItemCascadesReferences:
                     }
                     for iid in ("doomed", "p", "q")
                 ),
-                {"op": "upsert_reference", "from_id": "p", "to_id": "q", "relation": "imports", "meta": {}},
+                {
+                    "op": "upsert_reference",
+                    "from_id": "p",
+                    "to_id": "q",
+                    "relation": "imports",
+                    "meta": {},
+                },
                 {"op": "delete_item", "id": "doomed"},
             ],
         )
@@ -434,7 +507,14 @@ class TestDeleteItemCascadesReferences:
             tmp_path / "delta.jsonl",
             [
                 {"op": "commit", "sha": "s1"},
-                {"op": "upsert_item", "id": "lonely", "type": "file", "name": "lonely.py", "path": "lonely.py", "content": "x"},
+                {
+                    "op": "upsert_item",
+                    "id": "lonely",
+                    "type": "file",
+                    "name": "lonely.py",
+                    "path": "lonely.py",
+                    "content": "x",
+                },
                 {"op": "delete_item", "id": "lonely"},
             ],
         )

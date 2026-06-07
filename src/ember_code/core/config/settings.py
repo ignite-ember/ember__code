@@ -10,7 +10,12 @@ from ember_code.core.config.defaults import DEFAULT_CONFIG
 
 
 class ModelsConfig(BaseModel):
-    default: str = "MiniMax-M2.5"
+    # Empty means "auto" — the resolver falls back to the first key
+    # in ``registry`` at lookup time. Cloud discovery sets this at
+    # session start once the cloud catalogue is merged in. Users
+    # explicitly pinning a model via ``/model`` or config override
+    # set it directly.
+    default: str = ""
     max_context_window: int = 200_000
     max_run_timeout: int = 300  # total timeout for a single arun() call (seconds)
     # Retry count for transient model-API failures (timeouts, 5xx). Applied

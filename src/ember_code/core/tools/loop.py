@@ -32,21 +32,31 @@ from typing import TYPE_CHECKING
 
 from agno.tools import Toolkit
 
+# Caps live in ``core/loop/limits.py`` so the slash command and the
+# agent tool stay in lockstep — bumping the safety net in one place
+# updates both call sites.
+from ember_code.core.loop.limits import (
+    LOOP_DEFAULT_MAX_ITERATIONS as _LOOP_DEFAULT_MAX_ITERATIONS,
+)
+from ember_code.core.loop.limits import (
+    LOOP_HARD_CAP as _LOOP_HARD_CAP,
+)
+
 if TYPE_CHECKING:
     from ember_code.core.session.core import Session
 
 logger = logging.getLogger(__name__)
 
 
-# Mirrors the slash-command caps. Defined here too so the tool is
-# self-contained — the agent doesn't need to know about the command
-# handler's internals.
-_LOOP_DEFAULT_MAX_ITERATIONS = 30
-_LOOP_HARD_CAP = 200
-
-
 class LoopTools(Toolkit):
     """Agent-facing tools that drive the in-session ``/loop`` primitive."""
+
+    # Reserved key in :class:`LoopProgressStore` that holds the
+    # agent's announced iteration total. Read by
+    # ``BackendServer.loop_status`` and rendered by the panel as
+    # ``N / total``. Underscored to keep it out of the way of
+    # normal user-defined progress keys.
+    _ANNOUNCED_TOTAL_KEY = "__loop_total__"
 
     def __init__(self, session: Session) -> None:
         super().__init__(name="ember_loop")
@@ -54,6 +64,8 @@ class LoopTools(Toolkit):
         self.register(self.loop_start)
         self.register(self.loop_stop)
         self.register(self.loop_status)
+        self.register(self.loop_resume)
+        self.register(self.loop_set_total)
 
     async def loop_start(
         self,
@@ -107,9 +119,20 @@ class LoopTools(Toolkit):
                 f"{sess.loop_iterations_remaining} remaining). "
                 "Call loop_stop() first if you want to start a new one."
             )
-        sess.pending_loop_prompt = prompt.strip()
-        sess.loop_iteration_index = 0
-        sess.loop_iterations_remaining = max_iterations
+        # Tool path — iteration 1 fires on the *next* idle cycle via
+        # ``advance_loop``, not immediately. ``immediate=False``
+        # initializes ``index=0, remaining=max`` so the first
+        # ``advance_loop`` call bumps to ``index=1``. The agent
+        # always passes an *explicit* ``max_iterations`` (either
+        # the user-supplied number it parsed from natural language
+        # or its own default), so we treat the cap as explicit —
+        # the loop terminates at N rather than auto-extending.
+        await sess.start_loop(
+            prompt.strip(),
+            max_iterations,
+            immediate=False,
+            cap_explicit=True,
+        )
         return (
             f"Loop armed. Will re-fire this prompt up to {max_iterations} "
             "more times. First iteration runs as the next turn."
@@ -129,9 +152,70 @@ class LoopTools(Toolkit):
         if sess.pending_loop_prompt is None:
             return "No loop is active. Nothing to stop."
         done = sess.loop_iteration_index
-        sess.pending_loop_prompt = None
-        sess.loop_iterations_remaining = 0
+        await sess.cancel_loop()
         return f"Loop stopped after {done} iteration{'s' if done != 1 else ''}."
+
+    async def loop_set_total(self, total: int) -> str:
+        """Announce the total number of iterations this loop will run.
+
+        The user's natural-language prompt rarely matches the
+        ``/loop N <prompt>`` literal syntax — they say *"loop
+        through these 12 files"* or *"check every section"*. Call
+        this once you've determined the actual count (e.g. after
+        listing files, parsing a spec, or counting sections); the
+        panel then renders ``N / total`` instead of just the
+        current iteration number.
+
+        Calling this is *informational only* — it does not change
+        the loop's safety cap or auto-extend behavior. If the
+        count turns out wrong, call this again with the corrected
+        value; subsequent panel renders pick up the new number.
+
+        Args:
+            total: Positive integer — the expected iteration count.
+        """
+        sess = self._session
+        if sess.pending_loop_prompt is None or not sess.loop_run_id:
+            return "ERROR: no loop is active — call loop_start() first."
+        if total <= 0:
+            return "ERROR: total must be a positive integer."
+        await sess.loop_progress_store.set(sess.loop_run_id, self._ANNOUNCED_TOTAL_KEY, str(total))
+        return f"Announced loop total: {total} iterations."
+
+    async def loop_resume(self) -> str:
+        """Resume an interrupted ``/loop`` (one whose state was
+        loaded from disk on session startup but hasn't fired any
+        iterations yet).
+
+        Use when the user asks to *"continue the loop"*,
+        *"pick up where we left off"*, or similar after a restart.
+        The tool unpauses the loop; the next iteration fires
+        automatically after this turn ends, via the run controller's
+        post-turn continuation hook.
+
+        Semantic note vs. ``/loop resume`` from chat: the slash
+        version re-fires the *interrupted* iteration K (because the
+        user is outside an agent turn and K was killed mid-flight).
+        This tool runs *during* an agent turn — by the time the
+        post-turn hook fires, the next-iteration counter has
+        already advanced, so iteration K+1 runs. Both are correct
+        for their contexts.
+
+        Errors when there's no loop to resume or when the loop is
+        already pumping.
+        """
+        sess = self._session
+        if sess.pending_loop_prompt is None:
+            return "ERROR: no loop to resume."
+        if not sess.loop_paused:
+            return "Loop is already running — no resume needed."
+        prompt = await sess.resume_loop()
+        if prompt is None:
+            return "Loop is already running."
+        return (
+            f"Loop unpaused ({sess.loop_iteration_index} done so far). "
+            "Next iteration fires after this turn."
+        )
 
     async def loop_status(self) -> str:
         """Report whether a loop is active and how many iterations
@@ -145,3 +229,107 @@ class LoopTools(Toolkit):
             f"{sess.loop_iterations_remaining} remaining. "
             f"Prompt: {sess.pending_loop_prompt!r}"
         )
+
+
+class LoopProgressTool(Toolkit):
+    """Per-iteration progress scratchpad for the active ``/loop``.
+
+    The ``/loop`` primitive re-fires the same prompt every iteration
+    — it has no memory of which work the previous iteration
+    completed. This tool gives the model a project-local SQLite
+    table to write to so iteration N can read what iteration N-1
+    finished and pick up from there.
+
+    Typical pattern, inside the loop prompt::
+
+        Read every ``loop_progress_list`` row. For each section in
+        the file that *doesn't* appear in the list, verify it,
+        ``loop_progress_set("section_X", "verified ok")``, then
+        stop. If every section already appears, say DONE.
+
+    The tool's run_id is read from :attr:`Session.loop_run_id`
+    on every call, so it always operates on the *current* loop's
+    progress; entries from a previous (different ``run_id``) loop
+    stay in the DB but are invisible. Without an active loop, each
+    method returns an error string explaining there's nothing to
+    write to.
+    """
+
+    def __init__(self, session: Session) -> None:
+        super().__init__(name="ember_loop_progress")
+        self._session = session
+        self.register(self.loop_progress_get)
+        self.register(self.loop_progress_set)
+        self.register(self.loop_progress_list)
+        self.register(self.loop_progress_delete)
+        self.register(self.loop_progress_clear)
+
+    def _run_id_or_error(self) -> tuple[str, None] | tuple[None, str]:
+        run_id = self._session.loop_run_id
+        if not run_id:
+            return None, (
+                "ERROR: no /loop is active — start one with loop_start() "
+                "before using loop_progress_*."
+            )
+        return run_id, None
+
+    async def loop_progress_get(self, key: str) -> str:
+        """Read the value previously stored for ``key`` in the
+        current loop run. Returns the value verbatim, or an empty
+        string when the key has never been set."""
+        run_id, err = self._run_id_or_error()
+        if err:
+            return err
+        value = await self._session.loop_progress_store.get(run_id, key)
+        return value or ""
+
+    async def loop_progress_set(self, key: str, value: str) -> str:
+        """Record progress for ``key`` in the current loop run.
+
+        Idempotent — calling ``set`` twice on the same key just
+        replaces the value (so the model can append notes across
+        iterations without throwing on the unique constraint).
+        """
+        run_id, err = self._run_id_or_error()
+        if err:
+            return err
+        await self._session.loop_progress_store.set(run_id, key, value)
+        return f"Saved progress for {key!r}."
+
+    async def loop_progress_list(self) -> str:
+        """List every (key, value) for the current loop run, ordered
+        chronologically. Returns ``"No progress recorded."`` when
+        nothing has been written yet — that's the model's signal
+        that this is iteration 1."""
+        run_id, err = self._run_id_or_error()
+        if err:
+            return err
+        rows = await self._session.loop_progress_store.list(run_id)
+        if not rows:
+            return "No progress recorded."
+        lines = [f"- {k}: {v}" for k, v in rows]
+        return "Progress so far:\n" + "\n".join(lines)
+
+    async def loop_progress_delete(self, key: str) -> str:
+        """Remove a single progress entry. Useful when the model
+        decides a previous iteration's verdict was wrong and wants
+        to re-do the work."""
+        run_id, err = self._run_id_or_error()
+        if err:
+            return err
+        ok = await self._session.loop_progress_store.delete(run_id, key)
+        return f"Deleted {key!r}." if ok else f"No entry for {key!r}."
+
+    async def loop_progress_clear(self) -> str:
+        """Wipe every progress entry for the current loop run.
+
+        Rarely useful — the typical workflow keeps progress across
+        iterations. Calling this mid-loop resets the model's
+        memory of completed work, so iteration N+1 starts from
+        scratch as if it were iteration 1.
+        """
+        run_id, err = self._run_id_or_error()
+        if err:
+            return err
+        n = await self._session.loop_progress_store.clear(run_id)
+        return f"Cleared {n} progress entr{'y' if n == 1 else 'ies'}."

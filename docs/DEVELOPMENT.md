@@ -37,7 +37,7 @@ ember-code/
 │   └── docs.md
 ├── skills/                            # Built-in skills (SKILL.md)
 │   ├── commit/SKILL.md
-│   ├── review-pr/SKILL.md
+│   ├── resolve-issues/SKILL.md
 │   ├── explain/SKILL.md
 │   ├── simplify/SKILL.md
 │   └── update-docs/SKILL.md
@@ -368,7 +368,7 @@ Built-in commands available in interactive mode:
 | `/model` | Switch the active model (or show current) |
 | `/whoami` | Show the active Ember Cloud login |
 | `/logout` | Clear cached Ember Cloud credentials |
-| `/<skill-name> [args]` | Invoke a skill (e.g., `/commit`, `/review-pr`) |
+| `/<skill-name> [args]` | Invoke a skill (e.g., `/commit`, `/resolve-issues`) |
 
 ## Architecture Decisions
 

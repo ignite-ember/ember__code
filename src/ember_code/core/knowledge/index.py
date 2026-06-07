@@ -387,7 +387,35 @@ def _open_client(path: Path) -> Any:
 
 
 def _get_or_create_collection(client: Any, name: str) -> Any:
-    return client.get_or_create_collection(name=name, embedding_function=EmbeddingFunction())
+    """Mirror CodeIndex's high-recall HNSW config.
+
+    Chroma defaults to ``hnsw:search_ef=10`` which silently caps recall
+    at any ``top_k > ~10`` — the index returns near-floor matches
+    instead of the actually-closest neighbors. The knowledge base is
+    expected to scale to 10k+ entries, and the agent expects every
+    item to be considered against the query, so we lift ``search_ef``
+    to 10000 (effectively-exact at our scale) and raise ``M`` /
+    ``construction_ef`` to give the graph the topology that lets a
+    high ``search_ef`` actually pay off.
+
+    Kept in lockstep with ``code_index.index._get_or_create_collection``
+    and ``scripts/reindex_hnsw.py`` (TARGET_HNSW_METADATA) — bump all
+    three together or recall regresses on one of the two indexes.
+
+    Existing collections created without this metadata keep chroma's
+    defaults until rebuilt; ``scripts/reindex_hnsw.py`` handles the
+    in-place migration.
+    """
+    return client.get_or_create_collection(
+        name=name,
+        embedding_function=EmbeddingFunction(),
+        metadata={
+            "hnsw:space": "cosine",
+            "hnsw:M": 32,
+            "hnsw:construction_ef": 400,
+            "hnsw:search_ef": 10000,
+        },
+    )
 
 
 def _iter_sibling_chroma_paths(*, data_dir: str | Path, current_id: str) -> Iterable[Path]:

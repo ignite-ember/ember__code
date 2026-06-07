@@ -279,15 +279,15 @@ class TestRemove:
         assert await index.get_item(item.item_id) is None
 
 
-# -- prune --------------------------------------------------------------------
+# -- clean --------------------------------------------------------------------
 
 
-class TestPrune:
+class TestClean:
     @pytest.mark.asyncio
     async def test_keeps_head(self, index):
         await index.set_head("alpha")
         await index.prepare_commit("alpha")
-        dropped = await index.prune(keep_recent_days=0)
+        dropped = await index.clean(keep_recent_days=0)
         assert "alpha" not in dropped
 
     @pytest.mark.asyncio
@@ -302,7 +302,7 @@ class TestPrune:
         ).isoformat(timespec="seconds")
         index.manifest.save(state)
 
-        dropped = await index.prune(keep_recent_days=30)
+        dropped = await index.clean(keep_recent_days=30)
         assert "stale" in dropped
         assert "head" not in dropped
         assert not commit_chroma_path(index.project, "stale", data_dir=index.data_dir).exists()
@@ -312,7 +312,7 @@ class TestPrune:
         await index.prepare_commit("recent")
         await index.set_head("head")
         await index.prepare_commit("head")
-        dropped = await index.prune(keep_recent_days=30)
+        dropped = await index.clean(keep_recent_days=30)
         assert "recent" not in dropped
 
 

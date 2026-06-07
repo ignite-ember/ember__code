@@ -316,10 +316,12 @@ class TestCommandHandler:
 
     @pytest.mark.asyncio
     async def test_hooks_empty(self, mock_session):
+        """``/hooks`` opens the hooks panel — returns an action
+        result, not an inline info message. The panel itself
+        surfaces the "no hooks active" empty state."""
         handler = CommandHandler(mock_session)
         result = await handler.handle("/hooks")
-        assert result.kind == "info"
-        assert "No hooks" in result.content
+        assert result.action == "hooks"
 
     @pytest.mark.asyncio
     async def test_clear(self, mock_session):

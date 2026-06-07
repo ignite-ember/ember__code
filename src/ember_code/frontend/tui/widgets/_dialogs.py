@@ -371,6 +371,10 @@ class SessionPickerWidget(Widget):
             old_widget.remove_class("-selected")
             new_widget = self.query_one(f"#sess-{new}", Static)
             new_widget.add_class("-selected")
+            # Keep the highlighted row visible — arrow nav past the
+            # viewport would otherwise hide the selection.
+            with contextlib.suppress(Exception):
+                new_widget.scroll_visible(animate=False)
         except Exception:
             pass
 
@@ -507,6 +511,10 @@ class ModelPickerWidget(Widget):
             old_widget.remove_class("-selected")
             new_widget = self.query_one(f"#model-{new}", Static)
             new_widget.add_class("-selected")
+            # Keep the highlighted row visible — arrow nav past the
+            # viewport would otherwise hide the selection.
+            with contextlib.suppress(Exception):
+                new_widget.scroll_visible(animate=False)
         except Exception:
             pass
 

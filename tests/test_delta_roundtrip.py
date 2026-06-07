@@ -204,7 +204,11 @@ async def test_apply_incremental_delta_after_full(tmp_path):
     stats = await index.apply_delta(inc_jsonl)
     assert stats.items_upserted == 1
     assert stats.items_deleted == 1
-    assert stats.references_deleted == 2
+    # 2 explicit ``delete_reference`` ops + 2 cascaded by the
+    # ``delete_item`` (both edges involving CALLEE_FILE_ID are
+    # wiped when the item itself is deleted, per the cascade
+    # introduced in 0f34104).
+    assert stats.references_deleted == 4
 
     # Head advanced.
     assert index.head() == COMMIT_NEW

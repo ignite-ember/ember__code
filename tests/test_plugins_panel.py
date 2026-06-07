@@ -89,12 +89,17 @@ def _mkt(name: str, plugins: list[tuple[str, str]]) -> MarketplaceInfo:
 
 async def test_installed_tab_space_toggles_selected() -> None:
     """Space on the selected installed entry emits a toggle event
-    flipping the current enabled state."""
+    flipping the current enabled state.
+
+    The panel defaults to the Marketplace tab (discovery is the
+    primary use case) so each installed-tab test starts with Tab
+    to switch over first."""
     app = _Host(
         installed=[_plug("alpha", enabled=True), _plug("beta", enabled=False)],
         marketplaces=[],
     )
     async with app.run_test() as pilot:
+        await pilot.press("tab")
         await pilot.press("space")
         assert ("toggle", "alpha", False) in app.captured
 
@@ -106,6 +111,7 @@ async def test_installed_tab_down_then_space_toggles_next() -> None:
         marketplaces=[],
     )
     async with app.run_test() as pilot:
+        await pilot.press("tab")
         await pilot.press("down")
         await pilot.press("space")
         assert ("toggle", "beta", True) in app.captured
@@ -114,6 +120,7 @@ async def test_installed_tab_down_then_space_toggles_next() -> None:
 async def test_installed_tab_u_emits_update() -> None:
     app = _Host(installed=[_plug("alpha")], marketplaces=[])
     async with app.run_test() as pilot:
+        await pilot.press("tab")
         await pilot.press("u")
         assert ("update", "alpha") in app.captured
 
@@ -121,6 +128,7 @@ async def test_installed_tab_u_emits_update() -> None:
 async def test_installed_tab_r_emits_remove() -> None:
     app = _Host(installed=[_plug("alpha")], marketplaces=[])
     async with app.run_test() as pilot:
+        await pilot.press("tab")
         await pilot.press("r")
         assert ("remove", "alpha") in app.captured
 
@@ -135,6 +143,7 @@ async def test_navigation_clamps_at_bounds() -> None:
     )
     async with app.run_test() as pilot:
         panel = app.query_one(PluginsPanelWidget)
+        await pilot.press("tab")  # → installed (has the 3 items)
         await pilot.press("up")
         await pilot.press("up")
         assert panel.selected_index == 0
@@ -146,25 +155,27 @@ async def test_navigation_clamps_at_bounds() -> None:
 # ── Marketplace tab ─────────────────────────────────────────────────
 
 
-async def test_tab_switches_to_marketplace_and_back() -> None:
-    """Tab toggles between Installed and Marketplace. Selection
-    resets to 0 on switch (so a stale installed index can't bleed
-    into the marketplace list)."""
+async def test_tab_switches_to_installed_and_back() -> None:
+    """Tab toggles between Marketplace (default) and Installed.
+    Selection resets to 0 on switch (so a stale marketplace index
+    can't bleed into the installed list)."""
     app = _Host(
         installed=[_plug("alpha"), _plug("beta")],
         marketplaces=[_mkt("m1", [("p1", "url1"), ("p2", "url2")])],
     )
     async with app.run_test() as pilot:
         panel = app.query_one(PluginsPanelWidget)
-        # Move down on installed.
+        # Default is marketplace — the panel's primary job is plugin
+        # discovery, so users land on the catalog.
+        assert panel.active_tab == "marketplace"
+        # Move down within the marketplace list.
         await pilot.press("down")
-        assert panel.active_tab == "installed"
         assert panel.selected_index == 1
         await pilot.press("tab")
-        assert panel.active_tab == "marketplace"
+        assert panel.active_tab == "installed"
         assert panel.selected_index == 0  # reset
         await pilot.press("tab")
-        assert panel.active_tab == "installed"
+        assert panel.active_tab == "marketplace"
 
 
 async def test_marketplace_tab_i_installs_selected() -> None:
@@ -186,7 +197,7 @@ async def test_marketplace_tab_i_installs_selected() -> None:
     ]
     app = _Host(installed=[], marketplaces=mkts)
     async with app.run_test() as pilot:
-        await pilot.press("tab")  # → marketplace
+        # Marketplace is the default tab now — no Tab press needed.
         await pilot.press("i")
         assert ("install", "@m1/alpha", "stable") in app.captured
 
@@ -203,7 +214,6 @@ async def test_marketplace_install_with_no_branch_passes_none() -> None:
     ]
     app = _Host(installed=[], marketplaces=mkts)
     async with app.run_test() as pilot:
-        await pilot.press("tab")
         await pilot.press("i")
         assert ("install", "@m/x", None) in app.captured
 
@@ -212,7 +222,6 @@ async def test_marketplace_tab_R_emits_refresh() -> None:
     """``R`` (shift-r) re-fetches all marketplace catalogs."""
     app = _Host(installed=[], marketplaces=[_mkt("m1", [("p", "u")])])
     async with app.run_test() as pilot:
-        await pilot.press("tab")
         await pilot.press("R")
         assert ("refresh",) in app.captured
 
@@ -253,6 +262,7 @@ async def test_click_on_entry_selects_it() -> None:
     )
     async with app.run_test() as pilot:
         panel = app.query_one(PluginsPanelWidget)
+        await pilot.press("tab")  # switch to installed tab
         await pilot.click("#plug-2")
         assert panel.selected_index == 2
 
@@ -267,20 +277,21 @@ async def test_click_outside_entries_keeps_selection() -> None:
     )
     async with app.run_test() as pilot:
         panel = app.query_one(PluginsPanelWidget)
+        await pilot.press("tab")
         panel.selected_index = 1
         await pilot.click(".plugins-title")
         assert panel.selected_index == 1
 
 
 async def test_click_after_tab_switch_targets_marketplace_entries() -> None:
-    """After Tab → marketplace, clicks land on the marketplace items'
-    plug-N widgets — same id scheme, different underlying data. The
-    on_click handler must walk the *current* tab's items count."""
+    """Clicks on the (default) Marketplace tab land on the
+    marketplace items' plug-N widgets — same id scheme, different
+    underlying data. The on_click handler must walk the *current*
+    tab's items count."""
     mkts = [_mkt("m1", [("alpha", "u1"), ("beta", "u2"), ("gamma", "u3")])]
     app = _Host(installed=[], marketplaces=mkts)
     async with app.run_test() as pilot:
         panel = app.query_one(PluginsPanelWidget)
-        await pilot.press("tab")
         await pilot.click("#plug-2")
         assert panel.selected_index == 2
 
@@ -298,6 +309,7 @@ async def test_refresh_data_updates_in_place() -> None:
     )
     async with app.run_test() as pilot:
         panel = app.query_one(PluginsPanelWidget)
+        await pilot.press("tab")  # → installed tab where the 3 items live
         await pilot.press("down")
         await pilot.press("down")
         assert panel.selected_index == 2
@@ -356,6 +368,7 @@ async def test_installed_entry_includes_version_and_source() -> None:
     app = _Host(installed=[plugin], marketplaces=[])
     async with app.run_test():
         panel = app.query_one(PluginsPanelWidget)
+        panel.active_tab = "installed"  # default is marketplace; render the installed-row branch
         rendered = panel._render_item(plugin, 0)
         assert "foo" in rendered
         assert "1.2.3" in rendered
@@ -369,6 +382,7 @@ async def test_installed_entry_omits_version_when_absent() -> None:
     app = _Host(installed=[plugin], marketplaces=[])
     async with app.run_test():
         panel = app.query_one(PluginsPanelWidget)
+        panel.active_tab = "installed"
         rendered = panel._render_item(plugin, 0)
         assert "foo" in rendered
         # No orphan ``v`` token — the version segment is suppressed
@@ -385,6 +399,7 @@ async def test_installed_entry_enabled_vs_disabled_marker() -> None:
     app = _Host(installed=[on, off], marketplaces=[])
     async with app.run_test():
         panel = app.query_one(PluginsPanelWidget)
+        panel.active_tab = "installed"
         on_row = panel._render_item(on, 0)
         off_row = panel._render_item(off, 1)
         assert on_row != off_row

@@ -74,6 +74,16 @@ def _make_backend(
     session.plugin_loader = loader
     session.plugin_state = state
     session.settings.storage.data_dir = str(tmp_path / "ember")
+    # Default ``reload_plugins`` to a real count dict so the
+    # install/update/remove paths' f-string messages don't
+    # interpolate a MagicMock repr. Individual tests override this
+    # when they want to assert on specific counts.
+    session.reload_plugins.return_value = {
+        "plugins": 0,
+        "skills": 0,
+        "agents": 0,
+        "hooks": 0,
+    }
 
     backend = BackendServer.__new__(BackendServer)
     backend._session = session
@@ -145,12 +155,16 @@ def test_get_plugin_details_empty(tmp_path: Path) -> None:
 
 
 def test_set_plugin_enabled_persists(tmp_path: Path) -> None:
-    """Toggle writes the state file and returns an ``Info`` with a
-    restart hint. The panel relies on this exact return shape."""
+    """Toggle writes the state file and returns an ``Info`` whose
+    message mentions which subsystems are now affected. The panel
+    relies on this exact return shape; the message itself is
+    hot-reload-aware (no longer asks the user to restart)."""
     backend = _make_backend(tmp_path, plugins=[("alpha", {})])
     result = backend.set_plugin_enabled("alpha", False)
     assert "disabled" in result.text
-    assert "restart" in result.text.lower()
+    # Surface which subsystems were touched — replaces the old
+    # "restart required" message now that hot-reload handles it.
+    assert "skills" in result.text.lower()
     persisted = load_state(data_dir=tmp_path / "ember")
     assert persisted.disabled == ["alpha"]
 
@@ -186,15 +200,34 @@ def test_install_plugin_url_delegates_to_installer(tmp_path: Path) -> None:
         manifest.name = "foo"
         manifest.version = "1.0.0"
         installer.install.return_value = manifest
+        # Force the reload's count-dict to literal ints so the
+        # install confirmation's f-string is deterministic — the
+        # session is a MagicMock and would otherwise return a
+        # MagicMock for the subscripted access.
+        backend._session.reload_plugins.return_value = {
+            "plugins": 0,
+            "skills": 0,
+            "agents": 0,
+            "hooks": 0,
+        }
         result = backend.install_plugin("https://x/y.git")
-    installer.install.assert_called_once_with("https://x/y.git", ref=None)
+    # Bare-URL installs pass ``subdir=None`` since the plugin lives
+    # at the clone root.
+    installer.install.assert_called_once_with("https://x/y.git", ref=None, subdir=None)
     assert "foo" in result.text
     assert "v1.0.0" in result.text
+    # Hot-reload was invoked so the new plugin is active without
+    # restart — the message reflects that.
+    backend._session.reload_plugins.assert_called_once()
+    assert "Active now" in result.text
 
 
 def test_install_plugin_marketplace_ref(tmp_path: Path) -> None:
-    """Marketplace ref → resolve → install. Catalog branch flows
-    through when no explicit ``install_ref`` is passed."""
+    """Marketplace ref → resolve → install. The resolver's
+    ``ResolvedSource.ref`` (sha if present, else ref, else
+    catalog branch) flows into the install call."""
+    from ember_code.core.plugins.marketplaces import ResolvedSource
+
     backend = _make_backend(tmp_path)
     fake_entry = MagicMock()
     fake_entry.branch = "release"
@@ -206,15 +239,32 @@ def test_install_plugin_marketplace_ref(tmp_path: Path) -> None:
         installer.is_git_available.return_value = True
         installer.install.return_value = MagicMock(version="")
         installer.install.return_value.name = "p"
-        mock_resolve.return_value = ("https://resolved.git", fake_entry)
+        mock_resolve.return_value = (
+            ResolvedSource(
+                kind="url",
+                url="https://resolved.git",
+                subdir=None,
+                ref="release",
+            ),
+            fake_entry,
+        )
+        backend._session.reload_plugins.return_value = {
+            "plugins": 0,
+            "skills": 0,
+            "agents": 0,
+            "hooks": 0,
+        }
         backend.install_plugin("@m/p")
     installer.install.assert_called_once_with(
         "https://resolved.git",
         ref="release",
+        subdir=None,
     )
 
 
 def test_install_plugin_explicit_ref_wins_over_catalog_branch(tmp_path: Path) -> None:
+    from ember_code.core.plugins.marketplaces import ResolvedSource
+
     backend = _make_backend(tmp_path)
     fake_entry = MagicMock()
     fake_entry.branch = "default"
@@ -226,11 +276,28 @@ def test_install_plugin_explicit_ref_wins_over_catalog_branch(tmp_path: Path) ->
         installer.is_git_available.return_value = True
         installer.install.return_value = MagicMock(version="")
         installer.install.return_value.name = "p"
-        mock_resolve.return_value = ("https://x.git", fake_entry)
+        mock_resolve.return_value = (
+            ResolvedSource(
+                kind="url",
+                url="https://x.git",
+                subdir=None,
+                ref="default",
+            ),
+            fake_entry,
+        )
+        backend._session.reload_plugins.return_value = {
+            "plugins": 0,
+            "skills": 0,
+            "agents": 0,
+            "hooks": 0,
+        }
         backend.install_plugin("@m/p", install_ref="user-pin")
+    # User-supplied ``install_ref`` overrides the resolver's ref —
+    # see ``install_plugin``'s "honors explicit choice" branch.
     installer.install.assert_called_once_with(
         "https://x.git",
         ref="user-pin",
+        subdir=None,
     )
 
 
@@ -315,7 +382,9 @@ def test_remove_plugin_delegates(tmp_path: Path) -> None:
         result = backend.remove_plugin("foo")
     installer.remove.assert_called_once_with("foo")
     assert "foo" in result.text
-    assert "restart" in result.text.lower()
+    # The post-remove message names the affected subsystems instead
+    # of asking for a restart — hot-reload covers it.
+    assert "skills" in result.text.lower()
 
 
 def test_remove_plugin_surfaces_error(tmp_path: Path) -> None:
@@ -340,7 +409,13 @@ def test_get_marketplaces_empty(tmp_path: Path) -> None:
 def test_get_marketplaces_shape(tmp_path: Path) -> None:
     """Returned models match the schema the panel reads — name, url,
     last_fetched, plugins[]. Typed via ``MarketplaceInfo`` /
-    ``MarketplacePluginInfo``."""
+    ``MarketplacePluginInfo``.
+
+    The source field is built from ``CachedPlugin.resolved_source``
+    which normalizes the three marketplace catalog shapes (bare URL,
+    git-subdir dict, relative path) to a ``ResolvedSource``; the
+    backend then renders ``url`` (and an optional ``[subdir]``
+    suffix) for display."""
     backend = _make_backend(tmp_path)
     fake_registry = MagicMock()
     e = MagicMock()
@@ -350,10 +425,15 @@ def test_get_marketplaces_shape(tmp_path: Path) -> None:
     e.cached = MagicMock()
     p1 = MagicMock()
     p1.name = "alpha"
-    p1.source = "https://a.git"
     p1.description = "A"
     p1.version = "1.0"
     p1.branch = "main"
+    # Resolved source returned by the new normalization step. Bare
+    # URL (no subdir) → display is just the URL.
+    resolved = MagicMock()
+    resolved.url = "https://a.git"
+    resolved.subdir = None
+    p1.resolved_source.return_value = resolved
     e.cached.plugins = [p1]
     fake_registry.marketplaces = [e]
     with patch("ember_code.core.plugins.marketplaces.load_registry") as mock_load:

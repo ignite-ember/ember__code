@@ -24,13 +24,23 @@ def tmp_dir(tmp_path):
 
 @pytest.fixture
 def settings():
-    """Settings instance with a test-safe model (openai_like) as default.
+    """Settings instance with a test-safe model registry.
 
-    Overrides any project config that may reference providers not available
-    in the test environment (e.g. gemini without google-genai installed).
+    The package no longer ships a hardcoded model (hosted models come
+    from cloud discovery on session start). The fixture builds a
+    minimal openai_like entry so tests can resolve a model without
+    optional provider packages and without needing a real cloud
+    connection.
     """
     s = load_settings()
-    # Ensure the default model resolves without optional provider packages
+    s.models.registry["MiniMax-M2.7"] = {
+        "provider": "openai_like",
+        "model_id": "MiniMaxAI/MiniMax-M2.7",
+        "url": "https://api.ignite-ember.sh/v1",
+        "api_key": "cloud_token",
+        "context_window": 204_800,
+        "vision": False,
+    }
     s.models.default = "MiniMax-M2.7"
     return s
 

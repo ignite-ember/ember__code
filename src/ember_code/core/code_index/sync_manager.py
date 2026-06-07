@@ -109,6 +109,13 @@ class CodeIndexSyncManager:
         # the server returns any non-in-progress status, or HEAD moves.
         self._in_progress_sha: str | None = None
         self._next_retry_at: float | None = None
+        # Cached so the CodeIndex panel's status poll can read live
+        # progress (preflight pct + current_step) without re-firing
+        # ``sync_now`` itself. Populated on every ``sync_now`` return,
+        # including watcher-driven retries — so the panel reflects the
+        # state of the most recent background poll, not the user's last
+        # manual click.
+        self._last_sync_result: SyncResult | None = None
 
     @classmethod
     def from_settings(
@@ -173,7 +180,9 @@ class CodeIndexSyncManager:
     async def sync_now(self, *, sha: str | None = None) -> SyncResult:
         """Download and apply the changeset for ``sha`` (defaults to current HEAD)."""
         async with self._lock:
-            return await self._sync_locked(sha=sha)
+            result = await self._sync_locked(sha=sha)
+            self._last_sync_result = result
+            return result
 
     async def _sync_locked(self, *, sha: str | None) -> SyncResult:
         if self.code_index is None:

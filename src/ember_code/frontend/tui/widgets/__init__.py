@@ -11,6 +11,10 @@ from ember_code.frontend.tui.widgets._chrome import (
     UpdateBar,
     WelcomeBanner,
 )
+from ember_code.frontend.tui.widgets._codeindex_panel import (
+    CodeIndexPanelWidget,
+    CodeIndexStatusInfo,
+)
 from ember_code.frontend.tui.widgets._constants import SPINNER_FRAMES
 from ember_code.frontend.tui.widgets._dialogs import (
     LoginWidget,
@@ -21,11 +25,19 @@ from ember_code.frontend.tui.widgets._dialogs import (
 )
 from ember_code.frontend.tui.widgets._file_picker import FilePickerDropdown
 from ember_code.frontend.tui.widgets._help_panel import HelpPanelWidget
+from ember_code.frontend.tui.widgets._hooks_panel import (
+    HookInfo,
+    HooksPanelWidget,
+)
 from ember_code.frontend.tui.widgets._input import InputHistory, PromptInput
 from ember_code.frontend.tui.widgets._knowledge_panel import (
     KnowledgePanelWidget,
     KnowledgeSearchHit,
     KnowledgeStatusInfo,
+)
+from ember_code.frontend.tui.widgets._loop_panel import (
+    LoopPanelWidget,
+    LoopStatusInfo,
 )
 from ember_code.frontend.tui.widgets._mcp_panel import MCPPanelWidget, MCPServerInfo
 from ember_code.frontend.tui.widgets._messages import (
@@ -52,13 +64,19 @@ __all__ = [
     "AgentInfo",
     "AgentTreeWidget",
     "AgentsPanelWidget",
+    "CodeIndexPanelWidget",
+    "CodeIndexStatusInfo",
     "FilePickerDropdown",
     "HelpPanelWidget",
+    "HookInfo",
+    "HooksPanelWidget",
     "LoginWidget",
     "InputHistory",
     "KnowledgePanelWidget",
     "KnowledgeSearchHit",
     "KnowledgeStatusInfo",
+    "LoopPanelWidget",
+    "LoopStatusInfo",
     "PromptInput",
     "ModelPickerWidget",
     "MCPCallWidget",

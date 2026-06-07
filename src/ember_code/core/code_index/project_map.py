@@ -36,7 +36,7 @@ def project_map_path(
     """Where the map for a given commit lives on disk.
 
     Sits next to the per-commit chroma dir so the two are paired and
-    can be GC'd together (when the chroma is pruned for a stale
+    can be GC'd together (when the chroma is cleaned for a stale
     commit, the map can be removed alongside).
     """
     return code_index_dir(project, data_dir=data_dir) / f"{commit_sha}.project_map.md"

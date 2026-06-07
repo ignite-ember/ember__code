@@ -89,8 +89,14 @@ class TaskStore:
         return [_row_to_task(r) for r in rows]
 
     async def get_all(self, include_done: bool = False) -> list[ScheduledTask]:
-        """Get all tasks, optionally including completed/failed/cancelled."""
-        stmt = select(ScheduledTaskModel).order_by(ScheduledTaskModel.scheduled_at)
+        """Get all tasks, optionally including completed/failed/cancelled.
+
+        Ordered by ``scheduled_at`` descending — tasks set to run
+        furthest in the future surface first. Both the TUI tasks
+        panel and the agent-facing ``list_scheduled_tasks`` tool
+        render the store's order verbatim.
+        """
+        stmt = select(ScheduledTaskModel).order_by(ScheduledTaskModel.scheduled_at.desc())
         if not include_done:
             stmt = stmt.where(
                 ScheduledTaskModel.status.in_((TaskStatus.pending.value, TaskStatus.running.value))

@@ -55,6 +55,17 @@ class BackendServer:
 
     # No .session property — all access goes through backend methods
 
+    async def startup(self) -> None:
+        """Async post-construction hook.
+
+        ``Session.__init__`` is sync (lots of synchronous wiring) but
+        a few subsystems need an awaited initialization step. Right
+        now this hydrates the persisted ``/loop`` state — if the CLI
+        was killed mid-loop, the prompt + counters are restored from
+        ``state.db`` so the panel reflects the interrupted run.
+        """
+        await self._session.load_persisted_loop_state()
+
     # ── Run a user message (streaming) ────────────────────────────
 
     async def run_message(
@@ -600,55 +611,104 @@ class BackendServer:
     async def pop_pending_loop_iteration(self) -> dict | None:
         """Pop the next ``/loop`` iteration descriptor (or completion).
 
-        Three return shapes the FE distinguishes:
-
-        - ``None`` → no loop is or was active. The FE renders nothing.
-        - ``{"prompt", "iteration", "remaining"}`` → fire ``prompt`` as
-          the next turn. ``iteration`` is the 1-based number of THIS
-          iteration; ``remaining`` is how many MORE will follow if the
-          cap isn't shortened.
-        - ``{"completed": True, "total_iterations": N}`` → the loop just
-          hit its cap and was cleared. The FE renders a one-shot
-          "loop completed" summary so the user knows the loop ended
-          naturally rather than being slow. State is cleared as part
-          of this call, so subsequent calls return ``None``.
-
-        Called by the FE's run controller after every ``_drain_queue``
-        returns to idle. Keeping the truth on the backend means there's
-        one source of state and any cancellation (``/loop stop``, user
-        interrupt) is naturally consistent across iterations.
+        Thin wrapper over :py:meth:`Session.advance_loop` — that
+        method owns the counter math and the persistence write so
+        a CLI restart sees the correct in-flight iteration.
+        Returns shapes match what the FE's run controller expects.
         """
-        sess = self._session
-        if sess.pending_loop_prompt is None:
-            return None
-        if sess.loop_iterations_remaining <= 0:
-            # Cap exhausted — emit a one-shot completion marker so the
-            # FE can render "Loop completed after N iterations", then
-            # clear so the next call returns None (no double-render).
-            total = sess.loop_iteration_index
-            sess.pending_loop_prompt = None
-            sess.loop_iteration_index = 0
-            return {"completed": True, "total_iterations": total}
-        sess.loop_iterations_remaining -= 1
-        sess.loop_iteration_index += 1
-        return {
-            "prompt": sess.pending_loop_prompt,
-            "iteration": sess.loop_iteration_index,
-            "remaining": sess.loop_iterations_remaining,
-        }
+        return await self._session.advance_loop()
 
     async def cancel_pending_loop(self) -> bool:
-        """Clear ``/loop`` state. Returns whether anything was active.
+        """Clear ``/loop`` state. Returns whether anything was actually
+        cancelled.
 
-        Called by the FE when the user types a non-``/loop`` message —
-        user input always takes precedence over the loop.
+        Called by the FE's ``process_message`` cancel guard when the
+        user types a non-``/loop`` message — user input takes
+        precedence over an *actively pumping* loop.
+
+        Paused loops (loaded from disk on startup, not yet resumed)
+        are intentionally NOT cancelled here: the user might be
+        about to type ``/loop resume`` or simply asking something
+        unrelated. If they want to discard the paused state they
+        say ``/loop stop`` explicitly. Without this guard, the
+        first character typed after a restart would destroy the
+        very state the user might want to continue.
+        """
+        if self._session.loop_paused:
+            return False
+        return await self._session.cancel_loop()
+
+    async def loop_pause(self) -> bool:
+        """Pause the active loop without advancing the counter.
+
+        Called by the FE's ``_check_loop_continuation`` when an
+        iteration's ``_run`` raised (e.g. a 429 from the model
+        API). Keeping the counter at the failing iteration N
+        means a subsequent ``/loop resume`` retries N, not skips
+        to N+1.
+        """
+        return await self._session.pause_loop()
+
+    async def loop_resume(self) -> str:
+        """Flip the loop from paused to pumping and return the prompt.
+
+        Returns the prompt verbatim so the panel-side app handler
+        can fire ``_run(prompt)`` directly — same trick the slash
+        ``/loop resume`` uses to bypass ``process_message``'s
+        cancel guard. Returns an empty string when there's nothing
+        to resume (no loop or not paused); the caller surfaces an
+        appropriate message.
+        """
+        prompt = await self._session.resume_loop()
+        return prompt or ""
+
+    async def loop_status(self) -> dict:
+        """Snapshot for the ``/loop`` panel header.
+
+        Cheap read of the three session fields — safe to poll at 1Hz
+        from the panel while a loop is running. ``active`` mirrors
+        ``pending_loop_prompt is not None`` so the panel can pick
+        empty-state vs. live-state without inspecting the prompt.
+
+        ``iteration_index`` is the count of iterations already
+        *fired* (0-based when no iteration has run yet), and
+        ``iterations_remaining`` is how many more *will* fire if
+        the cap isn't shortened. Their sum on a running loop is the
+        configured cap.
         """
         sess = self._session
-        if sess.pending_loop_prompt is None:
-            return False
-        sess.pending_loop_prompt = None
-        sess.loop_iterations_remaining = 0
-        return True
+        # Read the agent's announced iteration total (if any) from
+        # the loop_progress reserved key. Cheap (one indexed
+        # lookup); safe to do on every poll. ``None`` when the
+        # agent hasn't called ``loop_set_total`` yet.
+        announced_total: int | None = None
+        if sess.loop_run_id:
+            from ember_code.core.tools.loop import LoopTools
+
+            raw = await sess.loop_progress_store.get(
+                sess.loop_run_id, LoopTools._ANNOUNCED_TOTAL_KEY
+            )
+            if raw:
+                try:
+                    announced_total = int(raw)
+                except ValueError:
+                    announced_total = None
+        return {
+            "active": sess.pending_loop_prompt is not None,
+            "paused": sess.loop_paused,
+            "prompt": sess.pending_loop_prompt or "",
+            "iteration_index": sess.loop_iteration_index,
+            "iterations_remaining": sess.loop_iterations_remaining,
+            # When False, the cap is a safety net — the panel hides
+            # the "total" entirely. When True, the cap is the
+            # intended total and the panel renders ``N / M``.
+            "cap_explicit": sess.loop_cap_explicit,
+            # Agent-announced iteration total via ``loop_set_total``
+            # — takes precedence over ``cap_explicit`` when set
+            # because it reflects the *actual* item count the
+            # agent derived from the work, not just a bound.
+            "announced_total": announced_total,
+        }
 
     # ── Compaction ────────────────────────────────────────────────
 
@@ -988,6 +1048,191 @@ class BackendServer:
             return msg.Info(text=result.error or "Add failed.")
         return msg.Info(text=result.message)
 
+    # ── Hooks ──────────────────────────────────────────────────────
+
+    def get_hooks_details(self) -> list[dict]:
+        """Snapshot of every active hook for the hooks panel.
+
+        Walks ``session.hooks_map`` (which is ``{event: [hook, ...]}``
+        after the four-root merge + plugin prepend) and flattens
+        into one dict per (event, hook) pair. The panel groups
+        client-side by ``event`` for display.
+
+        Plain dicts vs. typed wire model because the panel-side
+        :class:`HookInfo` lives in the widget — keeping the BE
+        side dict-flat avoids a cross-side schema import and the
+        fields here are display-only (no behavior depends on the
+        type).
+        """
+        out: list[dict] = []
+        for event, hooks in self._session.hooks_map.items():
+            for hook in hooks:
+                out.append(
+                    {
+                        "event": str(event),
+                        "type": getattr(hook, "type", ""),
+                        "command": getattr(hook, "command", "") or "",
+                        "url": getattr(hook, "url", "") or "",
+                        "matcher": getattr(hook, "matcher", "") or "",
+                        "timeout_ms": int(getattr(hook, "timeout", 0) or 0),
+                        "background": bool(getattr(hook, "background", False)),
+                        "headers": dict(getattr(hook, "headers", {}) or {}),
+                    }
+                )
+        return out
+
+    def reload_hooks_rpc(self) -> msg.Info:
+        """Reload hooks from disk. Returns count for the panel toast.
+
+        Distinct name from ``Session.reload_hooks`` so the RPC
+        dispatch lambda can reference a stable method here without
+        colliding with the session-level helper (which returns an
+        int, not the FE-facing ``msg.Info``).
+        """
+        count = self._session.reload_hooks()
+        return msg.Info(text=f"Reloaded hooks — {count} active hook(s) across all events.")
+
+    # ── CodeIndex ──────────────────────────────────────────────────
+
+    def codeindex_status(self) -> dict:
+        """Status snapshot for the CodeIndex panel header.
+
+        Focuses on the *current commit*: whether HEAD is indexed
+        locally, whether the server is still indexing it (with the
+        latest preflight progress %), and the install state.
+
+        Designed to be cheap and read-only so the panel can poll it
+        every couple of seconds without firing extra ``sync_now``
+        round-trips — ``sync_progress_pct`` / ``sync_step`` come
+        from ``_last_sync_result``, which the watcher (or a manual
+        sync) populates on its own cadence.
+        """
+        sync = self._session.code_index_sync
+        index = self._session.code_index
+        state = index.manifest.load()
+        local_sha = sync.current_sha() or ""
+        head_indexed = bool(local_sha) and local_sha in state.commits
+
+        last = sync._last_sync_result
+        sync_in_progress = bool(sync._in_progress_sha and sync._in_progress_sha == local_sha)
+        # Only surface pct/step when the cached result is *for the
+        # current HEAD* and still in-progress. A stale in-progress
+        # result from a previous sha would otherwise paint the wrong
+        # commit's progress.
+        sync_progress_pct: int | None = None
+        sync_step = ""
+        sync_reason = ""
+        sync_error = ""
+        if last is not None and last.commit_sha == local_sha:
+            sync_reason = last.reason or ""
+            sync_error = last.error or ""
+            if last.in_progress:
+                sync_progress_pct = last.progress_percentage
+                sync_step = last.current_step or ""
+
+        resolved = sync.resolver.cached if sync.resolver else None
+        if resolved is None:
+            install_state = "unknown"
+            repository_id = ""
+            install_url = ""
+        elif resolved.needs_install:
+            install_state = "needs_install"
+            repository_id = ""
+            install_url = resolved.install_url or ""
+        else:
+            install_state = "installed"
+            repository_id = resolved.repository_id or ""
+            install_url = ""
+        return {
+            "local_sha": local_sha,
+            "remote_url": (sync.resolver.remote_url() if sync.resolver else None) or "",
+            "last_synced_sha": sync.last_synced_sha or "",
+            "index_head": state.head or "",
+            "head_indexed": head_indexed,
+            "sync_in_progress": sync_in_progress,
+            "sync_progress_pct": sync_progress_pct,
+            "sync_step": sync_step,
+            "sync_reason": sync_reason,
+            "sync_error": sync_error,
+            "install_state": install_state,
+            "repository_id": repository_id,
+            "install_url": install_url,
+        }
+
+    async def codeindex_sync(self, sha: str | None) -> dict:
+        """Pull and apply a changeset. ``sha=None`` defaults to HEAD.
+
+        The result is flattened to a dict so the panel can render a
+        single message without needing the ``SyncResult`` dataclass
+        on the FE side. ``link_start_url`` surfaces the install URL
+        when the server returned ``LINK_REQUIRED`` — the panel opens
+        it in a browser and prompts the user to retry.
+        """
+        result = await self._session.code_index_sync.sync_now(sha=sha)
+        stats = result.stats
+        return {
+            "skipped": result.skipped,
+            "reason": result.reason or "",
+            "commit_sha": result.commit_sha or "",
+            "error": result.error or "",
+            "link_start_url": result.link_start_url or "",
+            "items_upserted": stats.items_upserted if stats else 0,
+            "items_deleted": stats.items_deleted if stats else 0,
+            "references_upserted": stats.references_upserted if stats else 0,
+        }
+
+    async def codeindex_clean(self) -> dict:
+        """Drop commits past the retention rules (selective: keeps
+        HEAD and every branch tip). Returns the SHAs that were
+        dropped so the panel header can refresh."""
+        dropped = await self._session.code_index.clean()
+        return {"dropped": list(dropped)}
+
+    def codeindex_install(self) -> dict:
+        """Return the URL of the Ember portal's repositories page.
+
+        The portal lists the user's connected repos and has an
+        ``Add repository`` button that drives the actual GitHub-App
+        install flow. The panel opens this URL in a browser; we
+        don't try to short-circuit by computing a per-repo install
+        URL via ``resolver.resolve`` because:
+
+        * It requires a live API round-trip (and a valid cloud
+          token), which fails with a confusing "Could not reach
+          Ember Cloud" error when the user simply isn't logged in.
+        * The portal page is the same target regardless of repo
+          state — if already installed, the user sees their repo
+          in the list; if not, they click ``Add repository``.
+
+        Derives the portal host from ``api_url`` by stripping the
+        ``api`` token from the leftmost host segment:
+
+        * ``api.ignite-ember.sh`` → ``ignite-ember.sh``
+        * ``dev-api.ignite-ember.sh`` → ``dev.ignite-ember.sh``
+        * ``staging-api.example.com`` → ``staging.example.com``
+
+        Hosts without an ``api`` token in the leftmost segment are
+        passed through unchanged.
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(self._session.settings.api_url)
+        host = parsed.netloc
+        first, sep, rest = host.partition(".")
+        if first == "api":
+            # ``api.example.com`` → ``example.com``
+            new_host = rest or host
+        elif first.endswith("-api"):
+            # ``dev-api.example.com`` → ``dev.example.com``
+            new_host = f"{first[: -len('-api')]}{sep}{rest}"
+        elif first.startswith("api-"):
+            # ``api-dev.example.com`` → ``dev.example.com`` (symmetric).
+            new_host = f"{first[len('api-') :]}{sep}{rest}"
+        else:
+            new_host = host
+        portal_url = urlunparse((parsed.scheme or "https", new_host, "", "", "", ""))
+        return {"install_url": f"{portal_url.rstrip('/')}/repositories"}
+
     # ── Skills ─────────────────────────────────────────────────────
 
     def get_skill_details(self) -> list[SkillInfo]:
@@ -1052,10 +1297,13 @@ class BackendServer:
         ]
 
     def set_plugin_enabled(self, name: str, enabled: bool) -> msg.Info:
-        """Toggle a plugin's enabled flag and persist. Restart hint
-        included in the return text — the change takes effect on next
-        session start since hot-reload across all five extension types
-        is non-trivial."""
+        """Toggle a plugin's enabled flag, persist, and hot-reload.
+
+        Re-applying the plugin set after the flip means an
+        ``enable`` activates the plugin's skills/agents/hooks
+        immediately, and a ``disable`` makes them disappear from
+        the live session — no restart needed.
+        """
         from ember_code.core.plugins.state import save_state
 
         loader = self._session.plugin_loader
@@ -1071,8 +1319,25 @@ class BackendServer:
         state.disabled = sorted(disabled_set)
         save_state(state, data_dir=self._session.settings.storage.data_dir)
 
+        # Hot-reload — ``reload_plugins`` re-reads the disabled set
+        # from disk and rebuilds skills/agents/hooks/MCP-configs
+        # accordingly. The main team rebuilds at the end so tools
+        # in the disabled plugin disappear from the agent surface,
+        # and any bundled MCP servers are disconnected in the
+        # background (auto-symmetric with the enable path).
+        self._session.reload_plugins()
+        if enabled:
+            tail = (
+                "Its skills/agents/hooks/tools are active; any bundled "
+                "MCP servers are starting in the background."
+            )
+        else:
+            tail = (
+                "Its skills/agents/hooks/tools are no longer active; "
+                "any bundled MCP servers are being disconnected."
+            )
         verb = "enabled" if enabled else "disabled"
-        return msg.Info(text=f"Plugin '{name}' {verb}. Restart the session to apply.")
+        return msg.Info(text=f"Plugin '{name}' {verb}. {tail}")
 
     def install_plugin(self, ref: str, install_ref: str | None = None) -> msg.Info:
         """Install a plugin by git URL or ``@<marketplace>/<plugin>`` ref.
@@ -1096,6 +1361,7 @@ class BackendServer:
             return msg.Info(text="git not found on PATH. Install git and retry.")
 
         url = ref
+        subdir: str | None = None
         if ref.startswith("@"):
             resolved = resolve_install_ref(ref, data_dir=data_dir)
             if resolved is None:
@@ -1104,20 +1370,34 @@ class BackendServer:
                     "/plugin marketplace list to see registered "
                     "marketplaces, or use a git URL."
                 )
-            url, mkt_entry = resolved
-            if install_ref is None and mkt_entry.branch:
-                install_ref = mkt_entry.branch
+            resolved_source, _mkt_entry = resolved
+            url = resolved_source.url
+            subdir = resolved_source.subdir
+            if install_ref is None:
+                install_ref = resolved_source.ref
 
         try:
-            manifest = installer.install(url, ref=install_ref)
+            manifest = installer.install(url, ref=install_ref, subdir=subdir)
         except GitError as e:
             return msg.Info(text=f"git error: {e}")
         except PluginError as e:
             return msg.Info(text=str(e))
 
         version = f" v{manifest.version}" if manifest.version else ""
+        # Hot-reload — pull the new plugin's skills / agents / hooks /
+        # MCP configs / custom tools into the running session so the
+        # user can use them immediately. ``reload_plugins`` rebuilds
+        # the main team at the end, and auto-connects any new MCP
+        # servers in the background (the existing approval prompt
+        # gates first-use, so consent is still required).
+        counts = self._session.reload_plugins()
         return msg.Info(
-            text=f"Installed plugin '{manifest.name}'{version}. Restart the session to activate."
+            text=(
+                f"Installed plugin '{manifest.name}'{version}. "
+                f"Active now — {counts['skills']} skill(s), "
+                f"{counts['agents']} agent(s), {counts['hooks']} hook(s). "
+                f"Any bundled MCP servers are starting in the background."
+            )
         )
 
     def update_plugin(self, name: str, install_ref: str | None = None) -> msg.Info:
@@ -1139,7 +1419,10 @@ class BackendServer:
             return msg.Info(text=f"git error: {e}")
         except PluginError as e:
             return msg.Info(text=str(e))
-        return msg.Info(text=f"Updated '{name}' to {new_sha[:12]}. Restart to apply.")
+        # Hot-reload so the updated plugin's contents replace the
+        # old ones in the live session.
+        self._session.reload_plugins()
+        return msg.Info(text=f"Updated '{name}' to {new_sha[:12]}. Active now.")
 
     def remove_plugin(self, name: str) -> msg.Info:
         """Delete the plugin directory and clear its pin."""
@@ -1155,8 +1438,17 @@ class BackendServer:
             installer.remove(name)
         except PluginError as e:
             return msg.Info(text=str(e))
+        # Hot-reload so the removed plugin's skills/agents/hooks
+        # disappear from the live session immediately. Any
+        # bundled MCP servers are also disconnected in the
+        # background — symmetric with the enable/install path.
+        self._session.reload_plugins()
         return msg.Info(
-            text=f"Removed '{name}'. Restart the session to drop its skills/agents/hooks/MCP/tools."
+            text=(
+                f"Removed '{name}'. Skills/agents/hooks/tools no "
+                "longer active; bundled MCP servers are being "
+                "disconnected."
+            )
         )
 
     def get_marketplaces(self) -> list[MarketplaceInfo]:
@@ -1166,6 +1458,14 @@ class BackendServer:
         :class:`MarketplacePluginInfo` per catalog entry). Same wire
         contract as ``get_plugin_details`` — source-of-truth shape
         lives in :mod:`core.plugins.models`.
+
+        The catalog's raw ``source`` field can be a string OR a dict
+        (see :class:`ResolvedSource` for the three official shapes).
+        We collapse it to a single human-readable string here so the
+        panel's :class:`MarketplacePluginInfo` (which types ``source``
+        as ``str`` for display simplicity) doesn't blow up on the
+        dict-shaped entries Anthropic's marketplace ships for
+        ~75% of its plugins.
         """
         from ember_code.core.plugins.marketplaces import load_registry
         from ember_code.core.plugins.models import (
@@ -1176,24 +1476,39 @@ class BackendServer:
         registry = load_registry(
             data_dir=self._session.settings.storage.data_dir,
         )
-        return [
-            MarketplaceInfo(
-                name=m.name,
-                url=m.url,
-                last_fetched=m.last_fetched or "",
-                plugins=[
+        out: list[MarketplaceInfo] = []
+        for m in registry.marketplaces:
+            plugins: list[MarketplacePluginInfo] = []
+            for p in m.cached.plugins if m.cached else []:
+                resolved = p.resolved_source(m.url)
+                # Display string: ``url`` for bare-URL installs,
+                # ``url [subdir/path]`` for subdir/relative shapes,
+                # or repr(raw) as a last-resort fallback when the
+                # entry is so malformed we can't resolve it at all.
+                if resolved is None:
+                    source_display = str(p.source) if p.source else ""
+                elif resolved.subdir:
+                    source_display = f"{resolved.url} [{resolved.subdir}]"
+                else:
+                    source_display = resolved.url
+                plugins.append(
                     MarketplacePluginInfo(
                         name=p.name,
-                        source=p.source,
+                        source=source_display,
                         description=p.description or "",
                         version=p.version or "",
                         branch=p.branch or "",
                     )
-                    for p in (m.cached.plugins if m.cached else [])
-                ],
+                )
+            out.append(
+                MarketplaceInfo(
+                    name=m.name,
+                    url=m.url,
+                    last_fetched=m.last_fetched or "",
+                    plugins=plugins,
+                )
             )
-            for m in registry.marketplaces
-        ]
+        return out
 
     def add_marketplace(self, url: str) -> msg.Info:
         from ember_code.core.plugins.git import GitError

@@ -4,12 +4,16 @@ key-pool catalogue.
 Covers both pieces independently:
 
 * ``fetch_cloud_models`` — uses ``httpx.MockTransport`` so we don't
-  hit a real network. Verifies happy path, no-token short-circuit,
+  hit a real network. Verifies happy path against the canonical
+  ``{"models": [{"id": "..."}]}`` shape, tolerance for legacy
+  responses that still carry ``base_url``, no-token short-circuit,
   non-200 / non-JSON / network-error degradation.
 * ``merge_into_registry`` — pure in-memory dict mutation. Verifies
-  add-new, skip-existing (user config wins), idempotency, and the
-  entry shape (``api_key: "cloud_token"`` sentinel + ``source:
-  "cloud"`` tag).
+  add-new, skip-existing (user config wins), idempotency, the
+  ember-server-proxy routing invariant (every cloud entry's URL
+  points at ``{api_url}/v1``, never the upstream), and the entry
+  shape (``api_key: "cloud_token"`` sentinel + ``source: "cloud"``
+  tag).
 """
 
 from __future__ import annotations
@@ -39,6 +43,10 @@ def test_fetch_returns_empty_when_no_token():
 
 
 def test_fetch_happy_path(monkeypatch):
+    """The server returns ``{"models": [{"id": "..."}, ...]}`` — just
+    identifiers, no upstream URLs. The CLI talks to ember-server's
+    chat proxy, so leaking upstream routing is intentionally avoided
+    on the server side."""
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -48,8 +56,8 @@ def test_fetch_happy_path(monkeypatch):
             200,
             json={
                 "models": [
-                    {"id": "gpt-4o", "base_url": "https://api.openai.com/v1"},
-                    {"id": "anthropic/claude-opus-4-7", "base_url": "https://openrouter.ai/api/v1"},
+                    {"id": "gpt-4o"},
+                    {"id": "anthropic/claude-opus-4-7"},
                 ]
             },
         )
@@ -57,12 +65,33 @@ def test_fetch_happy_path(monkeypatch):
     monkeypatch.setattr("httpx.Client", lambda **_: _mock_client(handler))
     result = fetch_cloud_models("https://api.example.com", "tok-1")
 
-    assert captured["url"] == "https://api.example.com/v1/cli/chat/models"
+    assert captured["url"] == "https://api.example.com/v1/chat/models"
     assert captured["auth"] == "Bearer tok-1"
     assert result == [
-        {"id": "gpt-4o", "base_url": "https://api.openai.com/v1"},
-        {"id": "anthropic/claude-opus-4-7", "base_url": "https://openrouter.ai/api/v1"},
+        {"id": "gpt-4o"},
+        {"id": "anthropic/claude-opus-4-7"},
     ]
+
+
+def test_fetch_tolerates_legacy_base_url_field(monkeypatch):
+    """Older server deploys included an upstream ``base_url`` on each
+    entry. The fetch passes the extra field through unchanged — the
+    merge layer ignores it. This guards against breakage during the
+    server's deploy window when both shapes are live."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"id": "gpt-4o", "base_url": "https://upstream.example/v1"},
+                ]
+            },
+        )
+
+    monkeypatch.setattr("httpx.Client", lambda **_: _mock_client(handler))
+    result = fetch_cloud_models("https://api.example.com", "tok-1")
+    assert result == [{"id": "gpt-4o", "base_url": "https://upstream.example/v1"}]
 
 
 def test_fetch_strips_trailing_slash_on_api_url(monkeypatch):
@@ -74,7 +103,7 @@ def test_fetch_strips_trailing_slash_on_api_url(monkeypatch):
 
     monkeypatch.setattr("httpx.Client", lambda **_: _mock_client(handler))
     fetch_cloud_models("https://api.example.com/", "tok-1")
-    assert captured["url"] == "https://api.example.com/v1/cli/chat/models"
+    assert captured["url"] == "https://api.example.com/v1/chat/models"
 
 
 def test_fetch_non_200_returns_empty(monkeypatch):
@@ -113,8 +142,8 @@ def test_fetch_filters_entries_without_id(monkeypatch):
             200,
             json={
                 "models": [
-                    {"id": "gpt-4o", "base_url": "https://api.openai.com/v1"},
-                    {"base_url": "https://no-id.example/v1"},  # missing id
+                    {"id": "gpt-4o"},
+                    {},  # missing id
                     "not-a-dict",  # noqa: ERA001
                 ]
             },
@@ -122,21 +151,41 @@ def test_fetch_filters_entries_without_id(monkeypatch):
 
     monkeypatch.setattr("httpx.Client", lambda **_: _mock_client(handler))
     result = fetch_cloud_models("https://api.example.com", "tok-1")
-    assert result == [{"id": "gpt-4o", "base_url": "https://api.openai.com/v1"}]
+    assert result == [{"id": "gpt-4o"}]
 
 
 # ── merge_into_registry ──────────────────────────────────────────────
 
 
+_API = "https://api.example.com"
+
+
 def test_merge_adds_new_entries():
     registry: dict[str, dict] = {}
-    cloud = [
-        {"id": "gpt-4o", "base_url": "https://api.openai.com/v1"},
-        {"id": "anthropic/claude-opus-4-7", "base_url": "https://openrouter.ai/api/v1"},
-    ]
-    added = merge_into_registry(registry, cloud)
+    cloud = [{"id": "gpt-4o"}, {"id": "anthropic/claude-opus-4-7"}]
+    added = merge_into_registry(registry, cloud, _API)
     assert added == 2
     assert set(registry.keys()) == {"gpt-4o", "anthropic/claude-opus-4-7"}
+
+
+def test_merge_routes_through_ember_server_even_for_legacy_payload():
+    """Older server deploys sent an upstream ``base_url`` alongside
+    the ``id``. The merge must ignore it — every cloud entry routes
+    through ``{api_url}/v1`` (ember-server's chat proxy) regardless.
+    Routing upstream directly with the Ember Cloud JWT always 401s
+    and surfaces as a confusing "Unknown model" in the chat UI."""
+    registry: dict[str, dict] = {}
+    merge_into_registry(
+        registry,
+        [{"id": "MiniMaxAI/MiniMax-M2.5", "base_url": "https://upstream.example/v1"}],
+        _API,
+    )
+    entry = registry["MiniMaxAI/MiniMax-M2.5"]
+    assert entry["url"] == "https://api.example.com/v1"
+    # Defensive: the upstream URL must not survive anywhere on the
+    # entry — even as a stray field — so a future routing bug
+    # can't accidentally pick it up.
+    assert "upstream.example" not in str(entry)
 
 
 def test_merge_entry_shape_matches_local_registry():
@@ -144,11 +193,12 @@ def test_merge_entry_shape_matches_local_registry():
     shape (``provider``, ``model_id``, ``url``, ``api_key``) so the
     existing ``ModelRegistry.get_model`` resolution path works."""
     registry: dict[str, dict] = {}
-    merge_into_registry(registry, [{"id": "gpt-4o", "base_url": "https://api.openai.com/v1"}])
+    merge_into_registry(registry, [{"id": "gpt-4o"}], _API)
     entry = registry["gpt-4o"]
     assert entry["provider"] == "openai_like"
     assert entry["model_id"] == "gpt-4o"
-    assert entry["url"] == "https://api.openai.com/v1"
+    # URL always points at ember-server's chat proxy, never upstream.
+    assert entry["url"] == "https://api.example.com/v1"
     # ``cloud_token`` is the sentinel that the API-key resolver rewrites
     # to ``CloudCredentials.access_token`` at call time. Critical:
     # nothing else should land here, or the resolver mishandles it.
@@ -156,6 +206,14 @@ def test_merge_entry_shape_matches_local_registry():
     # Tag so future code (e.g. a "managed by cloud" picker badge) can
     # distinguish cloud-discovered rows from user-defined ones.
     assert entry["source"] == "cloud"
+
+
+def test_merge_strips_trailing_slash_on_api_url():
+    """``api_url`` with a trailing slash → proxy URL still resolves to
+    a clean ``{host}/v1`` (no double slash)."""
+    registry: dict[str, dict] = {}
+    merge_into_registry(registry, [{"id": "gpt-4o"}], "https://api.example.com/")
+    assert registry["gpt-4o"]["url"] == "https://api.example.com/v1"
 
 
 def test_merge_does_not_overwrite_existing():
@@ -168,10 +226,7 @@ def test_merge_does_not_overwrite_existing():
         "timeout": 120,
     }
     registry = {"gpt-4o": user_entry}
-    added = merge_into_registry(
-        registry,
-        [{"id": "gpt-4o", "base_url": "https://will-not-be-applied.example/v1"}],
-    )
+    added = merge_into_registry(registry, [{"id": "gpt-4o"}], _API)
     assert added == 0
     assert registry["gpt-4o"] is user_entry
     assert registry["gpt-4o"]["url"] == "https://my-litellm.example/v1"
@@ -181,9 +236,9 @@ def test_merge_does_not_overwrite_existing():
 def test_merge_is_idempotent():
     """Re-fetching the same catalogue is a no-op on the second pass."""
     registry: dict[str, dict] = {}
-    cloud = [{"id": "gpt-4o", "base_url": "https://api.openai.com/v1"}]
-    assert merge_into_registry(registry, cloud) == 1
-    assert merge_into_registry(registry, cloud) == 0
+    cloud = [{"id": "gpt-4o"}]
+    assert merge_into_registry(registry, cloud, _API) == 1
+    assert merge_into_registry(registry, cloud, _API) == 0
     assert len(registry) == 1
 
 
@@ -193,21 +248,8 @@ def test_merge_skips_entries_without_id():
     registry: dict[str, dict] = {}
     added = merge_into_registry(
         registry,
-        [
-            {"id": "gpt-4o", "base_url": "https://api.openai.com/v1"},
-            {"id": "", "base_url": "https://empty-id.example/v1"},
-            {"base_url": "https://no-id.example/v1"},
-        ],
+        [{"id": "gpt-4o"}, {"id": ""}, {}],
+        _API,
     )
     assert added == 1
     assert set(registry.keys()) == {"gpt-4o"}
-
-
-def test_merge_handles_missing_base_url():
-    """Best-effort: a cloud entry with no ``base_url`` still gets added
-    (the user can fix it in config). Ensures we don't crash on the
-    missing key."""
-    registry: dict[str, dict] = {}
-    added = merge_into_registry(registry, [{"id": "lonely-model"}])
-    assert added == 1
-    assert registry["lonely-model"]["url"] == ""

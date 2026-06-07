@@ -232,7 +232,7 @@ def _build_main_agent(model, project_dir: Path):
     test_base_url = os.getenv("EMBER_TEST_LLM_BASE_URL") or "https://api.openai.com/v1"
     test_api_key = os.environ["EMBER_TEST_LLM_API_KEY"]
 
-    settings.models.registry["MiniMax-M2.5"] = {
+    settings.models.registry["MiniMax-M2.7"] = {
         "provider": "openai_like",
         "model_id": test_model_id,
         "url": test_base_url,
@@ -240,7 +240,7 @@ def _build_main_agent(model, project_dir: Path):
         "context_window": 128_000,
         "vision": False,
     }
-    settings.models.default = "MiniMax-M2.5"
+    settings.models.default = "MiniMax-M2.7"
 
     session = Session(settings=settings, project_dir=project_dir)
     return session.main_team
@@ -642,7 +642,7 @@ async def main():
         test_model_id = os.getenv("EMBER_TEST_LLM_MODEL") or "gpt-4o-mini"
         test_base_url = os.getenv("EMBER_TEST_LLM_BASE_URL") or "https://api.openai.com/v1"
         test_api_key = os.environ["EMBER_TEST_LLM_API_KEY"]
-        settings.models.registry["MiniMax-M2.5"] = {
+        settings.models.registry["MiniMax-M2.7"] = {
             "provider": "openai_like",
             "model_id": test_model_id,
             "url": test_base_url,
@@ -650,7 +650,7 @@ async def main():
             "context_window": 128_000,
             "vision": False,
         }
-        settings.models.default = "MiniMax-M2.5"
+        settings.models.default = "MiniMax-M2.7"
         if spawn_timeout_override is not None:
             settings.orchestration.sub_team_timeout = spawn_timeout_override
         # Disable Agno's retry-on-exception so we get deterministic
