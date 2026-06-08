@@ -194,13 +194,9 @@ class TestAgentResolutionOrder:
 
     def _write_agent(self, root, name: str, label: str) -> None:
         root.mkdir(parents=True, exist_ok=True)
-        (root / f"{name}.md").write_text(
-            f"---\nname: {name}\ndescription: {label}\n---\nbody\n"
-        )
+        (root / f"{name}.md").write_text(f"---\nname: {name}\ndescription: {label}\n---\nbody\n")
 
     def _build_layout(self, tmp_path):
-        from pathlib import Path
-
         home = tmp_path / "home"
         project = tmp_path / "project"
         home.mkdir()

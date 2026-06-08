@@ -70,9 +70,7 @@ def _parse_frontmatter(content: str) -> tuple[list[str], str]:
     return paths, body
 
 
-def _matches_paths(
-    paths: list[str], working_dir: Path | None, project_dir: Path | None
-) -> bool:
+def _matches_paths(paths: list[str], working_dir: Path | None, project_dir: Path | None) -> bool:
     """Best-effort: decide whether a path-scoped rule applies to this session.
 
     No paths → always applies. Otherwise the rule contributes only when
@@ -174,9 +172,7 @@ def load_user_rules(
     if ember_dir:
         sections.append(ember_dir)
     if read_claude_rules:
-        claude_dir = _read_rules_dir_files(
-            CLAUDE_USER_RULES_DIR, working_dir, project_dir
-        )
+        claude_dir = _read_rules_dir_files(CLAUDE_USER_RULES_DIR, working_dir, project_dir)
         if claude_dir:
             sections.append(claude_dir)
     return "\n\n".join(sections)

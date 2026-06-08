@@ -195,9 +195,7 @@ class TestSkillResolutionOrder:
     def _write_skill(self, root: Path, name: str, label: str) -> None:
         d = root / name
         d.mkdir(parents=True, exist_ok=True)
-        (d / "SKILL.md").write_text(
-            f"---\nname: {name}\ndescription: {label}\n---\nbody\n"
-        )
+        (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {label}\n---\nbody\n")
 
     def _build_layout(self, tmp_path: Path) -> tuple[Path, Path]:
         """Create a fake ``$HOME`` and project under ``tmp_path``."""

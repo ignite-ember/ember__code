@@ -112,9 +112,7 @@ class SkillPool:
         self.load_directory(builtin_dir, priority=SkillPriority.BUNDLED)
 
         # User-level Ember (beats user-level Claude by +1).
-        self.load_directory(
-            Path.home() / ".ember" / "skills", priority=SkillPriority.USER_EMBER
-        )
+        self.load_directory(Path.home() / ".ember" / "skills", priority=SkillPriority.USER_EMBER)
 
         # Project-level personal overrides (gitignored).
         self.load_directory(
@@ -122,9 +120,7 @@ class SkillPool:
         )
 
         # Project-level Ember (highest).
-        self.load_directory(
-            project_dir / ".ember" / "skills", priority=SkillPriority.PROJECT_EMBER
-        )
+        self.load_directory(project_dir / ".ember" / "skills", priority=SkillPriority.PROJECT_EMBER)
 
         # Cross-tool Claude Code directories — explicitly slotted *below*
         # their same-scope Ember equivalents.

@@ -502,9 +502,7 @@ class TestRulesReachAgent:
         finally:
             _stop_patches(patches)
 
-    def test_claude_rules_directory_excluded_when_cross_tool_disabled(
-        self, tmp_path, monkeypatch
-    ):
+    def test_claude_rules_directory_excluded_when_cross_tool_disabled(self, tmp_path, monkeypatch):
         """Same Claude rules, but with cross-tool support off: they must NOT
         appear in the agent's instructions."""
         claude_dir = tmp_path / "claude-rules"
@@ -531,9 +529,7 @@ class TestRulesReachAgent:
         finally:
             _stop_patches(patches)
 
-    def test_all_three_user_sources_merge_into_agent_instructions(
-        self, tmp_path, monkeypatch
-    ):
+    def test_all_three_user_sources_merge_into_agent_instructions(self, tmp_path, monkeypatch):
         """Sanity: legacy file + ember rules dir + claude rules dir all merge
         and reach the agent in a single session."""
         from ember_code.core.utils import context as ctx_mod

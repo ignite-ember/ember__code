@@ -154,20 +154,13 @@ class TestParseFrontmatter:
         assert body == "body text\n"
 
     def test_paths_block(self):
-        content = (
-            "---\n"
-            "paths:\n"
-            '  - "**/*.test.ts"\n'
-            "  - src/api/**\n"
-            "---\n"
-            "scoped rule body"
-        )
+        content = '---\npaths:\n  - "**/*.test.ts"\n  - src/api/**\n---\nscoped rule body'
         paths, body = _parse_frontmatter(content)
         assert paths == ["**/*.test.ts", "src/api/**"]
         assert body == "scoped rule body"
 
     def test_paths_inline_list(self):
-        content = '---\npaths: ["a/*", \'b/*\']\n---\nbody'
+        content = "---\npaths: [\"a/*\", 'b/*']\n---\nbody"
         paths, body = _parse_frontmatter(content)
         assert paths == ["a/*", "b/*"]
         assert body == "body"
@@ -228,9 +221,7 @@ class TestLoadUserRules:
         _redirect_user_rules(monkeypatch, tmp_path)
         rules_dir = tmp_path / "rules"
         rules_dir.mkdir()
-        (rules_dir / "tui.md").write_text(
-            "---\npaths:\n  - tui/**\n---\ntui-only rule"
-        )
+        (rules_dir / "tui.md").write_text("---\npaths:\n  - tui/**\n---\ntui-only rule")
         project_dir = tmp_path / "project"
         working_dir = project_dir / "backend"
         working_dir.mkdir(parents=True)
@@ -241,9 +232,7 @@ class TestLoadUserRules:
         _redirect_user_rules(monkeypatch, tmp_path)
         rules_dir = tmp_path / "rules"
         rules_dir.mkdir()
-        (rules_dir / "tui.md").write_text(
-            "---\npaths:\n  - tui/**\n---\ntui-only rule"
-        )
+        (rules_dir / "tui.md").write_text("---\npaths:\n  - tui/**\n---\ntui-only rule")
         project_dir = tmp_path / "project"
         working_dir = project_dir / "tui" / "panels"
         working_dir.mkdir(parents=True)
@@ -254,9 +243,7 @@ class TestLoadUserRules:
         _redirect_user_rules(monkeypatch, tmp_path)
         rules_dir = tmp_path / "rules"
         rules_dir.mkdir()
-        (rules_dir / "scoped.md").write_text(
-            "---\npaths:\n  - any/**\n---\nscoped"
-        )
+        (rules_dir / "scoped.md").write_text("---\npaths:\n  - any/**\n---\nscoped")
         (rules_dir / "always.md").write_text("always-on rule")
         result = load_user_rules()
         assert "always-on rule" in result

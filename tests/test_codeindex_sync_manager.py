@@ -280,7 +280,8 @@ class TestSnapshotVsDeltaRouting:
         from ember_code.core.code_index import sync_manager as sm
 
         _patch_preflight(
-            monkeypatch, PreflightResult(status=PreflightStatus.OK, parent_sha="parentsha"),
+            monkeypatch,
+            PreflightResult(status=PreflightStatus.OK, parent_sha="parentsha"),
         )
         delta_called = AsyncMock(return_value=DeltaStats(items_upserted=1))
         snapshot_called = AsyncMock(return_value=DeltaStats(items_upserted=99))
@@ -306,7 +307,8 @@ class TestSnapshotVsDeltaRouting:
         from ember_code.core.code_index import sync_manager as sm
 
         _patch_preflight(
-            monkeypatch, PreflightResult(status=PreflightStatus.OK, parent_sha="parentsha"),
+            monkeypatch,
+            PreflightResult(status=PreflightStatus.OK, parent_sha="parentsha"),
         )
         delta_called = AsyncMock(return_value=DeltaStats(items_upserted=1))
         snapshot_called = AsyncMock(return_value=DeltaStats(items_upserted=99))
