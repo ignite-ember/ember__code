@@ -11,10 +11,12 @@ Contract — one object per line:
   Always the first line. Carries lineage so the applier can
   ``prepare_commit(sha, parent_sha)`` before any data ops.
 - ``{"op": "upsert_item", "id": "...", "type": "file|folder|entity", ...}``
-  Insert or replace an item. ``id`` is the producer's stable content
-  hash (UUID5 of path+content); unchanged items keep their id across
-  commits. The full quality and category schema travels on this op —
-  see ``UpsertItemOp`` below for every field.
+  Insert or replace an item. ``id`` is a stable per-path identifier
+  (``UUID5(path)``); the same path keeps the same id across commits,
+  so a content change on an existing item replaces it in place
+  rather than inserting an orphan alongside. The full quality and
+  category schema travels on this op — see ``UpsertItemOp`` below
+  for every field.
 - ``{"op": "delete_item", "id": "..."}`` — remove an item.
 - ``{"op": "upsert_reference", "from_id": "...", "to_id": "...", "relation": "...", "meta": {}}``
   Insert or replace a reference. ``relation`` is the canonical edge
