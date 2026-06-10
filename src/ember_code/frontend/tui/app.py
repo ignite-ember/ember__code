@@ -170,20 +170,20 @@ class EmberApp(App):
 
     #user-input {
         width: 1fr;
-        /* Hard 1-row clamp via every CSS lever available, plus
-           ``scrollbar-size: 0 0`` to drop the bottom scrollbar row
-           that TextArea's ScrollView base would otherwise add when
-           content overflows. ``#prompt-row`` is also fixed at 2
-           rows above, so even if TextArea ignored these the
-           parent's ``overflow: hidden`` clips anything taller. */
-        height: 1 !important;
+        /* Auto-grow up to 10 visible rows; the footer is
+           ``dock: bottom; height: auto`` so growth pushes the chrome
+           upward into the conversation area rather than overflowing
+           the screen. Beyond 10 rows TextArea's internal ScrollView
+           keeps the cursor in view. ``!important`` to win over
+           ``PromptInput.DEFAULT_CSS`` if it ever disagrees. */
+        height: auto !important;
         min-height: 1 !important;
-        max-height: 1 !important;
+        max-height: 10 !important;
         border: none !important;
         background: $background;
         color: $text;
         padding: 0 !important;
-        scrollbar-size: 0 0;
+        scrollbar-size: 1 0;
     }
 
     #user-input:focus {

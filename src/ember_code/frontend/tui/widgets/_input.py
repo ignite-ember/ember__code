@@ -9,26 +9,34 @@ class PromptInput(TextArea):
 
     Multiline text can also be pasted directly.
 
-    The widget is hard-pinned to one visible row. The previous
-    ``height: auto; max-height: 8`` let TextArea soft-wrap into
-    multiple rendered rows on narrow terminals — that growth pushed
-    the docked status-bar past the screen edge. Multi-line content
-    still works fine: TextArea is a ScrollView, so longer text
-    scrolls internally and the user navigates with arrow keys.
+    Grows up to ``MAX_VISIBLE_ROWS`` rendered rows as the user adds
+    lines; beyond that TextArea's internal ScrollView keeps the
+    cursor in view and the user navigates with arrow keys. Growth
+    happens upward — the ``#footer`` parent is ``dock: bottom; height:
+    auto`` so its bottom edge stays anchored to the screen bottom
+    and the conversation area shrinks instead of the footer
+    overflowing past the viewport. (An earlier attempt with
+    ``max-height: 8`` predated the footer collapsing tip-bar +
+    status-bar into a single docked container, so growth back then
+    pushed the status-bar past the screen edge. That's no longer
+    possible — the whole chrome rides up together.)
     """
+
+    MAX_VISIBLE_ROWS = 10
 
     suppress_submit: bool = False
 
     DEFAULT_CSS = """
     PromptInput {
-        /* All three pinned at 1 row each so no CSS specificity
-           battle can let the widget grow. */
-        height: 1;
+        height: auto;
         min-height: 1;
-        max-height: 1;
+        max-height: 10;
         border: none;
         padding: 0;
-        scrollbar-size: 0 0;
+        /* Thin vertical scrollbar appears only when content
+           exceeds ``max-height``; horizontal stays hidden since we
+           soft-wrap. */
+        scrollbar-size: 1 0;
     }
     PromptInput:focus {
         border: none;
