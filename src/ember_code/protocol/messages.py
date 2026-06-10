@@ -50,6 +50,15 @@ class ToolCompleted(Message):
     has_markup: bool = False
     diff_rows: list[tuple[str, str]] | None = None  # (text, style) pairs for diff table
     run_id: str = ""
+    # True when the tool returned an error payload (raised exception,
+    # or returned a string starting with ``"Error:"`` — the convention
+    # used by ember-code's own tools). The TUI renders ``✗`` with red
+    # styling instead of ``✓`` so the user can see at a glance which
+    # calls in a batch actually failed. Without this, an ``Edit`` that
+    # returned ``"Error: old_string not found"`` was displayed with
+    # a green checkmark, the user assumed success, and only the LLM
+    # saw the failure — and tried to retry silently.
+    is_error: bool = False
 
 
 class ToolError(Message):
@@ -256,6 +265,29 @@ class HITLResponse(Message):
     requirement_id: str = ""
     action: str = ""  # "confirm" | "reject"
     choice: str = ""  # "once" | "always" | "similar"
+
+
+class HITLDecision(Message):
+    """One row inside a ``HITLResponseBatch``."""
+
+    type: Literal["hitl_decision"] = "hitl_decision"
+    requirement_id: str = ""
+    action: str = ""  # "confirm" | "reject"
+    choice: str = ""  # "once" | "always" | "similar"
+
+
+class HITLResponseBatch(Message):
+    """User responded to *every* requirement in a multi-req pause.
+
+    Agno's ``acontinue_run`` treats requirements not in the resolution
+    list as denied, so a per-req resolve loop dropped 7-of-8 calls in
+    a batched tool plan. The batch envelope carries every decision in
+    one round-trip so the backend can call ``acontinue_run`` exactly
+    once with the full set of resolved requirements.
+    """
+
+    type: Literal["hitl_response_batch"] = "hitl_response_batch"
+    decisions: list[HITLDecision] = []
 
 
 class Command(Message):

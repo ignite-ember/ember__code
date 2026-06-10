@@ -526,6 +526,14 @@ async def _handle_message(
             await transport.send(proto)
         await transport.send(msg.StreamEnd(id=req_id))
 
+    # ── Streaming: resolve_hitl_batch (multi-req pause resolution) ──
+    elif isinstance(message, msg.HITLResponseBatch):
+        async for proto in backend.resolve_hitl_batch(message.decisions):
+            if req_id:
+                proto = proto.model_copy(update={"id": req_id})
+            await transport.send(proto)
+        await transport.send(msg.StreamEnd(id=req_id))
+
     # ── Command ──
     elif isinstance(message, msg.Command):
         result = await backend.handle_command(message.text)

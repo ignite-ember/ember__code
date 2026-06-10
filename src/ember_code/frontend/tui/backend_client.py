@@ -194,6 +194,27 @@ class BackendClient:
         ):
             yield proto
 
+    async def resolve_hitl_batch(
+        self, decisions: list[tuple[str, str, str]]
+    ) -> AsyncIterator[Message]:
+        """Resolve every requirement from a multi-req pause in one round-trip.
+
+        ``decisions`` is a list of ``(requirement_id, action, choice)``
+        tuples. The backend confirms/rejects each one in Agno's
+        internal state and then calls ``acontinue_run`` ONCE with the
+        full resolved set — fixing the silent-denial bug where a
+        per-req loop only resolved the first call of a batched tool
+        plan.
+        """
+        batch = msg.HITLResponseBatch(
+            decisions=[
+                msg.HITLDecision(requirement_id=rid, action=a, choice=c)
+                for (rid, a, c) in decisions
+            ]
+        )
+        async for proto in self._stream(batch):
+            yield proto
+
     # ── Command ──────────────────────────────────────────────────
 
     async def handle_command(self, text: str) -> msg.CommandResult:

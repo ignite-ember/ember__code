@@ -479,6 +479,7 @@ class RunController:
                 proto.run_id or None,
                 proto.has_markup,
                 proto.diff_rows,
+                proto.is_error,
             )
 
         elif isinstance(proto, msg.ToolError):
@@ -664,6 +665,7 @@ class RunController:
         run_id: str | None,
         has_markup: bool = False,
         diff_rows: Any = None,
+        is_error: bool = False,
     ) -> None:
         # Rebuild Rich diff tables from serializable rows if provided
         diff_table = None
@@ -677,6 +679,12 @@ class RunController:
         try:
             for w in reversed(list(self._mount_target.query(ToolCallLiveWidget))):
                 if w.is_running():
+                    # Flip the widget into the error display *before*
+                    # ``mark_done`` rerenders so the header swaps from
+                    # the running ⏳ glyph straight to ✗ instead of
+                    # flashing ✓ first.
+                    if is_error:
+                        w.mark_error(summary)
                     w.mark_done(summary, full_result, has_markup=has_markup, diff_table=diff_table)
                     break
         except Exception as exc:
@@ -694,10 +702,17 @@ class RunController:
             self._in_thinking = True
 
     def _on_tool_error(self, error: str) -> None:
+        # Agno raised a tool-side exception. Same pattern as
+        # ``_on_tool_completed`` with ``is_error=True`` — mark_error
+        # *before* mark_done so the widget flips to ✗ instead of
+        # rendering ✓ with red error text underneath (the v0.5.11
+        # green-check-on-failure class of bug).
+        summary = f"Error: {error[:60]}"
         try:
             for w in reversed(list(self._mount_target.query(ToolCallLiveWidget))):
                 if w.is_running():
-                    w.mark_done(f"Error: {error[:60]}")
+                    w.mark_error(summary)
+                    w.mark_done(summary)
                     break
         except Exception as exc:
             logger.debug("Failed to mark tool error in widget: %s", exc)
@@ -772,7 +787,20 @@ class RunController:
     # ── HITL ──────────────────────────────────────────────────────
 
     async def _handle_hitl_pause(self, proto, backend, _llm_log) -> None:
-        """Handle a RunPaused protocol message — show dialog, resolve, recurse."""
+        """Handle a RunPaused protocol message — collect every decision
+        then resolve them all in one round-trip.
+
+        The previous implementation iterated ``proto.requirements`` and
+        called ``backend.resolve_hitl(req_id, ...)`` per req, each of
+        which called ``acontinue_run(requirements=[req])`` with only
+        the one resolved requirement. Agno treats requirements absent
+        from the resolution list as denied, so a parallel 8-tool plan
+        had its first call succeed and the rest reported back as
+        "User denied" — the LLM rendered the others as REJECTED even
+        though the user never saw a reject dialog. Collecting every
+        decision and shipping a single ``resolve_hitl_batch`` lets
+        Agno see the full set.
+        """
         from ember_code.protocol import messages as pmsg
 
         _llm_log.info("HITL PAUSE: %d requirements", len(proto.requirements))
@@ -782,10 +810,12 @@ class RunController:
         if self._spinner:
             self._spinner.set_label("Awaiting confirmation")
 
+        decisions: list[tuple[str, str, str]] = []
         for req in proto.requirements:
             _llm_log.info("HITL: showing dialog for %s", req.tool_name)
             action, choice = await self._hitl.handle_protocol(req)
-            _llm_log.info("HITL: user chose %s/%s", action, choice)
+            _llm_log.info("HITL: user chose %s/%s for %s", action, choice, req.requirement_id)
+            decisions.append((req.requirement_id, action, choice))
 
             if action == "reject":
                 # Show a denied tool widget so the user sees what happened
@@ -805,18 +835,19 @@ class RunController:
                     preview_lines=self._app.settings.display.tool_result_preview_lines,
                 )
                 await self._mount_target.mount(widget)
-                widget.mark_done("✗ Denied by user")
+                widget.mark_error("Denied by user")
+                widget.mark_done("Denied by user")
                 self._auto_scroll()
 
-            if self._spinner:
-                self._spinner.set_label("Continuing")
+        if self._spinner:
+            self._spinner.set_label("Continuing")
 
-            async for cont_proto in backend.resolve_hitl(req.requirement_id, action, choice):
-                # Recursive — continuation may yield another pause
-                if isinstance(cont_proto, pmsg.RunPaused):
-                    await self._handle_hitl_pause(cont_proto, backend, _llm_log)
-                else:
-                    await self._render(cont_proto)
+        async for cont_proto in backend.resolve_hitl_batch(decisions):
+            # Recursive — continuation may yield another pause
+            if isinstance(cont_proto, pmsg.RunPaused):
+                await self._handle_hitl_pause(cont_proto, backend, _llm_log)
+            else:
+                await self._render(cont_proto)
 
     # ── Task orchestration ────────────────────────────────────────
 

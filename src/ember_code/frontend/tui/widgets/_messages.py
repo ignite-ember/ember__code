@@ -343,6 +343,7 @@ class ToolCallLiveWidget(Static):
         args_summary: str = "",
         status: str = "running",
         preview_lines: int = 4,
+        is_error: bool = False,
     ):
         self._raw_tool_name = tool_name
         self._tool_name = TOOL_FRIENDLY_NAMES.get(tool_name, tool_name)
@@ -354,6 +355,13 @@ class ToolCallLiveWidget(Static):
         self._diff_table: object = None  # Rich Table for edit diffs
         self._expanded = False
         self._preview_lines = preview_lines
+        # ``True`` when the tool returned an error payload (raised, or
+        # returned a string starting with ``"Error:"``). Header renders
+        # ``\u2717`` in red instead of the dim ``\u2713`` so a failed
+        # call in a batch is visually distinct \u2014 used to be all green
+        # checkmarks even when the agent saw "Error: ..." in its tool
+        # result and treated it as a failure.
+        self._is_error = is_error
         display = self._format()
         super().__init__(display)
 
@@ -361,17 +369,33 @@ class ToolCallLiveWidget(Static):
         """Return True if this tool call is still running."""
         return self._status == "running"
 
+    def mark_error(self, summary: str = "") -> None:
+        """Switch this completed call to the error display.
+
+        Called from the run controller when a ``ToolCompleted`` event
+        arrives with ``is_error=True``. If ``summary`` is provided it
+        overrides any existing result summary so the inline footer
+        shows the error message.
+        """
+        self._is_error = True
+        if summary:
+            self._result_summary = summary
+
     def render_text(self) -> str:
         """Render for tests and direct inspection. Uses raw tool name and style hints."""
         args = f"({self._args_summary})" if self._args_summary else ""
         if self._status == "running":
             return f"\u23f3 {self._raw_tool_name}{args}"
+        if self._is_error:
+            return f"[red]\u2717 {self._raw_tool_name}{args}[/red]"
         return f"[dim]\u2713 {self._raw_tool_name}{args}[/dim]"
 
     def _format_header(self) -> str:
-        """Format just the header line (checkmark + tool name + args)."""
+        """Format just the header line (checkmark/cross + tool name + args)."""
         safe_args = self._args_summary.replace("[", "\\[") if self._args_summary else ""
         args = f"({safe_args})" if safe_args else ""
+        if self._is_error:
+            return f"[red]\u2717 {self._tool_name}{args}[/red]"
         return f"[dim]\u2713 {self._tool_name}{args}[/dim]"
 
     def _format(self) -> str:
@@ -400,8 +424,13 @@ class ToolCallLiveWidget(Static):
                             sections.append(f"[dim]{line}[/dim]")
                 header += "\n" + "\n".join(sections)
             return header
-        # Done
-        line1 = f"[dim]\u2713 {self._tool_name}{args}[/dim]"
+        # Done — glyph + colour reflect the tool's actual outcome so
+        # a failed call in an 8-tool batch is visually distinct from
+        # the successful ones.
+        if self._is_error:
+            line1 = f"[red]\u2717 {self._tool_name}{args}[/red]"
+        else:
+            line1 = f"[dim]\u2713 {self._tool_name}{args}[/dim]"
         if not self._full_result:
             if self._result_summary:
                 return line1 + f"\n  [dim]└ {self._result_summary}[/dim]"

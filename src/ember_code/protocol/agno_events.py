@@ -287,12 +287,20 @@ def extract_result(event: Any) -> ToolResultData:
         len(str(result)) if result is not None else 0,
     )
 
-    # For Edit tools, show a colored diff instead of "Successfully edited"
-    if tool_name == "edit_file" and tool:
+    # For Edit tools, show a colored diff instead of "Successfully edited".
+    # We must skip this on failure: a failed edit_file still has
+    # ``old_string``/``new_string`` in ``tool_args`` (the LLM's proposed
+    # change), so ``_format_edit_diff`` happily renders a *fake* diff
+    # from a change that never happened. Worse, this branch returns
+    # ``full_result=""`` which hides the ``Error:`` prefix from the
+    # serializer's ``_result_is_error`` check — that's the v0.5.11 green
+    # ✓ bug surviving even after the prefix detection was added.
+    result_str = str(result).strip() if result else ""
+    if tool_name == "edit_file" and tool and not result_str.startswith("Error:"):
         diff = _format_edit_diff(tool)
         if diff:
             collapsed_table, expanded_table, raw_rows = diff
-            summary_msg = str(result).strip() if result else "Edited"
+            summary_msg = result_str or "Edited"
             if timing:
                 summary_msg = f"{summary_msg}, {timing}"
             return ToolResultData(

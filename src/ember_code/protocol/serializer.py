@@ -7,6 +7,7 @@ It translates Agno's internal event model into the transport-agnostic protocol.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from ember_code.protocol import messages as msg
@@ -32,6 +33,47 @@ from ember_code.protocol.agno_events import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Shell tool's failure conventions — non-zero exit code in either of
+# its two output shapes. We keep these as explicit patterns instead
+# of a generic "contains 'exit'" heuristic to avoid false positives
+# on a Read of a log file or a grep result.
+_SHELL_BG_FAIL_RE = re.compile(r"^Background process exited immediately \(code (\d+)\)")
+_SHELL_EXIT_FAIL_RE = re.compile(r"^\[Exited with code (\d+)")
+
+
+def _result_is_error(result: str) -> bool:
+    """Detect tool-side failures embedded in result strings.
+
+    Agno raises ``TOOL_ERROR_EVENTS`` for exceptions, but most
+    ember-code tools catch their failures and return an error
+    message as a string instead. Without flagging those, the TUI
+    shows a green ✓ for a call the agent treats as a denial — the
+    feedback loop the user saw lying in v0.5.11.
+
+    Conventions detected:
+      * ``"Error: ..."`` prefix — used by ``edit_file``,
+        ``edit_file_replace_all``, ``create_file``, notebook tools,
+        knowledge tools, codeindex tools.
+      * Shell-tool non-zero exit shapes:
+        ``"Background process exited immediately (code N)"`` and
+        ``"[Exited with code N after Ts]"``. Code 0 is success and
+        must not flag.
+
+    Strict prefix / regex anchors keep this from misfiring on body
+    content (e.g. a Read of a file that legitimately contains
+    "Error:" or "Exited with code 1" mid-line).
+    """
+    if not result:
+        return False
+    stripped = result.lstrip()
+    if stripped.startswith("Error:"):
+        return True
+    for rx in (_SHELL_BG_FAIL_RE, _SHELL_EXIT_FAIL_RE):
+        m = rx.match(stripped)
+        if m and m.group(1) != "0":
+            return True
+    return False
 
 
 def serialize_event(event: Any) -> msg.Message | None:
@@ -75,12 +117,19 @@ def serialize_event(event: Any) -> msg.Message | None:
     if isinstance(event, TOOL_COMPLETED_EVENTS):
         data = extract_result(event)
 
+        # Detect tool-side errors that Agno didn't raise as exceptions
+        # (so they don't surface via ``TOOL_ERROR_EVENTS``) but the
+        # tool returned with a failure-conventional string. See
+        # ``_result_is_error`` for the conventions we recognise.
+        is_error = _result_is_error(data.full_result)
+
         return msg.ToolCompleted(
             summary=data.summary,
             full_result=data.full_result,
             has_markup=data.has_markup,
             diff_rows=data.diff_rows,
             run_id=str(getattr(event, "run_id", "") or ""),
+            is_error=is_error,
         )
 
     # ── Tool error ──

@@ -202,7 +202,11 @@ class BackendServer:
         the FE then routes resolution back through ``resolve_hitl``,
         which calls this helper again with the resumed stream.
         """
-        from ember_code.protocol.agno_events import RUN_PAUSED_EVENTS
+        from ember_code.protocol.agno_events import (
+            RUN_COMPLETED_EVENTS,
+            RUN_ERROR_EVENTS,
+            RUN_PAUSED_EVENTS,
+        )
 
         sub_hitl = self._session.sub_agent_hitl
         agno_queue: asyncio.Queue = asyncio.Queue()
@@ -280,6 +284,17 @@ class BackendServer:
                     for pause_msg in self._handle_pause(event):
                         yield pause_msg
                     return
+                # If a run completes/errors without going through HITL
+                # resolution (e.g. tool didn't require approval, or the
+                # whole run was cancelled) sweep any stale pending
+                # requirements for that run_id so they don't pile up on
+                # the session. ``resolve_hitl_batch`` already pops the
+                # entries it resolves; this catches the "user closed the
+                # UI mid-pause and the run later wrapped up" path.
+                if isinstance(event, RUN_COMPLETED_EVENTS + RUN_ERROR_EVENTS):
+                    finished_run_id = getattr(event, "run_id", None)
+                    if finished_run_id:
+                        self._drop_pending_for_run(finished_run_id)
                 proto = serialize_event(event)
                 if proto is not None:
                     yield proto
@@ -327,6 +342,27 @@ class BackendServer:
         sub_run_id = entries[0][1].run_id if entries else ""
         return msg.RunPaused(run_id=sub_run_id, requirements=requirements)
 
+    def _drop_pending_for_run(self, run_id: str) -> None:
+        """Remove any pending HITL entries tied to a finished run.
+
+        Called when a run completes/errors without going through
+        ``resolve_hitl_batch`` (which would've popped them). Guards
+        against per-session accumulation of dead requirement entries
+        when the user closes the pause UI and the run later wraps up
+        on its own.
+        """
+        stale = [
+            rid for rid, (_req, rid_run) in self._pending_requirements.items() if rid_run == run_id
+        ]
+        for rid in stale:
+            self._pending_requirements.pop(rid, None)
+        if stale:
+            logger.debug(
+                "_drop_pending_for_run: dropped %d stale requirement(s) for run_id=%s",
+                len(stale),
+                run_id,
+            )
+
     def _handle_pause(self, event: Any) -> list[msg.Message]:
         """Convert a RunPausedEvent into protocol messages and store requirements."""
         from ember_code.protocol.agno_events import TOOL_NAMES
@@ -356,52 +392,106 @@ class BackendServer:
         )
         return messages
 
-    async def resolve_hitl(
-        self, requirement_id: str, action: str, choice: str = "once"
+    async def resolve_hitl_batch(
+        self, decisions: list[msg.HITLDecision]
     ) -> AsyncIterator[msg.Message]:
-        """Resolve a HITL requirement and continue the run."""
-        # Sub-agent pauses go through the coordinator: it wakes up the
-        # spawn_agent stream which then issues acontinue_run on the
-        # specialist. The parent run is still streaming separately, so
-        # we don't yield a RunPaused/Continue envelope here — the FE
-        # just knows the prompt is dismissed.
-        if self._session.sub_agent_hitl.resolve(requirement_id, action):
+        """Resolve every requirement from a multi-req pause in one shot.
+
+        Agno's ``acontinue_run`` denies anything not in the resolved-
+        requirements list. The earlier per-req ``resolve_hitl`` loop
+        therefore meant: only the first user-approved tool actually
+        ran; the rest of an 8-tool batch came back as "User denied"
+        and the LLM reported them as REJECTED. This batch method:
+
+        1. Splits each decision between the sub-agent coordinator
+           (its own resolve path) and the main team's pending list.
+        2. Confirms/rejects every main-team requirement object so
+           Agno sees the full resolution set.
+        3. Calls ``acontinue_run`` exactly once with all resolved
+           reqs, then streams the continuation.
+
+        Sub-agent reqs don't need ``acontinue_run`` — their
+        coordinator wakes the spawning stream directly.
+        """
+        if not decisions:
             return
-        entry = self._pending_requirements.pop(requirement_id, None)
-        if entry is None:
-            yield msg.Error(text=f"Unknown requirement: {requirement_id}")
-            return
 
-        req, run_id = entry  # (requirement, run_id) tuple
+        main_resolved_reqs: list[Any] = []
+        run_id: str | None = None
+        for d in decisions:
+            # Belt-and-suspenders: even if the sub-agent coordinator
+            # claims the requirement, drop any main-team entry under
+            # the same id so it can't strand the dict in case of a
+            # double-registration bug elsewhere.
+            if self._session.sub_agent_hitl.resolve(d.requirement_id, d.action):
+                self._pending_requirements.pop(d.requirement_id, None)
+                continue
+            entry = self._pending_requirements.pop(d.requirement_id, None)
+            if entry is None:
+                yield msg.Error(text=f"Unknown requirement: {d.requirement_id}")
+                continue
+            req, this_run_id = entry
+            # All reqs from a single RunPaused share a run_id. Reject
+            # any cross-pause batch — passing mixed run_ids to
+            # ``acontinue_run`` would silently resume the wrong run.
+            if run_id is None:
+                run_id = this_run_id
+            elif this_run_id != run_id:
+                yield msg.Error(
+                    text=(
+                        f"Cross-run HITL batch rejected: "
+                        f"requirement {d.requirement_id} belongs to run "
+                        f"{this_run_id} but batch is for run {run_id}"
+                    )
+                )
+                # Put the requirement back so a later batch can resolve
+                # it correctly.
+                self._pending_requirements[d.requirement_id] = entry
+                continue
+            # Isolate per-req failures: one Agno requirement raising
+            # on confirm()/reject() must not strand the remaining reqs
+            # in the pause. Without this, a single bad req leaves the
+            # whole run waiting forever.
+            try:
+                if d.action == "confirm":
+                    req.confirm()
+                else:
+                    req.reject(note="User denied")
+            except Exception as exc:
+                logger.warning(
+                    "resolve_hitl_batch: requirement %s %s() raised %s; skipping",
+                    d.requirement_id,
+                    d.action,
+                    exc,
+                )
+                yield msg.Error(text=f"Failed to {d.action} requirement {d.requirement_id}: {exc}")
+                continue
+            main_resolved_reqs.append(req)
 
-        if action == "confirm":
-            req.confirm()
-        else:
-            req.reject(note="User denied")
+        if not main_resolved_reqs:
+            return  # everything was sub-agent or failed
 
-        # Continue the run via the same multiplexer used by ``run_message``
-        # so that any sub-agent pauses fired while the parent is resuming
-        # also reach the FE. (Without the multiplexer here, a parent that
-        # pauses for top-level Bash, gets resumed, and then spawns an
-        # architect would have the architect's pauses dropped on the
-        # floor.)
         team = self._session.main_team
         import logging as _log
 
         _llm = _log.getLogger("ember_code.llm_calls")
-        _llm.info("resolve_hitl: action=%s, req_id=%s, run_id=%s", action, requirement_id, run_id)
+        _llm.info(
+            "resolve_hitl_batch: %d req(s) resolved, run_id=%s",
+            len(main_resolved_reqs),
+            run_id,
+        )
         async for proto in self._stream_with_subagent_hitl(
             team.acontinue_run(
                 run_id=run_id,
                 session_id=self._session.session_id,
-                requirements=[req],
+                requirements=main_resolved_reqs,
                 stream=True,
                 stream_events=True,
             )
         ):
             yield proto
 
-        # Fire Stop hook after continuation completes
+        # Fire Stop hook after continuation completes.
         from ember_code.core.hooks.events import HookEvent
 
         stop_result = await self._session.hook_executor.execute(
@@ -410,6 +500,24 @@ class BackendServer:
         )
         if stop_result.message and not stop_result.should_continue:
             yield msg.Info(text=stop_result.message)
+
+    async def resolve_hitl(
+        self, requirement_id: str, action: str, choice: str = "once"
+    ) -> AsyncIterator[msg.Message]:
+        """Resolve a single HITL requirement.
+
+        Implemented as a thin shim over ``resolve_hitl_batch`` so the
+        dangerous ``acontinue_run(requirements=[req])`` callsite only
+        exists in *one* place — the batch method — which always
+        passes the *full* set of resolved requirements. This way a
+        future caller that hits a multi-req pause via the legacy
+        single-req path doesn't silently re-introduce the v0.5.11
+        "User denied" cascade. For a 1-req pause this behaves
+        identically to the old direct-call implementation.
+        """
+        decision = msg.HITLDecision(requirement_id=requirement_id, action=action, choice=choice)
+        async for proto in self.resolve_hitl_batch([decision]):
+            yield proto
 
     # ── Commands ──────────────────────────────────────────────────
 
@@ -730,13 +838,15 @@ class BackendServer:
                 session_id=self._session.session_id,
                 user_id=self._session.user_id,
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("aget_session failed (%s); reporting 0", exc)
             return 0
         if agno_session is None:
             return 0
         try:
             messages = agno_session.get_messages()
-        except Exception:
+        except Exception as exc:
+            logger.debug("get_messages failed (%s); reporting 0", exc)
             return 0
         try:
             return int(self._session.main_team.model.count_tokens(messages))
@@ -1681,8 +1791,8 @@ class BackendServer:
             result = await self._session.knowledge_mgr.sync_from_file()
             if result:
                 return f"Knowledge synced: {result}"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("knowledge sync_from_file failed (%s)", exc)
         return None
 
     async def execute_scheduled_task(self, description: str) -> str:
