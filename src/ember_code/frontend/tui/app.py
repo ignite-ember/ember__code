@@ -20,7 +20,6 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.css.query import NoMatches
-from textual.events import Resize
 from textual.timer import Timer
 from textual.widgets import Static
 
@@ -136,12 +135,27 @@ class EmberApp(App):
 
     #footer {
         dock: bottom;
-        min-height: 5;
+        /* Auto-height with ``dock: bottom`` keeps the BOTTOM edge
+           anchored to the screen bottom; when prompt-row grows
+           (e.g. soft-wrapped input on a narrow terminal) the top
+           rises upward into the conversation area instead of the
+           children overflowing the container downward past the
+           screen. A previous fixed ``height: 6`` made the children
+           overflow when the input stretched to 2 rows — that
+           overflow rendered below the screen edge, hiding status-
+           bar + tip-bar. ``min-height`` is the floor: even if
+           everything inside reports 0 rows we still claim 5 rows
+           so the dock area never collapses. */
         height: auto;
+        min-height: 5;
         width: 100%;
     }
 
     #prompt-row {
+        /* Auto-height so it can absorb the input's natural row
+           count. Combined with ``#footer { height: auto }`` above,
+           the whole bottom chrome grows upward into the
+           conversation area when needed — no overflow downward. */
         height: auto;
         width: 100%;
         padding: 0 2;
@@ -156,13 +170,20 @@ class EmberApp(App):
 
     #user-input {
         width: 1fr;
-        height: auto !important;
-        min-height: 1;
-        max-height: 8;
+        /* Hard 1-row clamp via every CSS lever available, plus
+           ``scrollbar-size: 0 0`` to drop the bottom scrollbar row
+           that TextArea's ScrollView base would otherwise add when
+           content overflows. ``#prompt-row`` is also fixed at 2
+           rows above, so even if TextArea ignored these the
+           parent's ``overflow: hidden`` clips anything taller. */
+        height: 1 !important;
+        min-height: 1 !important;
+        max-height: 1 !important;
         border: none !important;
         background: $background;
         color: $text;
-        padding: 0;
+        padding: 0 !important;
+        scrollbar-size: 0 0;
     }
 
     #user-input:focus {
@@ -170,9 +191,7 @@ class EmberApp(App):
     }
 
     #status-bar {
-        /* 3 rows = 1 row for ``border-top`` + 2 content rows. The
-           bar renders two lines (identity on top, live activity on
-           bottom) so any smaller height clips the second line. */
+        /* 3 rows = 1 row for ``border-top`` + 2 content rows. */
         height: 3;
         width: 100%;
         border-top: solid ansi_bright_black;
@@ -182,7 +201,9 @@ class EmberApp(App):
     }
 
     #tip-bar {
-        dock: bottom;
+        /* Lives inside ``#footer`` now (no dock). ``TipBar``'s class
+           default also drops its old ``dock: bottom`` — otherwise it
+           would dock to the Screen ancestor and overlap the footer. */
         height: 1;
         width: 100%;
     }
@@ -366,7 +387,18 @@ class EmberApp(App):
         yield ScrollableContainer(id="conversation")
         yield QueuePanel(id="queue-panel")
         yield TaskPanel(id="task-panel")
-        yield TipBar(id="tip-bar")
+        # All bottom chrome collapsed into ONE dock-bottom container.
+        # Multiple ``dock: bottom`` siblings in Textual don't stack —
+        # they overlap at the same y coordinate, with mount order
+        # winning z-order. Having tip-bar and footer both docked-bottom
+        # at the Screen meant they fought over the same rows, and
+        # mid-session resizes could leave the footer extending past
+        # the viewport's bottom edge because Textual computed its
+        # auto-height from intrinsic content size without clamping to
+        # the available region. With a single fixed-height container
+        # holding tip-bar + prompt-row + status-bar, the bottom edge
+        # is hard-anchored to the screen bottom and the contents can't
+        # outgrow their slot.
         with Vertical(id="footer"):
             with Horizontal(id="prompt-row"):
                 yield Static("> ", id="prompt-indicator")
@@ -381,6 +413,7 @@ class EmberApp(App):
                     placeholder="Type a message or /help",
                 )
             yield StatusBar(id="status-bar")
+            yield TipBar(id="tip-bar")
 
     async def on_mount(self) -> None:
         try:
@@ -2183,24 +2216,39 @@ class EmberApp(App):
         except Exception:
             pass
 
-    async def on_resize(self, event: Resize) -> None:
-        """Remove and remount the welcome box so CSS border redraws cleanly."""
-        try:
-            old_box = self.query_one("#welcome-box", Static)
-        except NoMatches:
-            return
+    def on_resize(self) -> None:
+        """Clear the compositor + force a full repaint on every resize.
 
-        await old_box.remove()
+        Empirically the best of the approaches tried:
 
-        container = self.query_one("#conversation", ScrollableContainer)
-        new_box = Static(self._build_welcome_content(), id="welcome-box")
-        try:
-            caps = self.query_one("#capabilities", Static)
-            await container.mount(new_box, before=caps)
-        except NoMatches:
-            await container.mount(new_box, before=0)
+        * No handler at all → narrowing leaves widgets sized for
+          the previous (wider) geometry; visible content doesn't
+          shrink to fit.
+        * ``self.refresh(repaint=True)`` only → repaints inside
+          new regions but doesn't clear cells outside, leaving
+          ghost right-edges of boxes.
+        * Debounced refresh → final state is clean but
+          intermediate frames during the drag show stale content.
 
-        self.screen.refresh(layout=True)
+        Immediate ``Compositor.clear()`` discards the cached
+        widget-to-region map; the screen refresh that follows
+        rewrites every visible cell against the new size. The
+        delayed second pass catches the final geometry after a
+        drag — sometimes the last resize event fires before
+        Textual has fully settled the size, and a tiny grace
+        period gives it time to land.
+        """
+        with contextlib.suppress(Exception):
+            self.screen._compositor.clear()
+        self.screen.refresh(layout=True, repaint=True)
+        # One more pass shortly after — covers the final state of
+        # a drag-resize where the last event fires mid-settle.
+        self.set_timer(0.08, self._post_resize_repaint)
+
+    def _post_resize_repaint(self) -> None:
+        with contextlib.suppress(Exception):
+            self.screen._compositor.clear()
+        self.screen.refresh(layout=True, repaint=True)
 
     def action_cancel(self) -> None:
         import os

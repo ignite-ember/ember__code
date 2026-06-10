@@ -476,11 +476,17 @@ class QueuePanel(Widget):
 
 
 class TipBar(Static):
-    """Bottom bar showing a usage tip."""
+    """Usage-tip bar. Host app decides where it sits.
+
+    Originally ``dock: bottom``, but the EmberApp now nests TipBar
+    inside the ``#footer`` Vertical container (along with prompt-row
+    and status-bar) so a single dock-bottom anchor handles all the
+    chrome. Two dock-bottom siblings would overlap rather than
+    stack, which broke status-bar visibility on mid-session resize.
+    """
 
     DEFAULT_CSS = """
     TipBar {
-        dock: bottom;
         height: 1;
         color: $text-muted;
         padding: 0 1;

@@ -8,16 +8,27 @@ class PromptInput(TextArea):
     """Multiline input: Enter submits, \\+Enter inserts a newline.
 
     Multiline text can also be pasted directly.
+
+    The widget is hard-pinned to one visible row. The previous
+    ``height: auto; max-height: 8`` let TextArea soft-wrap into
+    multiple rendered rows on narrow terminals — that growth pushed
+    the docked status-bar past the screen edge. Multi-line content
+    still works fine: TextArea is a ScrollView, so longer text
+    scrolls internally and the user navigates with arrow keys.
     """
 
     suppress_submit: bool = False
 
     DEFAULT_CSS = """
     PromptInput {
-        height: auto;
+        /* All three pinned at 1 row each so no CSS specificity
+           battle can let the widget grow. */
+        height: 1;
         min-height: 1;
-        max-height: 8;
+        max-height: 1;
         border: none;
+        padding: 0;
+        scrollbar-size: 0 0;
     }
     PromptInput:focus {
         border: none;
