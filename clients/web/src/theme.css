@@ -158,6 +158,25 @@ button {
   flex-direction: column;
 }
 
+/* ── Update banner ──────────────────────────────────────────────── */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 5px 14px;
+  font-size: 12.5px;
+  background: var(--ember-gradient-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--ember-orange) 35%, transparent);
+  color: var(--fg-muted);
+}
+
+.update-banner a {
+  color: var(--ember-orange);
+  font-weight: 600;
+}
+
 /* ── Header ─────────────────────────────────────────────────────── */
 
 .app-header {

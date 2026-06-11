@@ -30,6 +30,29 @@ type PanelState =
   | { kind: "login" }
   | { kind: "info"; title: string; markdown: string };
 
+interface UpdateInfo {
+  available: boolean;
+  current_version: string;
+  latest_version: string;
+  download_url?: string;
+}
+
+/** Entries for the header tools menu — each opens its feature's UI
+ * directly (no slash command visible to the user). */
+const TOOLS_MENU: { label: string; command: string; desc: string }[] = [
+  { label: "MCP servers", command: "/mcp", desc: "connect external tools" },
+  { label: "CodeIndex", command: "/codeindex", desc: "semantic code search" },
+  { label: "Agents", command: "/agents", desc: "agent pool" },
+  { label: "Skills", command: "/skills", desc: "slash-command workflows" },
+  { label: "Plugins", command: "/plugins", desc: "marketplaces & installs" },
+  { label: "Knowledge", command: "/knowledge", desc: "project knowledge base" },
+  { label: "Hooks", command: "/hooks", desc: "pre/post tool hooks" },
+  { label: "Loop", command: "/loop", desc: "recurring prompt status" },
+  { label: "Scheduled tasks", command: "/schedule", desc: "background routines" },
+  { label: "Compact context", command: "/compact", desc: "summarize old turns" },
+  { label: "Help", command: "/help", desc: "all commands" },
+];
+
 interface ModelRegistry {
   default: string;
   registry: Record<string, Record<string, unknown>>;
@@ -50,6 +73,9 @@ export default function App() {
   const [modelMenu, setModelMenu] = useState<
     { name: string; current: boolean }[] | null
   >(null);
+  const [toolsMenu, setToolsMenu] = useState(false);
+  const [accountMenu, setAccountMenu] = useState(false);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const processingRef = useRef(false);
 
@@ -145,6 +171,12 @@ export default function App() {
           } catch {
             /* skills optional */
           }
+          try {
+            const info = await client.rpc<UpdateInfo | null>("check_for_update");
+            if (info?.available) setUpdate(info);
+          } catch {
+            /* update check is best-effort */
+          }
         })();
       }
     });
@@ -233,9 +265,12 @@ export default function App() {
   );
 
   // ── Slash command routing ─────────────────────────────────────────
+  // `echo=false` is the UI-affordance path (menu/button clicks): the
+  // command runs silently instead of appearing as a fake typed
+  // message in the chat. Typed slash commands keep echoing.
   const runCommand = useCallback(
-    async (text: string) => {
-      append(userItem(text));
+    async (text: string, echo = true) => {
+      if (echo) append(userItem(text));
       try {
         const result = await client.handleCommand(text);
         if (result.type !== "command_result") {
@@ -281,11 +316,11 @@ export default function App() {
             setPanel({ kind: "codeindex" });
             return;
           case "loop":
-            if (content) append(assistantItem(content));
+            if (content && echo) append(assistantItem(content));
             setPanel({ kind: "loop" });
             return;
           case "schedule":
-            if (content) append(assistantItem(content));
+            if (content && echo) append(assistantItem(content));
             setPanel({ kind: "schedule" });
             return;
           case "agents":
@@ -411,6 +446,27 @@ export default function App() {
         } catch {
           /* no history RPC result — start empty */
         }
+        // Crash recovery (TUI parity): surface messages whose run
+        // never completed so the user sees their interrupted prompt.
+        try {
+          const pending = await client.rpc<Record<string, unknown>[]>(
+            "get_pending_messages",
+            { session_id: id },
+          );
+          if (pending?.length) {
+            for (const p of pending) {
+              const text = String(p.text ?? "");
+              if (text) append(userItem(text));
+            }
+            append(
+              infoItem(
+                `${pending.length} message(s) above were interrupted before completion — the agent knows and can pick up where it left off.`,
+              ),
+            );
+          }
+        } catch {
+          /* pending-message recovery is best-effort */
+        }
         append(infoItem(`Resumed session ${id}.`));
       } catch (e) {
         append(errorItem(String(e)));
@@ -447,12 +503,25 @@ export default function App() {
         open={sidebarOpen}
         sessions={sessions}
         currentId={sessionId}
-        onNewChat={() => void runCommand("/clear")}
+        onNewChat={() => void runCommand("/clear", false)}
         onPick={(id) => void pickSession(id)}
         onClose={() => setSidebarOpen(false)}
       />
 
       <div className="main">
+        {update && (
+          <div className="update-banner">
+            Update available: {update.current_version} → {update.latest_version}
+            {update.download_url && (
+              <a href={update.download_url} target="_blank" rel="noreferrer">
+                get it
+              </a>
+            )}
+            <button className="icon-btn" onClick={() => setUpdate(null)}>
+              ✕
+            </button>
+          </div>
+        )}
         <header className="app-header">
           <button
             className="icon-btn"
@@ -468,18 +537,45 @@ export default function App() {
             </div>
           )}
           <div className="header-spacer" />
-          <button className="chip" onClick={() => void runCommand("/model")}>
+          <button
+            className="chip"
+            title="Switch model"
+            onClick={() => void runCommand("/model", false)}
+          >
             <span className="chip-label">{status?.model || "model"}</span> ▾
           </button>
-          {status?.cloud_connected && (
-            <span className="chip" style={{ cursor: "default" }}>
-              <span className="chip-label">☁ {status.cloud_org}</span>
-            </span>
+          {status?.cloud_connected ? (
+            <button
+              className="chip"
+              title="Account"
+              onClick={() => setAccountMenu(!accountMenu)}
+            >
+              <span className="chip-label">☁ {status.cloud_org}</span> ▾
+            </button>
+          ) : (
+            <button
+              className="chip"
+              style={{
+                background: "var(--ember-gradient)",
+                color: "#fff",
+                border: "none",
+              }}
+              onClick={() => setPanel({ kind: "login" })}
+            >
+              Log in
+            </button>
           )}
-          <span className="chip" style={{ cursor: "default" }}>
+          <button
+            className="chip"
+            title="Tools & settings"
+            onClick={() => setToolsMenu(!toolsMenu)}
+          >
+            ⋯
+          </button>
+          <span className="chip" style={{ cursor: "default" }} title={`backend ${conn}`}>
             <span className={`dot ${conn}`} />
-            <span className="chip-label">{conn}</span>
           </span>
+
           {modelMenu && (
             <>
               <div
@@ -500,6 +596,51 @@ export default function App() {
               </div>
             </>
           )}
+          {accountMenu && (
+            <>
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 39 }}
+                onClick={() => setAccountMenu(false)}
+              />
+              <div className="dropdown" style={{ width: 220 }}>
+                <div className="popup-item" style={{ cursor: "default" }}>
+                  <span className="desc">Signed in to {status?.cloud_org}</span>
+                </div>
+                <div
+                  className="popup-item"
+                  onClick={() => {
+                    setAccountMenu(false);
+                    void runCommand("/logout", false);
+                  }}
+                >
+                  <span className="cmd">Log out</span>
+                </div>
+              </div>
+            </>
+          )}
+          {toolsMenu && (
+            <>
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 39 }}
+                onClick={() => setToolsMenu(false)}
+              />
+              <div className="dropdown" style={{ width: 280 }}>
+                {TOOLS_MENU.map((t) => (
+                  <div
+                    key={t.command}
+                    className="popup-item"
+                    onClick={() => {
+                      setToolsMenu(false);
+                      void runCommand(t.command, false);
+                    }}
+                  >
+                    <span className="cmd">{t.label}</span>
+                    <span className="desc">{t.desc}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </header>
 
         <div className="conversation" ref={scrollRef}>
@@ -513,17 +654,20 @@ export default function App() {
                 <h1>Ember Code</h1>
                 <p>Your AI coding agent, in this project.</p>
                 <div className="welcome-hints">
-                  <button className="chip" onClick={() => void runCommand("/help")}>
-                    /help
+                  <button className="chip" onClick={() => void runCommand("/help", false)}>
+                    Commands
                   </button>
-                  <button className="chip" onClick={() => void runCommand("/model")}>
-                    /model
+                  <button className="chip" onClick={() => void runCommand("/model", false)}>
+                    Pick a model
                   </button>
-                  <button className="chip" onClick={() => void runCommand("/codeindex")}>
-                    /codeindex
+                  <button
+                    className="chip"
+                    onClick={() => void runCommand("/codeindex", false)}
+                  >
+                    CodeIndex
                   </button>
-                  <button className="chip" onClick={() => void runCommand("/agents")}>
-                    /agents
+                  <button className="chip" onClick={() => void runCommand("/agents", false)}>
+                    Agents
                   </button>
                 </div>
               </div>
