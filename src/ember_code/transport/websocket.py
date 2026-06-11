@@ -81,9 +81,18 @@ class WebSocketServerTransport(Transport):
         await asyncio.wait_for(self._connected.wait(), timeout=timeout)
 
     async def _handler(self, conn) -> None:
-        if self._conn is not None:
-            await conn.close(1008, "another client is already connected")
-            return
+        # Newest client wins. Webviews reload and users open fresh
+        # tabs — the most recent connection is the one being looked
+        # at. The displaced socket gets a policy close (1008) with a
+        # reason its FE surfaces as "opened elsewhere"; that FE stops
+        # auto-reconnecting so two tabs can't kick each other in a
+        # loop.
+        old = self._conn
+        if old is not None:
+            self._conn = None
+            with contextlib.suppress(Exception):
+                await old.close(1008, "replaced by a newer client")
+            logger.info("previous FE client replaced by a new connection")
         self._conn = conn
         self._connected.set()
         logger.info("FE connected via WebSocket")
@@ -97,8 +106,11 @@ class WebSocketServerTransport(Transport):
         except Exception as exc:
             logger.info("WS connection ended: %s", exc)
         finally:
-            self._conn = None
-            logger.info("FE disconnected; awaiting reconnect")
+            # Only release the slot if it's still ours — a displaced
+            # handler must not null out its replacement's connection.
+            if self._conn is conn:
+                self._conn = None
+                logger.info("FE disconnected; awaiting reconnect")
 
     async def send(self, message: Message) -> None:
         conn = self._conn

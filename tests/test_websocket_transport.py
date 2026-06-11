@@ -103,34 +103,42 @@ async def test_survives_client_reconnect():
 
 
 @pytest.mark.asyncio
-async def test_second_concurrent_client_rejected():
-    """The BE owns one Session — a second simultaneous FE is closed
-    with policy code 1008 instead of silently racing the first."""
+async def test_newest_client_replaces_previous():
+    """A second simultaneous FE displaces the first (newest wins —
+    webviews reload and the most recent page is the one the user is
+    looking at). The displaced socket gets policy close 1008 with a
+    'replaced' reason so its FE can yield instead of reconnect-warring."""
     tr = WebSocketServerTransport(port=0)
     await tr.start()
     try:
         ws1 = await _connect(tr.port)
-        # Ensure ws1's handler has claimed the slot before racing ws2.
+        # Ensure ws1's handler has claimed the slot before ws2 races it.
         await asyncio.wait_for(tr.wait_for_connection(), 5)
 
         ws2 = await _connect(tr.port)
         from websockets.exceptions import ConnectionClosed
 
+        # The OLD client is the one that gets closed.
         with pytest.raises(ConnectionClosed) as exc_info:
-            await asyncio.wait_for(ws2.recv(), 5)
+            await asyncio.wait_for(ws1.recv(), 5)
         assert exc_info.value.rcvd is not None
         assert exc_info.value.rcvd.code == 1008
+        assert "replaced" in (exc_info.value.rcvd.reason or "")
 
-        # First client unaffected.
-        await ws1.send(msg.UserMessage(text="still here").model_dump_json())
+        # The NEW client owns the slot — both directions work.
+        await ws2.send(msg.UserMessage(text="newest wins").model_dump_json())
 
         async def _recv_one():
             async for m in tr.receive():
                 return m
 
         m = await asyncio.wait_for(_recv_one(), 5)
-        assert m.text == "still here"
-        await ws1.close()
+        assert m.text == "newest wins"
+
+        await tr.send(msg.Info(text="hello new client"))
+        raw = await asyncio.wait_for(ws2.recv(), 5)
+        assert json.loads(raw)["text"] == "hello new client"
+        await ws2.close()
     finally:
         await tr.close()
 

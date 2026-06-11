@@ -26,7 +26,14 @@ export function resolveWsUrl(): string {
   return param || window.__EMBER_WS_URL__ || "ws://127.0.0.1:8765";
 }
 
-export type ConnectionState = "connecting" | "connected" | "disconnected";
+export type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  /** Displaced by a newer tab/webview (BE close 1008). No
+   *  auto-reconnect — reconnecting would kick the other tab and
+   *  start a war. The user reconnects explicitly. */
+  | "replaced";
 
 type StreamHandler = (msg: ServerMessage) => void;
 
@@ -93,10 +100,18 @@ export class EmberClient {
       if (this.ws !== ws) return;
       this.dispatch(JSON.parse(ev.data as string) as ServerMessage);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.ws !== ws) return;
-      this.emitState("disconnected");
       this.failPending(new Error("connection closed"));
+      // 1008 "replaced by a newer client": another tab took the BE
+      // slot. Yield — do NOT auto-reconnect, or the two tabs would
+      // displace each other forever. The UI offers manual reconnect.
+      if (ev.code === 1008) {
+        this.closed = true;
+        this.emitState("replaced");
+        return;
+      }
+      this.emitState("disconnected");
       if (!this.closed) {
         setTimeout(() => this.connect(), this.reconnectDelay);
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, 5_000);

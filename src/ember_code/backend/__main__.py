@@ -420,6 +420,19 @@ async def _run(
         parent_pid = 0
     parent_watch_task = asyncio.create_task(_watch_parent(parent_pid, shutdown_event))
 
+    # SIGTERM/SIGINT only set ``shutdown_event`` — but the main loop
+    # blocks in ``transport.receive()``. The Unix transport unblocks
+    # when the dying FE closes the socket; the WS transport does NOT
+    # (an idle webview keeps the connection open), which left the BE
+    # unkillable-gracefully. Closing the transport on shutdown pushes
+    # the close sentinel through ``receive()`` for both transports.
+    async def _close_transport_on_shutdown() -> None:
+        await shutdown_event.wait()
+        with contextlib.suppress(Exception):
+            await transport.close()
+
+    shutdown_close_task = asyncio.create_task(_close_transport_on_shutdown())
+
     # Queue for message injection (replaces wire_queue_hook)
     _queue: list[str] = []
     backend.wire_queue_hook(_queue)
@@ -567,8 +580,11 @@ async def _run(
         logger.error("Backend error: %s", exc, exc_info=True)
     finally:
         parent_watch_task.cancel()
+        shutdown_close_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await parent_watch_task
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await shutdown_close_task
         await backend.shutdown()
         await transport.close()
         logger.info("Backend shut down")

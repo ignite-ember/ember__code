@@ -586,9 +586,20 @@ export default function App() {
               Log in
             </button>
           )}
-          <span className="chip" style={{ cursor: "default" }} title={`backend ${conn}`}>
-            <span className={`dot ${conn}`} />
-          </span>
+          {conn === "replaced" ? (
+            <button
+              className="chip"
+              title="This chat was opened in another tab/window. Click to take over here."
+              onClick={() => client.connect()}
+            >
+              <span className="dot disconnected" />
+              <span className="chip-label">opened elsewhere — reconnect</span>
+            </button>
+          ) : (
+            <span className="chip" style={{ cursor: "default" }} title={`backend ${conn}`}>
+              <span className={`dot ${conn}`} />
+            </span>
+          )}
 
           {modelMenu && (
             <>
