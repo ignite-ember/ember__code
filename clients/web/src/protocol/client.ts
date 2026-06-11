@@ -59,15 +59,42 @@ export class EmberClient {
   }
 
   connect(): void {
-    if (this.closed) return;
+    // Reset the closed latch: React StrictMode mounts effects twice
+    // (mount → cleanup → mount), and cleanup calls close(). Without
+    // the reset, the second mount's connect() would no-op and the UI
+    // would sit on "Connecting…" forever.
+    this.closed = false;
+
+    // Tear down any previous socket BEFORE creating a new one. An
+    // orphaned CONNECTING socket would otherwise win the race for
+    // the BE's single-client slot and lock every subsequent
+    // reconnect out with close code 1008.
+    const old = this.ws;
+    if (old) {
+      old.onopen = old.onmessage = old.onclose = old.onerror = null;
+      try {
+        old.close();
+      } catch {
+        /* already closed */
+      }
+    }
+
     this.emitState("connecting");
-    this.ws = new WebSocket(this.url);
-    this.ws.onopen = () => {
+    const ws = new WebSocket(this.url);
+    this.ws = ws;
+    // Every handler checks it still belongs to the active socket —
+    // events from a replaced socket must not flip the shared state.
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.reconnectDelay = 500;
       this.emitState("connected");
     };
-    this.ws.onmessage = (ev) => this.dispatch(JSON.parse(ev.data as string) as ServerMessage);
-    this.ws.onclose = () => {
+    ws.onmessage = (ev) => {
+      if (this.ws !== ws) return;
+      this.dispatch(JSON.parse(ev.data as string) as ServerMessage);
+    };
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
       this.emitState("disconnected");
       this.failPending(new Error("connection closed"));
       if (!this.closed) {
@@ -75,7 +102,7 @@ export class EmberClient {
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, 5_000);
       }
     };
-    this.ws.onerror = () => {
+    ws.onerror = () => {
       // onclose follows; reconnect handled there.
     };
   }
@@ -176,6 +203,36 @@ export class EmberClient {
   switchModel(modelName: string): Promise<ServerMessage> {
     const id = genId("model");
     return this.request(fe.modelSwitch(modelName, id), id);
+  }
+
+  /** @-mention file completions (BE-side FileIndex). */
+  completeFiles(query: string, limit = 50): Promise<string[]> {
+    return this.rpc<string[]>("complete_files", { query, limit });
+  }
+
+  /** $-prefix shell mode — captured output from the BE. */
+  runShell(command: string): Promise<{ output: string; exit_code: number }> {
+    return this.rpc("run_shell", { command });
+  }
+
+  /**
+   * Start the browser login flow. Progress arrives as push
+   * notifications on channels `login_status` / `login_result`.
+   */
+  login(): Promise<{ started: boolean }> {
+    return this.rpc("login", {});
+  }
+
+  cancelLogin(): void {
+    this.send({ type: "cancel_login" });
+  }
+
+  mcpToggle(serverName: string, connect: boolean): Promise<ServerMessage> {
+    const id = genId("mcp");
+    return this.request(
+      { type: "mcp_toggle", id, server_name: serverName, connect },
+      id,
+    );
   }
 
   // ── Internals ─────────────────────────────────────────────────────

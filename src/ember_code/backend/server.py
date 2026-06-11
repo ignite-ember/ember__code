@@ -111,6 +111,10 @@ class BackendServer:
 
     # No .session property — all access goes through backend methods
 
+    @property
+    def project_dir(self) -> Path:
+        return self._session.project_dir
+
     async def startup(self) -> None:
         """Async post-construction hook.
 

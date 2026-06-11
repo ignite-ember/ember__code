@@ -1,27 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyEvent,
+  assistantItem,
   errorItem,
   infoItem,
+  shellItem,
   userItem,
   type ChatItem,
 } from "./chat/model";
 import { ChatItemView } from "./components/ChatItems";
+import { Composer, BUILTIN_COMMANDS, type SlashCommand } from "./components/Composer";
 import { HitlDialog, type HitlDecision } from "./components/HitlDialog";
-import { Picker, type PickerEntry } from "./components/Pickers";
-import { PromptInput } from "./components/PromptInput";
+import { Sidebar, type SessionEntry } from "./components/Sidebar";
+import { CodeIndexPanel } from "./components/panels/CodeIndexPanel";
+import { InfoPanel } from "./components/panels/InfoPanel";
+import { LoginPanel } from "./components/panels/LoginPanel";
+import { LoopPanel } from "./components/panels/LoopPanel";
+import { McpPanel } from "./components/panels/McpPanel";
+import { SchedulePanel } from "./components/panels/SchedulePanel";
 import { EmberClient, type ConnectionState } from "./protocol/client";
 import type { HITLRequest, ServerMessage, StatusUpdate } from "./protocol/messages";
+
+type PanelState =
+  | { kind: "none" }
+  | { kind: "mcp" }
+  | { kind: "codeindex" }
+  | { kind: "loop" }
+  | { kind: "schedule" }
+  | { kind: "login" }
+  | { kind: "info"; title: string; markdown: string };
 
 interface ModelRegistry {
   default: string;
   registry: Record<string, Record<string, unknown>>;
-}
-
-interface SessionEntry {
-  session_id?: string;
-  name?: string;
-  created_at?: string;
 }
 
 export default function App() {
@@ -31,54 +42,126 @@ export default function App() {
   const [processing, setProcessing] = useState(false);
   const [status, setStatus] = useState<StatusUpdate | null>(null);
   const [hitl, setHitl] = useState<HITLRequest[] | null>(null);
-  const [picker, setPicker] = useState<"model" | "sessions" | null>(null);
-  const [pickerEntries, setPickerEntries] = useState<PickerEntry[]>([]);
+  const [panel, setPanel] = useState<PanelState>({ kind: "none" });
+  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 700);
+  const [sessions, setSessions] = useState<SessionEntry[]>([]);
+  const [sessionId, setSessionId] = useState("");
+  const [skills, setSkills] = useState<SlashCommand[]>([]);
+  const [modelMenu, setModelMenu] = useState<
+    { name: string; current: boolean }[] | null
+  >(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const processingRef = useRef(false);
 
-  const append = useCallback((item: ChatItem) => setItems((prev) => [...prev, item]), []);
+  const append = useCallback(
+    (item: ChatItem) => setItems((prev) => [...prev, item]),
+    [],
+  );
 
-  // ── Streamed event handler (shared by run + HITL-resume streams) ──
-  const onStreamEvent = useCallback((m: ServerMessage) => {
-    if (m.type === "streaming_done") {
-      // Same contract as the TUI: unblock input when content ends,
-      // even though the BE tail (memory, compression) still drains.
-      setProcessing(false);
-      return;
-    }
-    if (m.type === "run_paused") {
-      setHitl(m.requirements);
-      return;
-    }
-    if (m.type === "status_update") {
-      setStatus(m);
-      return;
-    }
-    if (m.type === "command_result") {
-      const text = m.display_content || m.content;
-      setItems((prev) => [
-        ...prev,
-        m.kind === "error" ? errorItem(text) : infoItem(text),
-      ]);
-      return;
-    }
-    setItems((prev) => applyEvent(prev, m));
+  const setProc = useCallback((v: boolean) => {
+    processingRef.current = v;
+    setProcessing(v);
   }, []);
+
+  // ── Streamed event handler (run + HITL-resume streams) ───────────
+  const onStreamEvent = useCallback(
+    (m: ServerMessage) => {
+      if (m.type === "streaming_done") {
+        // Same contract as the TUI: unblock input when content ends,
+        // even though the BE tail (memory, compression) still drains.
+        setProc(false);
+        return;
+      }
+      if (m.type === "run_paused") {
+        setHitl(m.requirements);
+        return;
+      }
+      if (m.type === "status_update") {
+        setStatus(m);
+        return;
+      }
+      if (m.type === "command_result") {
+        const text = m.display_content || m.content;
+        if (text) {
+          setItems((prev) => [
+            ...prev,
+            m.kind === "error" ? errorItem(text) : assistantItem(text),
+          ]);
+        }
+        return;
+      }
+      setItems((prev) => applyEvent(prev, m));
+    },
+    [setProc],
+  );
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const s = await client.rpc<StatusUpdate>("get_status");
+      if (s) setStatus(s);
+    } catch {
+      /* disconnected */
+    }
+  }, [client]);
+
+  const refreshSessions = useCallback(async () => {
+    try {
+      const list = await client.rpc<Record<string, unknown>[]>("list_sessions");
+      setSessions(
+        (list || []).map((s) => ({
+          session_id: String(s.session_id ?? s.id ?? ""),
+          name: String(s.name ?? s.session_id ?? "?"),
+          detail: String(s.created_at ?? ""),
+        })),
+      );
+    } catch {
+      /* older BE or empty */
+    }
+  }, [client]);
 
   // ── Wiring ────────────────────────────────────────────────────────
   useEffect(() => {
-    const offState = client.onStateChange(setConn);
+    const offState = client.onStateChange((s) => {
+      setConn(s);
+      if (s === "connected") {
+        void (async () => {
+          try {
+            setSessionId(await client.rpc<string>("get_session_id"));
+          } catch {
+            /* ignore */
+          }
+          void refreshStatus();
+          void refreshSessions();
+          try {
+            const defs = await client.rpc<{ name: string; description: string }[]>(
+              "get_skill_definitions",
+            );
+            setSkills(
+              (defs || []).map((d) => ({
+                name: `/${d.name}`,
+                description: d.description || "skill",
+              })),
+            );
+          } catch {
+            /* skills optional */
+          }
+        })();
+      }
+    });
     const offEvent = client.onEvent((m) => {
-      // Uncorrelated events: late HITL, BE status pushes, push
-      // notifications (scheduler, background processes).
       if (m.type === "run_paused") setHitl(m.requirements);
       else if (m.type === "status_update") setStatus(m);
       else if (m.type === "push_notification") {
         if (m.channel === "background_process_done") {
           const p = m.payload as { cmd?: string; exit_code?: number };
-          setItems((prev) => [
-            ...prev,
-            infoItem(`Background process finished (exit ${p.exit_code}): ${p.cmd}`),
-          ]);
+          append(infoItem(`Background process finished (exit ${p.exit_code}): ${p.cmd}`));
+        } else if (m.channel === "scheduler_started") {
+          append(infoItem(`Scheduled task started: ${m.payload.description ?? ""}`));
+        } else if (m.channel === "scheduler_completed") {
+          append(infoItem(`Scheduled task completed: ${m.payload.description ?? ""}`));
+        } else if (m.channel === "orchestrate_progress") {
+          // Rendered inside tool cards by the TUI; keep as dim info.
+          append({ kind: "agent", id: Date.now(), text: String(m.payload.line ?? "") });
         }
       } else if (m.type === "info" || m.type === "error") {
         setItems((prev) => applyEvent(prev, m));
@@ -90,27 +173,26 @@ export default function App() {
       offEvent();
       client.close();
     };
-  }, [client, onStreamEvent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client]);
 
-  // Status poll — mirrors the TUI status bar cadence.
+  // Status poll — mirrors the TUI status-bar cadence.
   useEffect(() => {
     if (conn !== "connected") return;
-    let alive = true;
-    const tick = async () => {
-      try {
-        const s = await client.rpc<StatusUpdate>("get_status");
-        if (alive && s) setStatus(s);
-      } catch {
-        /* disconnected mid-poll */
+    const t = setInterval(refreshStatus, 5_000);
+    return () => clearInterval(t);
+  }, [conn, refreshStatus]);
+
+  // Esc cancels the in-flight run (TUI parity).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && processingRef.current && !hitl) {
+        client.cancel();
       }
     };
-    tick();
-    const t = setInterval(tick, 5_000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [client, conn]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [client, hitl]);
 
   // Autoscroll on new content.
   useEffect(() => {
@@ -118,31 +200,39 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [items, processing]);
 
-  // ── Actions ───────────────────────────────────────────────────────
-  const submit = useCallback(
+  // ── Loop continuation (TUI parity: refire after each run) ────────
+  const continueLoopIfPending = useCallback(async () => {
+    try {
+      const next = await client.rpc<{ prompt?: string } | null>(
+        "pop_pending_loop_iteration",
+      );
+      if (next?.prompt) {
+        append(infoItem(`↻ loop: ${next.prompt}`));
+        await runUserMessage(next.prompt);
+      }
+    } catch {
+      /* no loop pending */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client]);
+
+  const runUserMessage = useCallback(
     async (text: string) => {
-      if (text.startsWith("/")) {
-        await runCommand(text);
-        return;
-      }
-      append(userItem(text));
-      if (processing) {
-        client.queueMessage(text);
-        return;
-      }
-      setProcessing(true);
+      setProc(true);
       try {
         await client.runMessage(text, onStreamEvent);
       } catch (e) {
         append(errorItem(String(e)));
       } finally {
-        setProcessing(false);
+        setProc(false);
+        void continueLoopIfPending();
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [client, processing, onStreamEvent],
+    [client, onStreamEvent],
   );
 
+  // ── Slash command routing ─────────────────────────────────────────
   const runCommand = useCallback(
     async (text: string) => {
       append(userItem(text));
@@ -152,190 +242,353 @@ export default function App() {
           onStreamEvent(result);
           return;
         }
+        const content = result.display_content || result.content;
         switch (result.action) {
           case "clear":
             setItems([]);
-            append(infoItem("Conversation cleared."));
+            try {
+              setSessionId(await client.rpc<string>("get_session_id"));
+            } catch {
+              /* ignore */
+            }
+            append(infoItem("New conversation started."));
+            void refreshSessions();
+            return;
+          case "sessions":
+            setSidebarOpen(true);
+            void refreshSessions();
             return;
           case "model": {
             const reg = await client.rpc<ModelRegistry>("get_model_registry");
-            setPickerEntries(
+            setModelMenu(
               Object.keys(reg.registry)
                 .sort()
-                .map((name) => ({
-                  key: name,
-                  label: name,
-                  current: name === reg.default,
-                })),
+                .map((name) => ({ name, current: name === reg.default })),
             );
-            setPicker("model");
             return;
           }
-          case "sessions": {
-            const sessions = await client.rpc<SessionEntry[]>("list_sessions");
-            setPickerEntries(
-              (sessions || []).map((s) => ({
-                key: s.session_id || "",
-                label: s.name || s.session_id || "?",
-                detail: s.created_at,
-              })),
+          case "model_switched":
+            if (content) append(infoItem(content));
+            void refreshStatus();
+            return;
+          case "login":
+            setPanel({ kind: "login" });
+            return;
+          case "mcp":
+            setPanel({ kind: "mcp" });
+            return;
+          case "codeindex":
+            setPanel({ kind: "codeindex" });
+            return;
+          case "loop":
+            if (content) append(assistantItem(content));
+            setPanel({ kind: "loop" });
+            return;
+          case "schedule":
+            if (content) append(assistantItem(content));
+            setPanel({ kind: "schedule" });
+            return;
+          case "agents":
+          case "skills":
+          case "plugins":
+          case "knowledge":
+          case "hooks":
+            setPanel({
+              kind: "info",
+              title: result.action[0].toUpperCase() + result.action.slice(1),
+              markdown: content,
+            });
+            return;
+          case "help": {
+            const lines = [...BUILTIN_COMMANDS, ...skills].map(
+              (c) => `- \`${c.name}\` — ${c.description}`,
             );
-            setPicker("sessions");
+            setPanel({
+              kind: "info",
+              title: "Help",
+              markdown: `### Commands\n\n${lines.join("\n")}`,
+            });
             return;
           }
+          case "run_prompt":
+            // Skills expand to a prompt that runs as a user message.
+            if (content) await runUserMessage(content);
+            return;
+          case "compact":
+            append(infoItem(content || "Context compacted."));
+            return;
           case "quit":
-            append(infoItem("Use the window close button to quit."));
-            return;
-          case "help":
-            // The TUI draws its own help panel for this action; the
-            // BE sends no content. Render a compact equivalent.
-            setItems((prev) => [
-              ...prev,
-              {
-                kind: "assistant",
-                id: Date.now(),
-                text: [
-                  "### Commands",
-                  "",
-                  "- `/model` — pick a model",
-                  "- `/sessions` — switch session",
-                  "- `/clear` — clear conversation",
-                  "- `/compact` — summarize old context",
-                  "- `/agents`, `/skills`, `/mcp`, `/plugins` — list resources",
-                  "- `/codeindex` — semantic index status",
-                ].join("\n"),
-              } as ChatItem,
-            ]);
+            append(infoItem("Use the window/tab close button to quit."));
             return;
           default:
-            onStreamEvent(result);
+            if (content) {
+              onStreamEvent(result);
+            }
         }
       } catch (e) {
         append(errorItem(String(e)));
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [client, onStreamEvent],
+    [client, onStreamEvent, skills],
+  );
+
+  // ── Submit (message / command / shell) ────────────────────────────
+  const submit = useCallback(
+    async (text: string) => {
+      if (text.startsWith("/")) {
+        await runCommand(text);
+        return;
+      }
+      if (text.startsWith("$")) {
+        const command = text.slice(1).trim();
+        const item = shellItem(command);
+        append(item);
+        try {
+          const res = await client.runShell(command);
+          setItems((prev) =>
+            prev.map((it) =>
+              it.id === item.id && it.kind === "shell"
+                ? { ...it, output: res.output, exitCode: res.exit_code }
+                : it,
+            ),
+          );
+        } catch (e) {
+          append(errorItem(String(e)));
+        }
+        return;
+      }
+      append(userItem(text));
+      if (processingRef.current) {
+        client.queueMessage(text);
+        append(infoItem("Queued — will run after the current turn."));
+        return;
+      }
+      await runUserMessage(text);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [client, runCommand, runUserMessage],
   );
 
   const resolveHitl = useCallback(
     async (decisions: HitlDecision[]) => {
       setHitl(null);
-      setProcessing(true);
+      setProc(true);
       try {
-        await client.resolveHitlBatch(
-          decisions.map((d) => ({ ...d, action: d.action })),
-          onStreamEvent,
-        );
+        await client.resolveHitlBatch(decisions, onStreamEvent);
       } catch (e) {
         append(errorItem(String(e)));
       } finally {
-        setProcessing(false);
+        setProc(false);
+        void continueLoopIfPending();
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [client, onStreamEvent],
   );
 
-  const onPick = useCallback(
-    async (key: string) => {
-      const which = picker;
-      setPicker(null);
+  const pickSession = useCallback(
+    async (id: string) => {
       try {
-        if (which === "model") {
-          const res = await client.switchModel(key);
-          if (res.type === "info") append(infoItem(res.text));
-          const s = await client.rpc<StatusUpdate>("get_status");
-          if (s) setStatus(s);
-        } else if (which === "sessions") {
-          await client.rpc("switch_session", { session_id: key });
-          setItems([]);
-          append(infoItem(`Switched to session ${key}.`));
+        await client.rpc("switch_session", { session_id: id });
+        setSessionId(id);
+        setItems([]);
+        // Load persisted history for the resumed session (TUI parity).
+        try {
+          const history = await client.rpc<Record<string, unknown>[]>(
+            "get_chat_history",
+            { session_id: id },
+          );
+          const loaded: ChatItem[] = [];
+          for (const turn of history || []) {
+            const role = String(turn.role ?? "");
+            const content = String(turn.content ?? "");
+            if (!content) continue;
+            if (role === "user") loaded.push(userItem(content));
+            else if (role === "assistant") loaded.push(assistantItem(content));
+          }
+          setItems(loaded);
+        } catch {
+          /* no history RPC result — start empty */
         }
+        append(infoItem(`Resumed session ${id}.`));
+      } catch (e) {
+        append(errorItem(String(e)));
+      }
+      if (window.innerWidth <= 700) setSidebarOpen(false);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [client],
+  );
+
+  const pickModel = useCallback(
+    async (name: string) => {
+      setModelMenu(null);
+      try {
+        const res = await client.switchModel(name);
+        if (res.type === "info") append(infoItem(res.text));
+        void refreshStatus();
       } catch (e) {
         append(errorItem(String(e)));
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [client, picker],
+    [client],
   );
 
   // ── Render ────────────────────────────────────────────────────────
+  const ctxPct = status
+    ? Math.round((status.context_tokens / Math.max(status.max_context, 1)) * 100)
+    : 0;
+
   return (
-    <div className="app">
-      <header className="app-header">
-        <div className="brand">
-          <div className="brand-flame" />
-          Ember Code
-        </div>
-        <div className="header-spacer" />
-        {status && (
-          <button className="btn" onClick={() => runCommand("/model")}>
-            {status.model || "model"}
+    <div className="shell">
+      <Sidebar
+        open={sidebarOpen}
+        sessions={sessions}
+        currentId={sessionId}
+        onNewChat={() => void runCommand("/clear")}
+        onPick={(id) => void pickSession(id)}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      <div className="main">
+        <header className="app-header">
+          <button
+            className="icon-btn"
+            title="Toggle sessions"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >
+            ☰
           </button>
-        )}
-        <button className="btn" onClick={() => runCommand("/sessions")}>
-          Sessions
-        </button>
-        <span className="conn-badge">
-          <span className={`conn-dot ${conn}`} />
-          {conn}
-        </span>
-      </header>
+          {!sidebarOpen && (
+            <div className="brand">
+              <div className="brand-flame" />
+              <span>Ember Code</span>
+            </div>
+          )}
+          <div className="header-spacer" />
+          <button className="chip" onClick={() => void runCommand("/model")}>
+            <span className="chip-label">{status?.model || "model"}</span> ▾
+          </button>
+          {status?.cloud_connected && (
+            <span className="chip" style={{ cursor: "default" }}>
+              <span className="chip-label">☁ {status.cloud_org}</span>
+            </span>
+          )}
+          <span className="chip" style={{ cursor: "default" }}>
+            <span className={`dot ${conn}`} />
+            <span className="chip-label">{conn}</span>
+          </span>
+          {modelMenu && (
+            <>
+              <div
+                style={{ position: "fixed", inset: 0, zIndex: 39 }}
+                onClick={() => setModelMenu(null)}
+              />
+              <div className="dropdown">
+                {modelMenu.map((m) => (
+                  <div
+                    key={m.name}
+                    className={`popup-item ${m.current ? "active" : ""}`}
+                    onClick={() => void pickModel(m.name)}
+                  >
+                    <span className="cmd">{m.name}</span>
+                    {m.current && <span className="desc">current</span>}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </header>
 
-      <div className="conversation" ref={scrollRef}>
-        {items.length === 0 && (
-          <div className="welcome">
-            <div
-              className="brand-flame"
-              style={{ width: 48, height: 48, margin: "0 auto", borderRadius: 12 }}
-            />
-            <h1>Ember Code</h1>
-            <p>Type a message or /help for commands.</p>
+        <div className="conversation" ref={scrollRef}>
+          <div className="col">
+            {items.length === 0 && (
+              <div className="welcome">
+                <div
+                  className="brand-flame"
+                  style={{ width: 52, height: 52, margin: "0 auto", borderRadius: 14 }}
+                />
+                <h1>Ember Code</h1>
+                <p>Your AI coding agent, in this project.</p>
+                <div className="welcome-hints">
+                  <button className="chip" onClick={() => void runCommand("/help")}>
+                    /help
+                  </button>
+                  <button className="chip" onClick={() => void runCommand("/model")}>
+                    /model
+                  </button>
+                  <button className="chip" onClick={() => void runCommand("/codeindex")}>
+                    /codeindex
+                  </button>
+                  <button className="chip" onClick={() => void runCommand("/agents")}>
+                    /agents
+                  </button>
+                </div>
+              </div>
+            )}
+            {items.map((item) => (
+              <ChatItemView key={item.id} item={item} />
+            ))}
+            {processing && (
+              <div className="msg-info" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span className="dot connecting" />
+                Thinking… <span style={{ color: "var(--fg-faint)" }}>Esc to cancel</span>
+              </div>
+            )}
           </div>
-        )}
-        {items.map((item) => (
-          <ChatItemView key={item.id} item={item} />
-        ))}
-        {processing && (
-          <div className="thinking-indicator">
-            <span className="conn-dot" />
-            Thinking…
-            <button className="btn" style={{ marginLeft: 8 }} onClick={() => client.cancel()}>
-              Cancel (Esc)
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="prompt-row">
-        <div className="prompt-box">
-          <PromptInput
-            disabled={conn !== "connected"}
-            placeholder={
-              conn === "connected"
-                ? "Type a message or /help  ·  Enter to send, Shift+Enter for newline"
-                : "Connecting to backend…"
-            }
-            onSubmit={submit}
-          />
         </div>
-        <div className="statusbar">
+
+        <Composer
+          client={client}
+          connected={conn === "connected"}
+          processing={processing}
+          skills={skills}
+          onSubmit={(t) => void submit(t)}
+          onStop={() => client.cancel()}
+        />
+        <div className="statusline" style={{ marginTop: 0, paddingBottom: 8 }}>
           {status && (
             <>
               <span>{status.model}</span>
+              <span>session {sessionId || "—"}</span>
               {status.cloud_connected && <span>☁ {status.cloud_org}</span>}
-              <span>
-                ctx {Math.round((status.context_tokens / Math.max(status.max_context, 1)) * 100)}%
-              </span>
+              <span>ctx {ctxPct}%</span>
             </>
           )}
         </div>
       </div>
 
-      {hitl && <HitlDialog requirements={hitl} onResolve={resolveHitl} />}
-      {picker && (
-        <Picker entries={pickerEntries} onPick={onPick} onClose={() => setPicker(null)} />
+      {hitl && <HitlDialog requirements={hitl} onResolve={(d) => void resolveHitl(d)} />}
+      {panel.kind === "mcp" && (
+        <McpPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "codeindex" && (
+        <CodeIndexPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "loop" && (
+        <LoopPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "schedule" && (
+        <SchedulePanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "info" && (
+        <InfoPanel
+          title={panel.title}
+          markdown={panel.markdown}
+          onClose={() => setPanel({ kind: "none" })}
+        />
+      )}
+      {panel.kind === "login" && (
+        <LoginPanel
+          client={client}
+          onDone={(ok, detail) => {
+            setPanel({ kind: "none" });
+            append(ok ? infoItem(`Logged in as ${detail}`) : errorItem(`Login failed: ${detail}`));
+            void refreshStatus();
+          }}
+        />
       )}
     </div>
   );

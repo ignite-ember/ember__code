@@ -75,7 +75,9 @@ class WebSocketServerTransport(Transport):
             self._port = sockets[0].getsockname()[1]
         logger.info("BE listening on ws://%s:%d", self._host, self._port)
 
-    async def wait_for_connection(self, timeout: float = 30.0) -> None:
+    async def wait_for_connection(self, timeout: float | None = 30.0) -> None:
+        """Wait for the first client. ``timeout=None`` waits forever —
+        GUI shells may open the webview long after spawning the BE."""
         await asyncio.wait_for(self._connected.wait(), timeout=timeout)
 
     async def _handler(self, conn) -> None:

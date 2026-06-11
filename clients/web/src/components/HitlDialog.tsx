@@ -35,26 +35,29 @@ export function HitlDialog({
   };
 
   return (
-    <div className="hitl-overlay">
-      <div className="hitl-dialog">
-        <div className="hitl-title">
+    <div className="overlay">
+      <div className="dialog">
+        <div className="dialog-title">
+          <span className="tool-status running" />
           Allow {req.friendly_name || req.tool_name}?
           {requirements.length > 1 && (
-            <span className="dim">
-              {" "}
-              ({index + 1}/{requirements.length})
+            <span style={{ color: "var(--fg-faint)", fontWeight: 400 }}>
+              {index + 1}/{requirements.length}
             </span>
           )}
         </div>
-        {req.agent_path && <div className="hitl-subtitle">{req.agent_path}</div>}
-        {req.details && <div className="hitl-subtitle">{req.details}</div>}
-        <div className="hitl-args">{JSON.stringify(req.tool_args, null, 2)}</div>
-        <div className="hitl-actions">
+        {req.agent_path && <div className="dialog-sub">{req.agent_path}</div>}
+        {req.details && <div className="dialog-sub">{req.details}</div>}
+        <div className="dialog-pre">{JSON.stringify(req.tool_args, null, 2)}</div>
+        <div className="dialog-actions">
           <button className="btn btn-primary" onClick={() => decide("confirm", "once")}>
             Allow once
           </button>
           <button className="btn" onClick={() => decide("confirm", "always")}>
             Always allow
+          </button>
+          <button className="btn" onClick={() => decide("confirm", "similar")}>
+            Allow similar
           </button>
           <button className="btn btn-danger" onClick={() => decide("reject", "")}>
             Reject

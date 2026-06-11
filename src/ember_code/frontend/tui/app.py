@@ -24,8 +24,8 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from ember_code import __version__
+from ember_code.core.utils.file_index import FileIndex
 from ember_code.frontend.tui.conversation_view import ConversationView
-from ember_code.frontend.tui.file_index import FileIndex
 from ember_code.frontend.tui.hitl_handler import HITLHandler
 from ember_code.frontend.tui.input_handler import InputHandler, extract_at_mention, shortcut_label
 from ember_code.frontend.tui.run_controller import RunController

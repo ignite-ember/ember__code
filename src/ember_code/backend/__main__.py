@@ -166,6 +166,45 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
             for s in pool.list_skills()
         ]
 
+    # ── GUI-client parity helpers ─────────────────────────────────
+    # The TUI does both of these in its own (FE) process; webview
+    # clients have no filesystem or shell access, so the BE provides
+    # them over RPC. Loopback-only by transport design.
+
+    _file_index_cache: dict[str, Any] = {}
+
+    async def _complete_files(args: dict) -> list[str]:
+        from ember_code.core.utils.file_index import FileIndex
+
+        idx = _file_index_cache.get("idx")
+        if idx is None:
+            idx = FileIndex(backend.project_dir)
+            _file_index_cache["idx"] = idx
+        await idx.ensure_loaded()
+        return idx.match(str(args.get("query", "")), limit=int(args.get("limit", 50)))
+
+    async def _run_shell(args: dict) -> dict:
+        """$-prefix shell mode. Captured (non-interactive) by design —
+        parity with the TUI's inline shell for the common cases."""
+        command = str(args.get("command", "")).strip()
+        if not command:
+            return {"output": "", "exit_code": 0}
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(backend.project_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {"output": "(timed out after 120s)", "exit_code": -1}
+        return {
+            "output": out.decode(errors="replace")[-100_000:],
+            "exit_code": proc.returncode,
+        }
+
     from ember_code.protocol.rpc import RpcMethod, validate_rpc_table
 
     table: dict[str, Any] = {
@@ -243,6 +282,9 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
             "registry": dict(backend.settings.models.registry.items()),
         },
         RpcMethod.CHECK_FOR_UPDATE: lambda args: _check_update(),
+        # ── GUI-client parity ─────────────────────────────────────
+        RpcMethod.COMPLETE_FILES: _complete_files,
+        RpcMethod.RUN_SHELL: _run_shell,
         # ── Agents ────────────────────────────────────────────────
         RpcMethod.GET_AGENT_DETAILS: lambda args: backend.get_agent_details(),
         RpcMethod.PROMOTE_EPHEMERAL_AGENT: lambda args: backend.promote_ephemeral_agent(
@@ -481,7 +523,14 @@ async def _run(
     backend._session.start_marketplace_refresh_background()
 
     try:
-        await transport.wait_for_connection()
+        if ws_port is not None:
+            # GUI shells (Tauri / VSCode / JetBrains webviews) may open
+            # long after the BE is ready, and webviews reload at will.
+            # No timeout here — shutdown comes from signals, the parent
+            # watchdog, or an explicit Shutdown message instead.
+            await transport.wait_for_connection(timeout=None)
+        else:
+            await transport.wait_for_connection()
         logger.info("FE connected, processing messages")
 
         # Each FE message is dispatched as its own task so the main loop

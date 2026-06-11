@@ -5,7 +5,7 @@
  * go to a dimmed block, tool events create/update cards.
  */
 
-import type { ServerMessage } from "../protocol/messages";
+import type { DiffRow, ServerMessage } from "../protocol/messages";
 
 export type ChatItem =
   | { kind: "user"; id: number; text: string }
@@ -20,13 +20,19 @@ export type ChatItem =
       status: "running" | "done" | "error";
       result: string;
       isError: boolean;
+      diffRows: DiffRow[] | null;
     }
   | { kind: "agent"; id: number; text: string }
   | { kind: "info"; id: number; text: string }
-  | { kind: "error"; id: number; text: string };
+  | { kind: "error"; id: number; text: string }
+  | { kind: "shell"; id: number; command: string; output: string; exitCode: number | null };
 
 let itemId = 0;
 const nid = () => ++itemId;
+
+export function shellItem(command: string): ChatItem {
+  return { kind: "shell", id: nid(), command, output: "", exitCode: null };
+}
 
 export function userItem(text: string): ChatItem {
   return { kind: "user", id: nid(), text };
@@ -73,6 +79,7 @@ export function applyEvent(items: ChatItem[], msg: ServerMessage): ChatItem[] {
           status: "running",
           result: "",
           isError: false,
+          diffRows: null,
         },
       ];
 
@@ -86,6 +93,7 @@ export function applyEvent(items: ChatItem[], msg: ServerMessage): ChatItem[] {
             status: msg.is_error ? "error" : "done",
             result: msg.full_result || msg.summary,
             isError: msg.is_error,
+            diffRows: msg.diff_rows ?? null,
           };
           return [...items.slice(0, i), updated, ...items.slice(i + 1)];
         }

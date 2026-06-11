@@ -121,6 +121,15 @@ class RpcMethod(StrEnum):
     # ── Misc ──────────────────────────────────────────────────────
     CHECK_FOR_UPDATE = "check_for_update"
 
+    # ── GUI-client parity (TUI does these FE-side) ────────────────
+    # @-mention file completions — webviews can't touch the FS, so
+    # the FileIndex runs in the BE for them.
+    COMPLETE_FILES = "complete_files"
+    # $-prefix shell mode — the TUI spawns the shell in its own
+    # process; GUI shells route it through the BE (same machine,
+    # same user, project dir as cwd).
+    RUN_SHELL = "run_shell"
+
     # ── Agents ────────────────────────────────────────────────────
     GET_AGENT_DETAILS = "get_agent_details"
     PROMOTE_EPHEMERAL_AGENT = "promote_ephemeral_agent"

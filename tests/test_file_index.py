@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ember_code.frontend.tui.file_index import (
+from ember_code.core.utils.file_index import (
     FileIndex,
     _fallback_list,
     _git_ls_files,
