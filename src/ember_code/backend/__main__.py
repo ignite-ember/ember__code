@@ -285,6 +285,13 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         # ── GUI-client parity ─────────────────────────────────────
         RpcMethod.COMPLETE_FILES: _complete_files,
         RpcMethod.RUN_SHELL: _run_shell,
+        # Pool-level method — intercepted in the dispatch loop before
+        # per-runtime routing; this stub only exists so the
+        # exhaustiveness check passes and a future regression (the
+        # interception being removed) fails loudly.
+        RpcMethod.ATTACH_SESSION: lambda args: (_ for _ in ()).throw(
+            RuntimeError("attach_session must be handled at the session-pool level")
+        ),
         # ── Agents ────────────────────────────────────────────────
         RpcMethod.GET_AGENT_DETAILS: lambda args: backend.get_agent_details(),
         RpcMethod.PROMOTE_EPHEMERAL_AGENT: lambda args: backend.promote_ephemeral_agent(
@@ -579,6 +586,14 @@ async def _run(
             SessionRuntime,
             SessionStampingTransport,
         )
+        from ember_code.core.session.session_directories import SessionDirectoryStore
+        from ember_code.protocol.rpc import RpcMethod
+
+        # Global session → project-dir registry: sessions can live in
+        # different repos ("TUI opened in different directories", one
+        # BE). Recorded on boot/rename, consulted on lazy resume.
+        dir_registry = SessionDirectoryStore.from_data_dir(settings.storage.data_dir)
+        dir_registry.set_dir(backend.session_id, backend.project_dir)
 
         default_runtime = SessionRuntime(
             backend=backend,
@@ -590,13 +605,24 @@ async def _run(
         async def _create_runtime(session_id: str) -> SessionRuntime:
             from ember_code.backend.server import BackendServer
 
+            # The session's own directory, if it ever had one; new or
+            # unregistered sessions inherit the BE's boot directory.
+            rt_dir = Path(dir_registry.get_dir(session_id) or project_dir)
+            if not rt_dir.is_dir():
+                logger.warning(
+                    "session %s dir %s missing; falling back to %s",
+                    session_id,
+                    rt_dir,
+                    project_dir,
+                )
+                rt_dir = project_dir
             # Deep-copy settings: resuming applies the session's
             # persisted model preference, which must not leak into
             # other runtimes' defaults.
             rt_settings = settings.model_copy(deep=True)
             rt_backend = BackendServer(
                 rt_settings,
-                project_dir=project_dir,
+                project_dir=rt_dir,
                 resume_session_id=session_id,
                 additional_dirs=additional_dirs,
             )
@@ -605,6 +631,7 @@ async def _run(
             rt_backend.wire_queue_hook(rt_queue)
             stamped = SessionStampingTransport(transport, rt_backend)
             rt_table = _build_rpc_table(rt_backend, stamped, login_state)
+            dir_registry.set_dir(rt_backend.session_id, rt_backend.project_dir)
             return SessionRuntime(
                 backend=rt_backend,
                 rpc_table=rt_table,
@@ -614,16 +641,63 @@ async def _run(
 
         pool = SessionPool(default_runtime, _create_runtime)
 
+        async def _attach_session(message: Any) -> None:
+            """Pool-level RPC: bind/create a session, optionally in a
+            specific project directory. Returns {session_id,
+            project_dir} so the view can adopt the binding."""
+            args = message.args or {}
+            session_id = str(args.get("session_id") or "")
+            wanted_dir = str(args.get("project_dir") or "")
+            if wanted_dir:
+                wd = Path(wanted_dir).expanduser()
+                if not wd.is_dir():
+                    await transport.send(
+                        msg.RPCResponse(
+                            id=message.id or "", error=f"not a directory: {wanted_dir}"
+                        )
+                    )
+                    return
+                if not session_id:
+                    import uuid as _uuid
+
+                    session_id = str(_uuid.uuid4())[:8]
+                # Register BEFORE creation so the factory picks the
+                # directory up.
+                dir_registry.set_dir(session_id, wd.resolve())
+            if not session_id:
+                import uuid as _uuid
+
+                session_id = str(_uuid.uuid4())[:8]
+            rt = await pool.get_or_create(session_id)
+            await transport.send(
+                msg.RPCResponse(
+                    id=message.id or "",
+                    result={
+                        "session_id": rt.backend.session_id,
+                        "project_dir": str(rt.backend.project_dir),
+                    },
+                )
+            )
+
         async def _dispatch(message: Any) -> None:
             try:
+                # Pool-level RPCs bypass per-runtime routing.
+                if (
+                    isinstance(message, msg.RPCRequest)
+                    and message.method == RpcMethod.ATTACH_SESSION
+                ):
+                    await _attach_session(message)
+                    return
                 rt = await pool.get_or_create(message.session_id or "")
                 rt.remember_id()
                 await _handle_message(
                     message, rt.backend, rt.transport, rt.rpc_table, rt.queue, login_state
                 )
                 # Pick up id renames (/clear) so views still stamping
-                # the old id keep routing here.
+                # the old id keep routing here, and keep the directory
+                # registry current for the renewed id.
                 rt.remember_id()
+                dir_registry.set_dir(rt.backend.session_id, rt.backend.project_dir)
             except Exception as exc:
                 logger.error("message handler crashed: %s", exc, exc_info=True)
                 with contextlib.suppress(Exception):

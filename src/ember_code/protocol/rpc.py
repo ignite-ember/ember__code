@@ -127,8 +127,13 @@ class RpcMethod(StrEnum):
     COMPLETE_FILES = "complete_files"
     # $-prefix shell mode — the TUI spawns the shell in its own
     # process; GUI shells route it through the BE (same machine,
-    # same user, project dir as cwd).
+    # same user, the SESSION's project dir as cwd).
     RUN_SHELL = "run_shell"
+    # Bind/create a session, optionally in a specific project
+    # directory. Handled at the session-pool level (backend/__main__
+    # dispatch), NOT by per-runtime tables — the per-runtime entry is
+    # a guard stub.
+    ATTACH_SESSION = "attach_session"
 
     # ── Agents ────────────────────────────────────────────────────
     GET_AGENT_DETAILS = "get_agent_details"

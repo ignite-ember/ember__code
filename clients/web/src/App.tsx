@@ -491,6 +491,31 @@ export default function App() {
     [client, onStreamEvent],
   );
 
+  const newChatInFolder = useCallback(async () => {
+    const dir = window.prompt(
+      "Project directory for the new session (absolute path):",
+    );
+    if (!dir?.trim()) return;
+    try {
+      // Pool-level attach: creates a fresh session whose tools and
+      // $-shell run in that directory; the binding persists with
+      // the session (global session→dir registry on the BE).
+      const res = await client.rpc<{ session_id: string; project_dir: string }>(
+        "attach_session",
+        { project_dir: dir.trim() },
+      );
+      client.sessionId = res.session_id;
+      setSessionId(res.session_id);
+      setItems([]);
+      append(infoItem(`New session ${res.session_id} in ${res.project_dir}`));
+      void refreshSessions();
+      void refreshStatus();
+    } catch (e) {
+      append(errorItem(String(e)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client]);
+
   const pickSession = useCallback(
     async (id: string) => {
       try {
@@ -579,6 +604,7 @@ export default function App() {
         sessions={sessions}
         currentId={sessionId}
         onNewChat={() => void runCommand("/clear", false)}
+        onNewChatInFolder={() => void newChatInFolder()}
         onPick={(id) => void pickSession(id)}
         onClose={() => setSidebarOpen(false)}
       />
