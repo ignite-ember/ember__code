@@ -1,0 +1,19 @@
+<idea-plugin>
+    <id>sh.igniteember.ember-code</id>
+    <name>Ember Code</name>
+    <vendor url="https://ignite-ember.sh">Ignite Ember</vendor>
+    <description><![CDATA[
+        Ember Code AI coding assistant — chat tool window backed by the
+        local Ember backend. Requires the <code>ignite-ember</code>
+        Python package.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Ember Code"
+            anchor="right"
+            factoryClass="sh.igniteember.embercode.EmberToolWindowFactory"/>
+    </extensions>
+</idea-plugin>

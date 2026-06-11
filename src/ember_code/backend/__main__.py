@@ -55,19 +55,31 @@ async def _watch_parent(parent_pid: int, shutdown_event: asyncio.Event) -> None:
 
 
 @click.command()
-@click.option("--socket", "socket_path", required=True, help="Unix socket path")
+@click.option("--socket", "socket_path", default=None, help="Unix socket path")
+@click.option(
+    "--ws-port",
+    "ws_port",
+    type=int,
+    default=None,
+    help="Listen on a loopback WebSocket port instead of a Unix socket "
+    "(0 = auto-assign; the bound port is printed in the ready line). "
+    "Used by GUI clients (Tauri / VSCode / JetBrains webviews).",
+)
 @click.option("--project-dir", type=click.Path(exists=True), default=".")
 @click.option("--resume-session", "resume_session_id", default=None)
 @click.option("--additional-dirs", multiple=True, default=())
 @click.option("--debug", is_flag=True, default=False)
 def main(
-    socket_path: str,
+    socket_path: str | None,
+    ws_port: int | None,
     project_dir: str,
     resume_session_id: str | None,
     additional_dirs: tuple[str, ...],
     debug: bool,
 ) -> None:
     """Start the Ember Code backend server."""
+    if (socket_path is None) == (ws_port is None):
+        raise click.UsageError("exactly one of --socket or --ws-port is required")
     if debug:
         log_path = Path.home() / ".ember" / "debug.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +92,7 @@ def main(
         logging.getLogger("ember_code").setLevel(logging.DEBUG)
 
     extra_dirs = [Path(d) for d in additional_dirs] if additional_dirs else None
-    asyncio.run(_run(socket_path, Path(project_dir), resume_session_id, extra_dirs))
+    asyncio.run(_run(socket_path, Path(project_dir), resume_session_id, extra_dirs, ws_port))
 
 
 async def _check_update() -> dict | None:
@@ -315,19 +327,26 @@ def _start_scheduler_with_push(backend: Any, transport: Any) -> None:
 
 
 async def _run(
-    socket_path: str,
+    socket_path: str | None,
     project_dir: Path,
     resume_session_id: str | None,
     additional_dirs: list[Path] | None = None,
+    ws_port: int | None = None,
 ) -> None:
     from ember_code.backend.server import BackendServer
     from ember_code.core.config.settings import load_settings
     from ember_code.protocol import messages as msg
-    from ember_code.transport.unix_socket import UnixSocketServerTransport
 
     settings = load_settings(project_dir=project_dir)
 
-    transport = UnixSocketServerTransport(socket_path)
+    if ws_port is not None:
+        from ember_code.transport.websocket import WebSocketServerTransport
+
+        transport: Any = WebSocketServerTransport(port=ws_port)
+    else:
+        from ember_code.transport.unix_socket import UnixSocketServerTransport
+
+        transport = UnixSocketServerTransport(socket_path)
     await transport.start()
 
     backend = BackendServer(
@@ -440,7 +459,15 @@ async def _run(
     # loading in a background thread — that's fine.
     import json as _json
 
-    print(_json.dumps({"status": "ready", "socket": str(socket_path)}), flush=True)
+    ready: dict[str, Any] = {"status": "ready"}
+    if ws_port is not None:
+        # The actual bound port — meaningful when --ws-port 0 asked
+        # for auto-assign. Shells parse this to point their webview.
+        ready["ws_port"] = transport.port
+        ready["ws_url"] = f"ws://127.0.0.1:{transport.port}"
+    else:
+        ready["socket"] = str(socket_path)
+    print(_json.dumps(ready), flush=True)
 
     # Start knowledge loading AFTER READY — model download is GIL-heavy
     # and would block the main thread if started during __init__.

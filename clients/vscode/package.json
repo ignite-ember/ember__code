@@ -1,0 +1,43 @@
+{
+  "name": "ember-code-vscode",
+  "displayName": "Ember Code",
+  "description": "Ember Code AI coding assistant — chat panel backed by the local Ember backend",
+  "version": "0.1.0",
+  "publisher": "ignite-ember",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Chat"],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "emberCode.open",
+        "title": "Ember Code: Open Chat"
+      }
+    ],
+    "configuration": {
+      "title": "Ember Code",
+      "properties": {
+        "emberCode.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python interpreter with ignite-ember installed (e.g. a venv's bin/python)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:ui": "npm --prefix ../web run build && rm -rf media && cp -r ../web/dist media",
+    "compile": "tsc -p .",
+    "build": "npm run build:ui && npm run compile",
+    "watch": "tsc -w -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.7.2"
+  }
+}

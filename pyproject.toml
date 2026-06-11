@@ -43,6 +43,7 @@ dependencies = [
     "dateparser~=1.4.0",
     "chromadb~=1.5.9",
     "sentence-transformers~=5.5.1",
+    "websockets~=16.0",
 ]
 
 [project.optional-dependencies]

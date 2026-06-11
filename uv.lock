@@ -1118,6 +1118,7 @@ dependencies = [
     { name = "textual" },
     { name = "tiktoken" },
     { name = "tokenizers" },
+    { name = "websockets" },
     { name = "wikipedia" },
     { name = "youtube-transcript-api" },
 ]
@@ -1175,6 +1176,7 @@ requires-dist = [
     { name = "textual", specifier = "~=8.2.7" },
     { name = "tiktoken", specifier = "~=0.13.0" },
     { name = "tokenizers", specifier = "~=0.22.2" },
+    { name = "websockets", specifier = "~=16.0" },
     { name = "wikipedia", specifier = "~=1.4.0" },
     { name = "youtube-transcript-api", specifier = "~=1.2.4" },
 ]
