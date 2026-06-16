@@ -81,10 +81,10 @@ def parse_recurrence(text: str) -> tuple[str, datetime | None]:
             if at_time is not None:
                 return canonical, at_time
 
-    # "every N units"
-    m = re.match(r"every\s+(\d+)\s+(min(?:ute)?s?|hours?|days?|weeks?)", text)
+    # "every N units" — N defaults to 1 so "every minute" works.
+    m = re.match(r"every\s+(?:(\d+)\s+)?(min(?:ute)?s?|hours?|days?|weeks?)", text)
     if m:
-        amount = int(m.group(1))
+        amount = int(m.group(1)) if m.group(1) else 1
         unit = m.group(2)
         canonical = f"every {amount} {_normalize_unit(unit)}"
 

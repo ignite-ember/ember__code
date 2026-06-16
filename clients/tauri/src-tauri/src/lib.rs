@@ -77,6 +77,9 @@ fn project_dir() -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = project_dir();
             let (child, port) = spawn_backend(&dir).map_err(|e| -> Box<dyn std::error::Error> {
@@ -88,6 +91,38 @@ pub fn run() {
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App(url.into()))
                 .title("Ember Code")
                 .inner_size(1100.0, 780.0)
+                // Native folder picker for the web UI's project-lock
+                // chip — the in-app directory browser is only the
+                // plain-browser fallback.
+                .initialization_script(
+                    r#"window.__EMBER_PICK_DIR__ = (start) =>
+                        window.__TAURI__.core.invoke('plugin:dialog|open', {
+                            options: {
+                                directory: true,
+                                multiple: false,
+                                defaultPath: start || undefined
+                            }
+                        });
+                    // Native open-file bridge for host.openFile in the FE.
+                    // Routes through the opener plugin so files open in
+                    // the user's default OS app (their editor, image
+                    // viewer, etc.) rather than the in-app preview.
+                    window.__EMBER_HOST__ = Object.assign(window.__EMBER_HOST__ || {}, {
+                        openFile: (path) => window.__TAURI__.core.invoke(
+                            'plugin:opener|open_path', { path }
+                        ),
+                        revealInFolder: (path) => window.__TAURI__.core.invoke(
+                            'plugin:opener|reveal_item_in_dir', { path }
+                        ),
+                        // OS-banner notifications for host.notify in the FE.
+                        // Used for scheduled-task completions when the
+                        // app is backgrounded.
+                        notify: (payload) => window.__TAURI__.core.invoke(
+                            'plugin:notification|notify',
+                            { options: { title: payload.title, body: payload.body || '' } }
+                        ),
+                    });"#,
+                )
                 .build()?;
             Ok(())
         })

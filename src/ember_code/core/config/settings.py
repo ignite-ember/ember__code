@@ -100,7 +100,13 @@ class ContextConfig(BaseModel):
 class OrchestrationConfig(BaseModel):
     max_nesting_depth: int = 5
     max_total_agents: int = 20
-    sub_team_timeout: int = 600
+    # Per-specialist deadline. 10 minutes was too aggressive for
+    # reasoning-heavy broadcasts (security audits, large refactors)
+    # where each specialist can chew through many tool calls. Bump
+    # to 30m — long enough for a thorough analysis, short enough
+    # that a hung model provider still gets killed before the
+    # session feels frozen.
+    sub_team_timeout: int = 1800
     max_task_iterations: int = 10
     generate_ephemeral: bool = True
     max_ephemeral_per_session: int = 5

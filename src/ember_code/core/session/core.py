@@ -3,6 +3,7 @@
 import asyncio
 import getpass
 import logging
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -1215,6 +1216,17 @@ class Session:
             except Exception as exc:
                 logger.debug("sweep_stale_dirs failed (%s); continuing", exc)
 
+            # Resolve the repository against the cloud once on
+            # startup. ``sync_now`` short-circuits when HEAD is
+            # already indexed locally (the common reattach case), so
+            # without an explicit kick the resolver never runs and
+            # the panel shows install_state="unknown" forever.
+            try:
+                resolver = self.code_index_sync.resolver
+                if resolver is not None:
+                    await resolver.resolve()
+            except Exception as exc:
+                logger.debug("codeindex resolver kick failed (%s)", exc)
             await self.code_index_sync.sync_now()
             # If that initial sync populated the chroma (most common
             # case: fresh checkout, prior session wiped, first
@@ -1458,14 +1470,15 @@ class Session:
 
     # ── Dynamic context compaction ─────────────────────────────────
 
-    async def _compact(self) -> None:
+    async def _compact(self) -> str | None:
         """Generate a summary of the conversation, then clear old messages.
 
         1. Generate summary covering the full conversation
         2. Delete all runs from the session (summary preserved)
         3. Enable summary injection so the agent has context
 
-        After compaction, messages accumulate fresh until next compaction.
+        Returns an error message if the summariser failed (history is still
+        cleared, but the summary will be empty). Returns ``None`` on success.
         """
         # Load the session from DB
         agno_session = await self.main_team.aget_session(
@@ -1474,8 +1487,9 @@ class Session:
         )
         if agno_session is None:
             logger.warning("No session found to compact")
-            return
+            return "Session not found in DB"
 
+        summariser_error: str | None = None
         # Create summary manager and generate summary
         try:
             from agno.session.summary import SessionSummaryManager
@@ -1484,7 +1498,46 @@ class Session:
             await ssm.acreate_session_summary(session=agno_session)
             logger.info("Session summary generated")
         except Exception as e:
+            # Surface the underlying error so the UI can explain why the
+            # summary is empty instead of just showing a generic placeholder.
+            summariser_error = f"{type(e).__name__}: {e}"
             logger.warning("Failed to generate session summary: %s", e)
+
+        # Fallback summariser: Agno's SessionSummaryManager hands the
+        # model a JSON-structured prompt, which MiniMax-M2.7 (reasoning
+        # model that wraps responses in ``<think>`` tags) often fails
+        # to fill in — the call returns without raising but the summary
+        # stays empty. Run a plain free-text summariser if that
+        # happened, so the user gets a useful card instead of a
+        # silently-empty one.
+        summary_obj = getattr(agno_session, "summary", None)
+        summary_text = getattr(summary_obj, "summary", None) if summary_obj else None
+        if not summary_text:
+            try:
+                summary_text = await self._fallback_summarise(agno_session)
+            except Exception as e:
+                logger.warning("Fallback summariser failed: %s", e)
+                if not summariser_error:
+                    summariser_error = f"fallback: {type(e).__name__}: {e}"
+            else:
+                if summary_text:
+                    # Hand the text to Agno's summary structure so
+                    # subsequent runs see it via the normal injection
+                    # path. ``SessionSummary`` is what
+                    # SessionSummaryManager populates on success.
+                    try:
+                        from agno.session.summary import SessionSummary
+
+                        agno_session.summary = SessionSummary(summary=summary_text)
+                        logger.info(
+                            "Session summary generated via fallback (%d chars)",
+                            len(summary_text),
+                        )
+                    except Exception as e:
+                        logger.warning("Could not attach fallback summary to session: %s", e)
+                        # Keep ``summary_text`` non-empty so
+                        # ``force_compact`` can still surface it to the
+                        # user even if persisting failed.
 
         # Clear runs — summary stays
         agno_session.runs = []
@@ -1499,6 +1552,80 @@ class Session:
         # session, run_response, and internal state all hold old messages.
         self.main_team = self._build_main_agent()
         logger.info("Compacted: summary injected, agent rebuilt")
+        return summariser_error
+
+    async def _fallback_summarise(self, agno_session: Any) -> str:
+        """Plain-text summariser used when Agno's structured summariser
+        returns nothing. Builds a short transcript from the session's
+        runs, asks the model for a free-form summary, and strips any
+        ``<think>…</think>`` blocks the reasoning model emits.
+
+        Why not use Agno here too? Agno's SessionSummaryManager wraps
+        the prompt with JSON-schema instructions that MiniMax often
+        ignores, leaving the structured field empty. A free-text
+        prompt has no such expectation — whatever the model writes is
+        the summary.
+        """
+        # Pull a compact transcript from the runs. ``input`` / output
+        # are the only fields the summary cares about; tool calls and
+        # internal events would just bloat the prompt and risk hitting
+        # the context cap for a *summarise the context* call.
+        lines: list[str] = []
+        for run in getattr(agno_session, "runs", None) or []:
+            try:
+                msgs = getattr(run, "messages", None) or []
+                for m in msgs:
+                    role = getattr(m, "role", None) or m.get("role")  # type: ignore[union-attr]
+                    content = getattr(m, "content", None) or (
+                        m.get("content") if hasattr(m, "get") else None
+                    )
+                    if (
+                        role in ("user", "assistant")
+                        and isinstance(content, str)
+                        and content.strip()
+                    ):
+                        # Cap per-message length so a single long
+                        # response doesn't dominate the prompt.
+                        snippet = content.strip()
+                        if len(snippet) > 800:
+                            snippet = snippet[:800] + "…"
+                        lines.append(f"{role.upper()}: {snippet}")
+            except Exception:
+                continue
+        if not lines:
+            return ""
+
+        transcript = "\n\n".join(lines[-60:])  # most recent ~60 messages
+        prompt = (
+            "Summarise the following conversation in 4-8 sentences. "
+            "Focus on what the user asked, what the assistant did, and any "
+            "open threads. Output ONLY the summary text — no preamble, no "
+            "JSON, no <think> tags, no markdown headers.\n\n"
+            "--- CONVERSATION ---\n"
+            f"{transcript}\n"
+            "--- END ---"
+        )
+
+        # Use the main team's model directly. ``Model.aresponse`` returns
+        # the raw model response; we extract the text and strip thinking
+        # tags defensively (MiniMax leaks them through even when asked
+        # not to).
+        from agno.models.message import Message as AgnoMessage
+
+        model = self.main_team.model
+        try:
+            resp = await model.aresponse(messages=[AgnoMessage(role="user", content=prompt)])
+        except Exception as e:
+            logger.warning("fallback aresponse failed: %s", e)
+            return ""
+
+        text = getattr(resp, "content", None) or ""
+        if not isinstance(text, str):
+            return ""
+        # Strip <think>...</think> blocks — including unclosed ones at
+        # end-of-string — same logic the FE uses for restored history.
+        text = re.sub(r"<think>[\s\S]*?(</think>\s*|$)", "", text).strip()
+        return text
 
     async def compact_if_needed(self, input_tokens: int, context_window: int) -> bool:
         """Auto-compact at 80% context usage.
@@ -1522,7 +1649,9 @@ class Session:
     async def force_compact(self) -> tuple[str, str]:
         """Manually compact conversation context.
 
-        Returns (status_message, summary_text).
+        Returns (status_message, summary_text). When the summariser fails,
+        the status carries the underlying error (so the UI can show it)
+        and the summary is the empty string.
         """
         # Check if there's anything to compact
         try:
@@ -1535,7 +1664,7 @@ class Session:
         except Exception:
             pass
 
-        await self._compact()
+        error = await self._compact()
 
         # Retrieve the generated summary from DB
         summary = ""
@@ -1549,7 +1678,63 @@ class Session:
         except Exception:
             pass
 
-        return "Context compacted. Conversation summarized, history cleared.", summary
+        if error and not summary:
+            status = f"Context cleared, but the summariser failed: {error}"
+        elif not summary:
+            status = (
+                "Context cleared, but the summariser returned no text "
+                "(MiniMax may have returned an unparseable response)."
+            )
+        else:
+            status = "Context compacted. Conversation summarized, history cleared."
+        return status, summary
+
+    # ── Context breakdown ─────────────────────────────────────────────
+
+    async def context_breakdown(self) -> dict[str, int]:
+        """Return per-component token counts for the current context.
+
+        Splits Agno's assembled message list into:
+          - ``runs``     conversational turns (user/assistant/tool messages
+                         held under ``agno_session.runs``)
+          - ``floor``    everything else baked into every prompt:
+                         system instructions, tool schemas, project rules,
+                         active memories, injected session summary
+          - ``total``    the full ``count_context_tokens`` figure (== runs + floor)
+
+        Used by the ``/ctx`` command to explain the irreducible floor that
+        ``/compact`` cannot shrink.
+        """
+        try:
+            agno_session = await self.main_team.aget_session(
+                session_id=self.session_id,
+                user_id=self.user_id,
+            )
+        except Exception:
+            return {"total": 0, "runs": 0, "floor": 0}
+        if agno_session is None:
+            return {"total": 0, "runs": 0, "floor": 0}
+
+        try:
+            all_messages = agno_session.get_messages()
+            total = int(self.main_team.model.count_tokens(all_messages))
+        except Exception:
+            total = 0
+
+        run_messages: list = []
+        for run in getattr(agno_session, "runs", None) or []:
+            msgs = getattr(run, "messages", None)
+            if msgs:
+                run_messages.extend(msgs)
+        try:
+            runs_tokens = (
+                int(self.main_team.model.count_tokens(run_messages)) if run_messages else 0
+            )
+        except Exception:
+            runs_tokens = 0
+
+        floor = max(0, total - runs_tokens)
+        return {"total": total, "runs": runs_tokens, "floor": floor}
 
     # ── Debug logging ─────────────────────────────────────────────────
 

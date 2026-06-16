@@ -51,6 +51,22 @@ IN_PROGRESS_RETRY_SECONDS = 15.0
 
 
 @dataclass
+class ActivityEntry:
+    """One row in the panel's recent-activity log."""
+
+    ts: str  # ISO-8601 UTC
+    sha: str
+    skipped: bool
+    succeeded: bool
+    in_progress: bool
+    reason: str
+    error: str
+    duration_ms: int
+    items_upserted: int
+    items_deleted: int
+
+
+@dataclass
 class SyncResult:
     skipped: bool = False
     reason: str | None = None
@@ -116,6 +132,10 @@ class CodeIndexSyncManager:
         # state of the most recent background poll, not the user's last
         # manual click.
         self._last_sync_result: SyncResult | None = None
+        # Ring buffer of recent sync events for the panel's activity
+        # log. Cheap to keep in memory; we never write it to disk.
+        self._activity: list[ActivityEntry] = []
+        self._activity_limit = 20
         # Live apply-progress, updated by ``apply_delta``'s callback
         # while a sync is running. ``codeindex_status`` surfaces these
         # so ``/codeindex resync`` and ``/codeindex sync`` can render
@@ -197,10 +217,39 @@ class CodeIndexSyncManager:
         pulls the full snapshot — used by ``/codeindex resync`` to recover
         from a drifted local index.
         """
+        import time
+
+        started = time.monotonic()
         async with self._lock:
             result = await self._sync_locked(sha=sha, force_snapshot=force_snapshot)
             self._last_sync_result = result
+            # Skip the no-op "watcher tick, nothing changed" entries
+            # so the activity log shows genuine sync activity.
+            if not (result.skipped and result.reason == "already indexed locally"):
+                from datetime import datetime, timezone
+
+                stats = result.stats
+                self._activity.append(
+                    ActivityEntry(
+                        ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        sha=result.commit_sha or "",
+                        skipped=bool(result.skipped),
+                        succeeded=bool(result.succeeded),
+                        in_progress=bool(result.in_progress),
+                        reason=result.reason or "",
+                        error=result.error or "",
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                        items_upserted=stats.items_upserted if stats else 0,
+                        items_deleted=stats.items_deleted if stats else 0,
+                    )
+                )
+                if len(self._activity) > self._activity_limit:
+                    self._activity = self._activity[-self._activity_limit :]
             return result
+
+    def recent_activity(self) -> list[ActivityEntry]:
+        """Most recent sync events, newest first. Used by the panel."""
+        return list(reversed(self._activity))
 
     def _on_apply_progress(self, done: int, total: int, label: str) -> None:
         """Callback fed to ``apply_delta`` to surface real-time progress.

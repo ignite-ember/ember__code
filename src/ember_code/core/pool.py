@@ -183,7 +183,7 @@ def build_agent(
     if tools:
         from ember_code.core.tools.schedule import ScheduleTools
 
-        tools.append(ScheduleTools())
+        tools.append(ScheduleTools(project_dir=base_dir))
 
     # ── Knowledge tools (shared across all agents) ────────────────
     if tools and knowledge_mgr is not None:
@@ -515,7 +515,13 @@ class AgentPool:
         self._ephemeral_dir = project_dir / ".ember" / "agents.tmp"
         self._ephemeral_dir.mkdir(parents=True, exist_ok=True)
         self._max_ephemeral = max_ephemeral
-        self._ephemeral_count = 0
+        # Reload ephemeral agents left by a previous session (e.g. a
+        # crash before promote/discard) so the panel can still act on
+        # them — load_definitions deliberately skips agents.tmp.
+        self._load_directory(self._ephemeral_dir, AgentPriority.EPHEMERAL)
+        self._ephemeral_count = sum(
+            1 for _, prio in self._definitions.values() if prio == AgentPriority.EPHEMERAL
+        )
 
     def register_ephemeral(
         self,

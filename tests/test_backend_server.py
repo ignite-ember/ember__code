@@ -27,6 +27,11 @@ class TestBackendServerCommands:
             mock_result.kind = "info"
             mock_result.content = "test output"
             mock_result.action = ""
+            # ``handle_command`` now passes ``display_content`` to the
+            # pydantic ``CommandResult``; default MagicMock attrs
+            # auto-vivify to another MagicMock (truthy), which fails
+            # the ``str`` field validator. Pin to an empty string.
+            mock_result.display_content = ""
 
             with patch("ember_code.backend.command_handler.CommandHandler") as MockHandler:
                 instance = MockHandler.return_value
@@ -46,9 +51,11 @@ class TestBackendServerCommands:
             server = BackendServer.__new__(BackendServer)
             server._settings = MagicMock()
             server._settings.models.default = "test-model"
+            server._settings.models.max_context_window = 128_000
             server._session = MagicMock()
             server._session.cloud_connected = True
             server._session.cloud_org_name = "Test Org"
+            server._session._last_input_tokens = 1234
 
             status = server.get_status()
 
@@ -56,6 +63,8 @@ class TestBackendServerCommands:
         assert status.model == "test-model"
         assert status.cloud_connected is True
         assert status.cloud_org == "Test Org"
+        assert status.max_context == 128_000
+        assert status.context_tokens == 1234
 
     @pytest.mark.asyncio
     async def test_switch_model(self):

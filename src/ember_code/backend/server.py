@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import re
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -28,6 +30,165 @@ if TYPE_CHECKING:
     from ember_code.core.skills.parser import SkillInfo
 
 logger = logging.getLogger(__name__)
+
+
+def _is_within(child: Path, root: Path) -> bool:
+    """True iff ``child`` (already resolved) sits under ``root``."""
+    try:
+        child.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+_LANG_BY_EXT = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".json": "json",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".rs": "rust",
+    ".go": "go",
+    ".java": "java",
+    ".html": "html",
+    ".css": "css",
+    ".sql": "sql",
+}
+
+
+def _guess_language(suffix: str) -> str:
+    return _LANG_BY_EXT.get(suffix.lower(), "")
+
+
+def _scan_plugin_dir(root: Path, *, name: str) -> dict:
+    """Walk *root* and pull out the bundled-contents inventory: skills,
+    agents, hooks, MCP servers, custom tools, plus a README excerpt.
+
+    Shared between :meth:`BackendServer.get_plugin_contents` (installed
+    plugins) and :meth:`BackendServer.preview_plugin` (uninstalled
+    catalog entries, scanned from a shallow clone). Pure on the
+    filesystem — no plugin loader / session state needed.
+    """
+    import json
+
+    result: dict = {
+        "name": name,
+        "root_path": str(root),
+        "skills": [],
+        "agents": [],
+        "hooks": [],
+        "mcp_servers": [],
+        "tools": [],
+        "readme": "",
+    }
+
+    def _frontmatter_field(md_text: str, field: str) -> str:
+        if not md_text.startswith("---"):
+            return ""
+        end = md_text.find("\n---", 4)
+        if end <= 0:
+            return ""
+        for line in md_text[4:end].splitlines():
+            if line.lower().startswith(f"{field}:"):
+                return line.split(":", 1)[1].strip().strip('"')
+        return ""
+
+    skills_dir = root / "skills"
+    if skills_dir.is_dir():
+        for sd in sorted(p for p in skills_dir.iterdir() if p.is_dir()):
+            skill_md = sd / "SKILL.md"
+            desc = ""
+            if skill_md.is_file():
+                with contextlib.suppress(OSError):
+                    desc = _frontmatter_field(skill_md.read_text(errors="replace"), "description")
+            result["skills"].append({"name": sd.name, "description": desc})
+
+    agents_dir = root / "agents"
+    if agents_dir.is_dir():
+        for af in sorted(agents_dir.glob("*.md")):
+            desc = ""
+            with contextlib.suppress(OSError):
+                desc = _frontmatter_field(af.read_text(errors="replace"), "description")
+            result["agents"].append({"name": af.stem, "description": desc})
+
+    hooks_json = root / "hooks" / "hooks.json"
+    if hooks_json.is_file():
+        try:
+            data = json.loads(hooks_json.read_text())
+            for event, handlers in (data.get("hooks") or {}).items():
+                if isinstance(handlers, list):
+                    result["hooks"].append({"event": event, "count": len(handlers)})
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    for mcp_name in (".mcp.json", "mcp.json"):
+        mcp_path = root / mcp_name
+        if mcp_path.is_file():
+            try:
+                data = json.loads(mcp_path.read_text())
+                for srv_name, cfg in (data.get("mcpServers") or {}).items():
+                    result["mcp_servers"].append(
+                        {
+                            "name": srv_name,
+                            "transport": cfg.get("type", "stdio"),
+                            "command": cfg.get("command") or cfg.get("url") or "",
+                        }
+                    )
+            except (OSError, json.JSONDecodeError):
+                pass
+            break
+
+    tools_dir = root / "tools"
+    if tools_dir.is_dir():
+        for tf in sorted(tools_dir.glob("*.py")):
+            if tf.name.startswith("_"):
+                continue
+            result["tools"].append({"name": tf.stem})
+
+    # README — capped generously so even long docs render in full
+    # but a runaway file can't blow up the wire. Plugin READMEs
+    # in the wild top out well under this.
+    README_CAP = 200_000
+    for readme_name in ("README.md", "Readme.md", "readme.md"):
+        rp = root / readme_name
+        if rp.is_file():
+            try:
+                text = rp.read_text(errors="replace")
+                if len(text) > README_CAP:
+                    result["readme"] = (
+                        text[:README_CAP]
+                        + "\n\n_…README truncated — open the source repo for the rest._"
+                    )
+                else:
+                    result["readme"] = text
+            except OSError:
+                pass
+            break
+
+    return result
+
+
+# Cap on the in-process search_code cache. Keyed by
+# (project_root, max_results, snippet) — a few dozen entries is plenty
+# for normal usage and the entries themselves are small JSON-shaped
+# dicts. Old entries fall off in insertion order (Python dicts preserve
+# insertion order, so a pop + re-set bumps to MRU).
+_SEARCH_CODE_CACHE_MAX = 64
+
+
+def _search_code_cache_put(cache: dict, key: str, value: dict) -> None:
+    cache[key] = value
+    while len(cache) > _SEARCH_CODE_CACHE_MAX:
+        cache.pop(next(iter(cache)))
 
 
 class BackendServer:
@@ -69,6 +230,13 @@ class BackendServer:
         self._pending_requirements: dict[str, Any] = {}  # requirement_id → Agno requirement
         self._processing = False
         self._current_team: Any = None  # held during HITL pause
+        # Task currently iterating run_message → tool calls → events.
+        # ``cancel_run`` calls ``.cancel()`` on this to bail out of any
+        # awaits — the most reliable way to stop a streamed run when
+        # Agno's cooperative cancellation doesn't propagate (e.g. a
+        # broadcast sub-agent is mid-tool-call). Set when iteration
+        # starts, cleared in ``finally``.
+        self._current_run_task: asyncio.Task | None = None
         # Serialises concurrent ``run_message`` calls. The FE unblocks
         # user input on ``StreamingDone`` (emitted when Agno's content
         # stream ends) but the previous run's Agno tail —
@@ -93,6 +261,10 @@ class BackendServer:
         # as a chat-history entry. Cleared from the store after the
         # next ``run_message`` consumes the summary.
         self._pending_message_ids_to_drop: list[str] = []
+        # Latched from RunCompleted.input_tokens for the live ctx
+        # footer — kept on the Session so /clear (which goes through
+        # CommandHandler with only a session ref) can reset it.
+        self._session._last_input_tokens = 0
         # Pre-persist user messages BEFORE handing them to Agno.
         # Agno's streaming runs don't write to disk until the run
         # completes, so a kill mid-stream loses the user's prompt
@@ -245,8 +417,19 @@ class BackendServer:
         the user's POV; the wait is invisible apart from that.
         """
         async with self._run_lock:
-            async for proto in self._run_message_locked(text, media):
-                yield proto
+            # Track the task so cancel_run can ``task.cancel()`` it.
+            # ``current_task()`` returns the task running this async
+            # generator (the one consuming ``_run_message_locked``).
+            self._current_run_task = asyncio.current_task()
+            try:
+                async for proto in self._run_message_locked(text, media):
+                    yield proto
+            except asyncio.CancelledError:
+                # User-initiated cancel — emit a soft notice and return
+                # gracefully so the FE clears its "Thinking" state.
+                yield msg.Info(text="Run cancelled by user.")
+            finally:
+                self._current_run_task = None
 
     async def _run_message_locked(
         self, text: str, media: dict[str, Any] | None
@@ -368,6 +551,18 @@ class BackendServer:
             async for proto in self._stream_with_subagent_hitl(
                 team.arun(message, stream=True, **media_kwargs)
             ):
+                # Latch the top-level run's input-token count as the
+                # current context size. ``input_tokens`` is the prompt
+                # Agno sent to the model — which IS the live context.
+                # Computing it lazily from ``aget_session`` (the old
+                # path) hung after a run while Agno's post-stream tail
+                # held session state; this is O(1) and never blocks.
+                if (
+                    isinstance(proto, msg.RunCompleted)
+                    and not proto.parent_run_id
+                    and proto.input_tokens
+                ):
+                    self._session._last_input_tokens = proto.input_tokens
                 yield proto
                 # Checkpoint after each tool completion. Agno's default
                 # persistence model is end-of-run only — if the process
@@ -820,6 +1015,7 @@ class BackendServer:
         return msg.CommandResult(
             kind=result.kind,
             content=result.content,
+            display_content=getattr(result, "display_content", "") or "",
             action=result.action or "",
         )
 
@@ -829,6 +1025,27 @@ class BackendServer:
         """List available sessions."""
         raw = await self._session.persistence.list_sessions(limit=20)
         return msg.SessionListResult(sessions=raw)
+
+    async def maybe_auto_name_session(self) -> str | None:
+        """Auto-generate a name for the current session if it has none.
+
+        Called after a run completes — Agno derives the name from the
+        conversation so far. Returns the new name, or None when the
+        session is already named (or naming failed).
+        """
+        try:
+            if await self._session.persistence.get_name():
+                return None
+            await self._session.persistence.auto_name(self._session.main_team)
+            name = await self._session.persistence.get_name() or ""
+            # Models sometimes wrap the title in markdown ("**Title**").
+            clean = re.sub(r"^[\s*_`'\"#]+|[\s*_`'\"]+$", "", name)
+            if clean and clean != name:
+                await self._session.persistence.rename(clean)
+            return clean or None
+        except Exception as exc:
+            logger.debug("session auto-name failed: %s", exc)
+            return None
 
     async def switch_session(self, session_id: str) -> msg.Info:
         """Switch to a different session."""
@@ -865,6 +1082,18 @@ class BackendServer:
     def get_mcp_status(self) -> list[tuple[str, bool]]:
         """Get MCP server connection status."""
         return self._session.get_mcp_status()
+
+    def set_mcp_tool_enabled(self, server: str, tool: str, enabled: bool) -> dict:
+        """Enable or disable a single tool on an MCP server.
+
+        Disabled tools are still listed by ``get_mcp_server_details``
+        with ``disabled: true`` so the panel can render them muted,
+        but they're removed from the live ``MCPTools.functions`` dict
+        so the next agent run won't see them. State persists to
+        ``<project>/.ember/mcp-tool-state.json``.
+        """
+        self._session.mcp_manager.set_tool_enabled(server, tool, enabled)
+        return {"server": server, "tool": tool, "enabled": enabled}
 
     # ── Permissions ────────────────────────────────────────────────
 
@@ -1026,11 +1255,20 @@ class BackendServer:
     # ── Status ────────────────────────────────────────────────────
 
     def get_status(self) -> msg.StatusUpdate:
-        """Get current status bar data."""
+        """Get current status bar data.
+
+        Context size comes from the last run's ``input_tokens`` (the
+        prompt Agno sent — i.e. the live context). O(1), no DB hit;
+        an earlier async implementation called ``aget_session`` and
+        hung after a run while Agno's post-stream tail held session
+        state.
+        """
         return msg.StatusUpdate(
             model=self._settings.models.default,
             cloud_connected=self._session.cloud_connected,
             cloud_org=self._session.cloud_org_name or "",
+            context_tokens=getattr(self._session, "_last_input_tokens", 0),
+            max_context=self._settings.models.max_context_window,
         )
 
     # ── /loop continuation ────────────────────────────────────────
@@ -1168,10 +1406,20 @@ class BackendServer:
             logger.debug("get_messages failed (%s); reporting 0", exc)
             return 0
         try:
-            return int(self._session.main_team.model.count_tokens(messages))
+            n = int(self._session.main_team.model.count_tokens(messages))
         except Exception as exc:
             logger.debug("count_tokens failed (%s); reporting 0", exc)
             return 0
+        # Latch only when we actually measured something. Latching 0
+        # turns a transient "session not loaded yet / aget_session
+        # raced with attach" into a permanent 0 in the footer until
+        # the next run fires — exactly the bug the field saw on
+        # session-switch. ``0`` from this RPC means "couldn't
+        # measure right now"; leave the previous good value alone
+        # and let the next call (or the next run) overwrite.
+        if n > 0:
+            self._session._last_input_tokens = n
+        return n
 
     async def compact_if_needed(self, ctx_tokens: int, max_ctx: int) -> msg.SessionCleared | None:
         """Compact session if approaching context limit."""
@@ -1302,10 +1550,43 @@ class BackendServer:
                 ),
             )
 
+    def cancel_agent_run(self, run_id: str) -> dict:
+        """Cancel a specific sub-agent run by its Agno ``run_id``.
+
+        Used by the team-progress UI when the user wants to stop one
+        specialist mid-broadcast without killing the whole team. Agno
+        flags the run for cooperative cancellation — the sub-agent
+        bails at its next ``await`` boundary, siblings keep going.
+
+        Returns ``{ok: bool}`` so the FE can show a quick toast on
+        failure (mostly: unknown run_id).
+        """
+        if not run_id:
+            return {"ok": False, "error": "missing run_id"}
+        try:
+            from agno.agent import Agent
+
+            Agent.cancel_run(run_id)
+            logger.info("Cancelled sub-agent run %s", run_id)
+            return {"ok": True}
+        except Exception as exc:
+            logger.warning("cancel_agent_run failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
     def cancel_run(self) -> None:
-        """Cancel the currently running agent and kill any foreground process."""
-        # Kill the active foreground subprocess first so the blocking
-        # tool call returns quickly and the Agno cancellation can fire.
+        """Cancel the currently running agent and kill any foreground process.
+
+        Three mechanisms fire in order:
+          1. Kill the active foreground shell subprocess (so a blocking
+             ``run_shell_command`` returns immediately).
+          2. Flag the run for cooperative cancel via Agno
+             (``Agent.cancel_run``) — propagates to the team's main loop
+             and any sub-agents that check the flag.
+          3. Hard-cancel the asyncio task iterating ``run_message`` —
+             unblocks any ``await`` that Agno's cooperative cancel
+             can't reach (notably tool calls deep inside specialist
+             sub-agents during a ``broadcast`` team).
+        """
         from ember_code.core.tools.shell import cancel_foreground
 
         if cancel_foreground():
@@ -1320,6 +1601,11 @@ class BackendServer:
                 Agent.cancel_run(run_id)
         except Exception as exc:
             logger.debug("Failed to cancel run: %s", exc)
+
+        task = self._current_run_task
+        if task and not task.done():
+            logger.info("Cancelling run task %s", task.get_name())
+            task.cancel()
 
     @property
     def processing(self) -> bool:
@@ -1346,7 +1632,7 @@ class BackendServer:
         """Return the skill pool for input autocomplete."""
         return self._session.skill_pool
 
-    def get_mcp_server_details(self) -> list[dict]:
+    async def get_mcp_server_details(self) -> list[dict]:
         """Full MCP server info for the panel UI."""
         mgr = self._session.mcp_manager
         servers = []
@@ -1360,6 +1646,9 @@ class BackendServer:
                     "transport": config.type if config else "unknown",
                     "tool_names": mgr.get_tools(name),
                     "tool_descriptions": mgr.get_tool_descriptions(name),
+                    "tools_disabled": mgr.get_disabled_tools(name),
+                    "resources": await mgr.get_resources(name) if connected else [],
+                    "prompts": await mgr.get_prompts(name) if connected else [],
                     "error": mgr.get_error(name),
                     "policy_blocked": mgr._policy.is_denied(name),
                 }
@@ -1382,6 +1671,15 @@ class BackendServer:
         except Exception as exc:
             logger.debug("get_pending_messages failed: %s", exc)
             return []
+        # A fresh pending row almost always means "Agno is still
+        # finishing its post-stream tail" (it can take 15-30s). The
+        # surfaced "1 message(s) were interrupted" banner is meant
+        # for actual crashes across BE restarts — filter to rows
+        # older than 60s so a reload during the tail stays quiet.
+        import time as _time
+
+        cutoff = int(_time.time()) - 60
+        rows = [r for r in rows if r.received_at <= cutoff]
         return [
             {
                 "role": "user",
@@ -1392,8 +1690,46 @@ class BackendServer:
             for r in rows
         ]
 
+    def upload_attachment(self, filename: str, content_base64: str) -> dict:
+        """Persist a FE-uploaded file (OS picker / drag / paste) to a
+        per-session attachments dir so the agent can read it on
+        demand via its Read tool.
+
+        Returns ``{path, size}``. Content is base64 so the FE can
+        ship arbitrary bytes (PDFs, images) over the JSON wire.
+        """
+        import base64
+        import re
+
+        # Strip path separators / nasty chars so the FE can't write
+        # outside the attachments dir.
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "file"
+        dest_dir = self._session.project_dir / ".ember" / "attachments" / self._session.session_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / safe
+        # If a same-name file already exists, suffix to avoid overwrite.
+        if dest.exists():
+            stem, dot, ext = safe.rpartition(".")
+            base = stem if dot else safe
+            suffix = ext if dot else ""
+            n = 2
+            while dest.exists():
+                dest = dest_dir / (f"{base}-{n}{('.' + suffix) if suffix else ''}")
+                n += 1
+        try:
+            data = base64.b64decode(content_base64)
+        except Exception as exc:
+            return {"path": "", "size": 0, "error": f"invalid base64: {exc}"}
+        dest.write_bytes(data)
+        return {"path": str(dest), "size": len(data)}
+
     async def get_chat_history(self, session_id: str) -> list[dict]:
-        """Get chat history for a session. Returns list of {role, content} dicts."""
+        """Get chat history for a session. Returns list of
+        ``{role, content, run_id}`` dicts. ``run_id`` lets the FE map
+        a user message back to its owning run — needed for the edit/
+        delete operations which truncate the session at a run boundary.
+        Skips sub-agent runs (parent_run_id set) and the per-message
+        roles the FE doesn't render (tool, system)."""
         agent = self._session.main_team
         agno_session = await agent.aget_session(
             session_id=session_id,
@@ -1401,16 +1737,59 @@ class BackendServer:
         )
         if agno_session is None:
             return []
-        messages = agno_session.get_chat_history()
-        if not messages:
-            return []
-        return [
-            {
-                "role": msg.role,
-                "content": msg.content if isinstance(msg.content, str) else str(msg.content or ""),
-            }
-            for msg in messages
-        ]
+        runs = getattr(agno_session, "runs", None) or []
+        out: list[dict] = []
+        for run in runs:
+            if getattr(run, "parent_run_id", None):
+                continue
+            run_id = str(getattr(run, "run_id", "") or "")
+            messages = getattr(run, "messages", None) or []
+            for m in messages:
+                if getattr(m, "from_history", False):
+                    continue
+                role = getattr(m, "role", "")
+                if role in ("system", "tool"):
+                    continue
+                content = m.content if isinstance(m.content, str) else str(m.content or "")
+                out.append({"role": role, "content": content, "run_id": run_id})
+        return out
+
+    async def truncate_history(self, session_id: str, run_id: str) -> dict:
+        """Drop the run with ``run_id`` and every later run from the
+        session. Used by the FE when the user edits or deletes one of
+        their past messages — both operations require that everything
+        downstream of the touched turn gets wiped before continuing.
+        Returns ``{removed: N}``; ``N=0`` if ``run_id`` wasn't found.
+        """
+        agent = self._session.main_team
+        agno_session = await agent.aget_session(
+            session_id=session_id,
+            user_id=self._session.user_id,
+        )
+        if agno_session is None:
+            return {"removed": 0, "error": "session not found"}
+        runs = list(getattr(agno_session, "runs", None) or [])
+        cut_idx: int | None = None
+        for i, r in enumerate(runs):
+            if getattr(r, "parent_run_id", None):
+                continue
+            if str(getattr(r, "run_id", "") or "") == run_id:
+                cut_idx = i
+                break
+        if cut_idx is None:
+            return {"removed": 0, "error": f"run_id {run_id!r} not in session"}
+        removed = len(runs) - cut_idx
+        agno_session.runs = runs[:cut_idx]
+        try:
+            await agent.asave_session(agno_session)
+        except Exception as exc:
+            logger.exception("truncate_history: save failed")
+            return {"removed": 0, "error": str(exc)}
+        # The latched context-token count was computed against the
+        # pre-truncate session; invalidate it so the next status read
+        # recomputes from the new (shorter) history.
+        self._session._last_input_tokens = 0
+        return {"removed": removed}
 
     def get_mcp_servers(self) -> list[dict]:
         """MCP server info for the panel."""
@@ -1535,6 +1914,342 @@ class BackendServer:
             return msg.Info(text=result.error or "Add failed.")
         return msg.Info(text=result.message)
 
+    async def knowledge_list(self) -> list[dict]:
+        """Every document in the KB — used by the panel's Browse tab.
+
+        Returns one dict per entry shaped for the panel:
+        ``{id, name, source, size, preview, added_at, metadata}``.
+        ``name`` is the source basename or the first non-empty line
+        of content when no source path is available (e.g. inline
+        text), so the Browse list always has a meaningful label.
+        """
+        from pathlib import PurePosixPath
+
+        knowledge = self._session.knowledge_mgr.knowledge
+        if knowledge is None:
+            return []
+        try:
+            entries = await knowledge.list_entries()
+        except Exception as exc:
+            logger.debug("knowledge_list failed: %s", exc)
+            return []
+
+        def _name_for(entry: dict) -> str:
+            source = (entry.get("source") or "").strip()
+            if source:
+                if source.startswith(("http://", "https://")):
+                    return source
+                return PurePosixPath(source).name or source
+            content = (entry.get("content") or "").strip()
+            for line in content.splitlines():
+                line = line.strip().lstrip("# ").strip()
+                if line:
+                    return line[:80]
+            return "(untitled)"
+
+        out: list[dict] = []
+        for e in entries:
+            content = e.get("content") or ""
+            meta = e.get("metadata") or {}
+            out.append(
+                {
+                    "id": e.get("id", ""),
+                    "name": _name_for(e),
+                    "source": e.get("source", ""),
+                    "size": len(content),
+                    "preview": content[:240],
+                    "added_at": str(meta.get("added_at", "")),
+                    "kind": str(meta.get("kind", "")),
+                    "metadata": {k: str(v) for k, v in meta.items() if v is not None},
+                }
+            )
+        # Newest first when ``added_at`` is comparable; otherwise
+        # stable order.
+        out.sort(key=lambda d: d.get("added_at", ""), reverse=True)
+        return out
+
+    async def knowledge_get(self, entry_id: str) -> dict:
+        """Full content for one document — used by the detail page."""
+        knowledge = self._session.knowledge_mgr.knowledge
+        if knowledge is None:
+            return {"error": "Knowledge base is disabled."}
+        try:
+            entries = await knowledge.list_entries()
+        except Exception as exc:
+            return {"error": f"knowledge_get failed: {exc}"}
+        match = next((e for e in entries if e.get("id") == entry_id), None)
+        if not match:
+            return {"error": f"Document {entry_id} not found."}
+        meta = match.get("metadata") or {}
+        return {
+            "id": entry_id,
+            "name": (match.get("source") or "").strip() or entry_id,
+            "source": match.get("source", ""),
+            "content": match.get("content", ""),
+            "metadata": {k: str(v) for k, v in meta.items() if v is not None},
+        }
+
+    def read_file(self, path: str) -> dict:
+        """Read a small text file for FE preview.
+
+        Sandboxed: the resolved path must live under the current
+        project dir OR under ``~/.ember`` (covers global hooks,
+        settings, plugin sources). Anywhere else returns an error
+        rather than reading — this is for read-only UI previews, not
+        a general file API.
+        """
+        from os.path import expanduser
+
+        try:
+            requested = Path(path).expanduser()
+            if not requested.is_absolute():
+                requested = (self._session.project_dir / requested).resolve()
+            else:
+                requested = requested.resolve()
+        except Exception as exc:
+            return {"path": path, "contents": "", "size": 0, "error": f"bad path: {exc}"}
+
+        project_root = Path(self._session.project_dir).resolve()
+        ember_root = Path(expanduser("~/.ember")).resolve()
+        if not (_is_within(requested, project_root) or _is_within(requested, ember_root)):
+            return {
+                "path": str(requested),
+                "contents": "",
+                "size": 0,
+                "error": (
+                    "Refused: path is outside the project and ~/.ember. "
+                    "Open it in your editor instead."
+                ),
+            }
+        if not requested.exists():
+            return {
+                "path": str(requested),
+                "contents": "",
+                "size": 0,
+                "error": "File not found.",
+            }
+        if requested.is_dir():
+            return {
+                "path": str(requested),
+                "contents": "",
+                "size": 0,
+                "error": "Path is a directory.",
+            }
+
+        # Cap at 256 KB. ``read_file`` is only invoked by the plain-
+        # browser fallback preview — Tauri / VSCode / JetBrains hosts
+        # always go through their native open bridge and never hit
+        # this path. So this isn't a policy on what's openable, it's
+        # a guard for the in-app preview which isn't meant to be an
+        # editor for large files.
+        MAX = 256 * 1024
+        size = requested.stat().st_size
+        if size > MAX:
+            return {
+                "path": str(requested),
+                "contents": "",
+                "size": size,
+                "error": f"File too large to preview ({size} bytes; cap {MAX}).",
+            }
+        try:
+            contents = requested.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError) as exc:
+            return {
+                "path": str(requested),
+                "contents": "",
+                "size": size,
+                "error": f"read failed: {exc}",
+            }
+        return {
+            "path": str(requested),
+            "contents": contents,
+            "size": size,
+            "language": _guess_language(requested.suffix),
+        }
+
+    def search_code(self, snippet: str, max_results: int = 20) -> dict:
+        """Find exact-substring occurrences of ``snippet`` across the
+        project. Used by the composer's paste handler — when the user
+        pastes code, the FE asks "where does this live?" so it can
+        decorate the message with refs.
+
+        Strategy:
+          - Use ``rg`` if available (parallel, gitignore-aware, fast).
+          - Otherwise walk the project with Python, skipping noisy dirs.
+
+        Match mode is **exact substring** — no normalisation, no
+        fuzzy. Multi-line snippets become a single literal pattern.
+
+        Returns ``{matches: [{path, line, end_line, preview}], truncated: bool}``.
+        ``path`` is project-relative. ``line`` is the start line of
+        the match; ``end_line`` is computed from the snippet itself
+        (start + newline count) so the pill can label a 5-line paste
+        as ``71-75`` instead of just ``71`` — rg's ``--multiline``
+        only reports the start line and the FE can't derive the end
+        without knowing the snippet here on the BE.
+
+        Repeated pastes of the same snippet (re-pasting after an edit,
+        the model echoing code back) hit a small in-process cache so
+        only the first lookup pays for the rg spawn.
+        """
+        import hashlib
+        import shutil
+        import subprocess
+
+        snippet = (snippet or "").strip()
+        if len(snippet) < 5:
+            return {"matches": [], "truncated": False}
+
+        # ── Result cache ──
+        # Bounded to a few dozen entries; rotates by reinsertion order
+        # (Python dicts preserve insertion order). The key includes the
+        # project root so switching directories doesn't serve stale
+        # results.
+        project_root = Path(self._session.project_dir).resolve()
+        cache_key = hashlib.sha1(
+            f"{project_root}\0{max_results}\0{snippet}".encode("utf-8", "ignore")
+        ).hexdigest()
+        cache: dict[str, dict] = getattr(self, "_search_code_cache", None) or {}
+        if not hasattr(self, "_search_code_cache"):
+            self._search_code_cache = cache
+        cached = cache.get(cache_key)
+        if cached is not None:
+            # Move to MRU position.
+            cache.pop(cache_key, None)
+            cache[cache_key] = cached
+            return cached
+
+        # Used below for the end_line calculation. ``rg --multiline``
+        # emits one row per match (start line only), so we derive the
+        # end from the snippet structure itself.
+        snippet_lines = snippet.count("\n") + 1
+
+        results: list[dict] = []
+        truncated = False
+
+        rg = shutil.which("rg")
+        if rg:
+            # --fixed-strings: literal pattern (no regex)
+            # --line-number: include line numbers
+            # --no-heading: machine-friendly output
+            # --multiline: required for snippets with newlines
+            # --max-count: per-file cap
+            # Newlines inside the snippet require --multiline+--multiline-dotall.
+            cmd = [
+                rg,
+                "--fixed-strings",
+                "--line-number",
+                "--no-heading",
+                "--color=never",
+                "--max-count=5",
+                "--max-filesize=2M",
+                "--multiline",
+                "--multiline-dotall",
+                snippet,
+                str(project_root),
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                return {"matches": [], "truncated": True, "error": "search timed out"}
+            for raw_line in (proc.stdout or "").splitlines():
+                # Format: "/abs/path:LINE:preview"
+                parts = raw_line.split(":", 2)
+                if len(parts) < 3:
+                    continue
+                abs_path, line_str, preview = parts
+                try:
+                    line = int(line_str)
+                except ValueError:
+                    continue
+                try:
+                    rel = str(Path(abs_path).resolve().relative_to(project_root))
+                except ValueError:
+                    rel = abs_path
+                results.append(
+                    {
+                        "path": rel,
+                        "line": line,
+                        "end_line": line + snippet_lines - 1,
+                        "preview": preview.strip(),
+                    }
+                )
+                if len(results) >= max_results:
+                    truncated = True
+                    break
+            payload = {"matches": results, "truncated": truncated}
+            _search_code_cache_put(cache, cache_key, payload)
+            return payload
+
+        # ── Python fallback (no rg) ──
+        # Walk text-ish files, scan line-by-line for the first line of
+        # the snippet, then verify the full snippet at that offset.
+        SKIP_DIRS = {
+            ".git",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+            ".next",
+            "target",
+            ".idea",
+            ".vscode",
+        }
+        first_line = snippet.splitlines()[0]
+        for dirpath, dirnames, filenames in os.walk(project_root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for name in filenames:
+                p = Path(dirpath) / name
+                try:
+                    if p.stat().st_size > 2 * 1024 * 1024:
+                        continue
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                idx = text.find(snippet)
+                if idx < 0:
+                    continue
+                line_no = text.count("\n", 0, idx) + 1
+                try:
+                    rel = str(p.resolve().relative_to(project_root))
+                except ValueError:
+                    rel = str(p)
+                results.append(
+                    {
+                        "path": rel,
+                        "line": line_no,
+                        "end_line": line_no + snippet_lines - 1,
+                        "preview": first_line.strip(),
+                    }
+                )
+                if len(results) >= max_results:
+                    truncated = True
+                    payload = {"matches": results, "truncated": truncated}
+                    _search_code_cache_put(cache, cache_key, payload)
+                    return payload
+        payload = {"matches": results, "truncated": truncated}
+        _search_code_cache_put(cache, cache_key, payload)
+        return payload
+
+    async def knowledge_remove(self, entry_id: str) -> dict:
+        """Delete one document by id. Returns ``{removed: bool}`` so
+        the FE can confirm and refresh the list optimistically."""
+        knowledge = self._session.knowledge_mgr.knowledge
+        if knowledge is None:
+            return {"removed": False, "error": "Knowledge base is disabled."}
+        try:
+            removed = await knowledge.delete_entry(entry_id)
+            return {"removed": removed}
+        except Exception as exc:
+            return {"removed": False, "error": str(exc)}
+
     # ── Hooks ──────────────────────────────────────────────────────
 
     def get_hooks_details(self) -> list[dict]:
@@ -1632,6 +2347,15 @@ class BackendServer:
             sync_step = sync._apply_step or "indexing"
 
         resolved = sync.resolver.cached if sync.resolver else None
+        # Lazy resolver kick — when HEAD was already indexed locally
+        # ``sync_now`` short-circuits before calling ``resolve()``, so
+        # ``cached`` would otherwise stay None and the panel would
+        # render "GitHub App: unknown" forever. Fire-and-forget so
+        # this call stays cheap; the next poll picks up the result.
+        if resolved is None and sync.resolver is not None:
+            # No loop = rare; panel will retry shortly.
+            with contextlib.suppress(RuntimeError):
+                asyncio.get_running_loop().create_task(sync.resolver.resolve())
         if resolved is None:
             install_state = "unknown"
             repository_id = ""
@@ -1644,6 +2368,53 @@ class BackendServer:
             install_state = "installed"
             repository_id = resolved.repository_id or ""
             install_url = ""
+        # Index stats — cheap walk of the per-commit chroma dirs to
+        # compute total size on disk. Doing it inline avoids a
+        # background scheduler for what is, in practice, a quick walk
+        # (each commit dir is a small chroma snapshot).
+        from ember_code.core.code_index.paths import commit_chroma_path
+
+        def _dir_size(p: Path) -> int:
+            try:
+                return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+            except OSError:
+                return 0
+
+        index_size_bytes = 0
+        branches_indexed: list[dict] = []
+        for sha, info in state.commits.items():
+            chroma_dir = commit_chroma_path(index.project, sha, data_dir=index.data_dir)
+            size = _dir_size(chroma_dir)
+            index_size_bytes += size
+            branches_indexed.append(
+                {
+                    "sha": sha,
+                    "is_head": sha == state.head,
+                    "size_bytes": size,
+                    "last_used_at": info.last_used_at,
+                    "branch_refs": list(info.branch_refs),
+                }
+            )
+        # Newest-first so the panel can show the most recently used
+        # commit at the top of the "branches indexed" list.
+        branches_indexed.sort(key=lambda c: c["last_used_at"], reverse=True)
+
+        last_sync_at = ""
+        last_sync_stats: dict = {}
+        recent = sync.recent_activity()
+        if recent:
+            top = recent[0]
+            last_sync_at = top.ts
+            last_sync_stats = {
+                "items_upserted": top.items_upserted,
+                "items_deleted": top.items_deleted,
+            }
+        elif last and last.stats:
+            last_sync_stats = {
+                "items_upserted": last.stats.items_upserted,
+                "items_deleted": last.stats.items_deleted,
+            }
+
         return {
             "local_sha": local_sha,
             "remote_url": (sync.resolver.remote_url() if sync.resolver else None) or "",
@@ -1661,6 +2432,12 @@ class BackendServer:
             "install_state": install_state,
             "repository_id": repository_id,
             "install_url": install_url,
+            # New volume/freshness fields
+            "commits_indexed": len(state.commits),
+            "index_size_bytes": index_size_bytes,
+            "branches_indexed": branches_indexed,
+            "last_sync_at": last_sync_at,
+            "last_sync_stats": last_sync_stats,
         }
 
     async def codeindex_sync(self, sha: str | None) -> dict:
@@ -1733,6 +2510,110 @@ class BackendServer:
         dropped so the panel header can refresh."""
         dropped = await self._session.code_index.clean()
         return {"dropped": list(dropped)}
+
+    async def codeindex_head_breakdown(self) -> dict:
+        """Repo-at-HEAD signal for the panel: tracked file count
+        broken down by language/extension, the last few commits
+        with their indexed-or-not flag, AND per-extension indexed
+        counts (for the donut's coverage overlay). Slightly heavier
+        than ``codeindex_status`` (one chroma scan + git calls), so
+        the panel fetches it on open and after each sync — not on
+        every 2-second poll.
+        """
+        import subprocess
+        from collections import Counter
+
+        project = self._session.project_dir
+        try:
+            files = subprocess.run(
+                ["git", "ls-files"],
+                cwd=project,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return {
+                "file_count": 0,
+                "languages": [],
+                "recent_commits": [],
+                "files_indexed": 0,
+                "languages_indexed": {},
+                "error": "git not available",
+            }
+        if files.returncode != 0:
+            return {
+                "file_count": 0,
+                "languages": [],
+                "recent_commits": [],
+                "files_indexed": 0,
+                "languages_indexed": {},
+                "error": files.stderr.strip() or "git ls-files failed",
+            }
+
+        tracked = [p for p in files.stdout.splitlines() if p]
+        ext_counts: Counter[str] = Counter()
+        for path in tracked:
+            i = path.rfind(".")
+            ext = path[i + 1 :].lower() if i > 0 and i < len(path) - 1 else ""
+            ext_counts[(ext or "(other)")] += 1
+        top_langs = [{"ext": ext, "count": n} for ext, n in ext_counts.most_common(10)]
+
+        # Last 5 commits + indexed flag.
+        state = self._session.code_index.manifest.load()
+        indexed_shas = set(state.commits.keys())
+        try:
+            log = subprocess.run(
+                ["git", "log", "-5", "--pretty=format:%H%x09%h%x09%s%x09%cr"],
+                cwd=project,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            log = None
+        recent_commits: list[dict] = []
+        if log and log.returncode == 0:
+            for line in log.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) < 4:
+                    continue
+                full, short, subj, when = parts[:4]
+                recent_commits.append(
+                    {
+                        "sha": short,
+                        "full_sha": full,
+                        "subject": subj,
+                        "when": when,
+                        "indexed": full in indexed_shas,
+                    }
+                )
+
+        # Per-language indexed counts (HEAD only).
+        head_sha = state.head or ""
+        files_indexed = 0
+        languages_indexed: dict[str, int] = {}
+        if head_sha:
+            try:
+                head = await self._session.code_index.head_stats(head_sha)
+                files_indexed = int(head.get("files_indexed", 0))
+                languages_indexed = dict(head.get("languages_indexed", {}) or {})
+            except Exception as exc:
+                logger.debug("head_stats failed: %s", exc)
+
+        return {
+            "file_count": len(tracked),
+            "languages": top_langs,
+            "recent_commits": recent_commits,
+            "files_indexed": files_indexed,
+            "languages_indexed": languages_indexed,
+        }
+
+    def codeindex_activity(self) -> list[dict]:
+        """Recent sync events for the panel's activity log."""
+        from dataclasses import asdict
+
+        return [asdict(e) for e in self._session.code_index_sync.recent_activity()]
 
     def codeindex_install(self) -> dict:
         """Return the URL of the Ember portal's repositories page.
@@ -1807,6 +2688,92 @@ class BackendServer:
         ]
 
     # ── Plugins ────────────────────────────────────────────────────
+
+    def get_plugin_contents(self, name: str) -> dict:
+        """Detailed inventory of one installed plugin — what skills,
+        agents, hooks, MCP servers, and custom tools it bundles, plus
+        a short README excerpt if present. Powers the expandable
+        plugin card in the panel.
+        """
+        loader = self._session.plugin_loader
+        plugin = next(
+            (p for p in loader.list_plugins() if p.name == name),
+            None,
+        )
+        if plugin is None:
+            return {"error": f"Plugin '{name}' not found"}
+        return _scan_plugin_dir(plugin.root_path, name=name)
+
+    async def preview_plugin(
+        self,
+        source: str,
+        branch: str | None = None,
+        subdir: str | None = None,
+    ) -> dict:
+        """Same inventory as :meth:`get_plugin_contents`, but for a
+        plugin that ISN'T installed yet — performs a shallow clone of
+        *source* to a temp dir, scans it, and deletes the clone. Cached
+        per (source, branch, subdir) for the lifetime of this backend
+        so re-opening the card is instant.
+        """
+        import re
+        import shutil
+        import tempfile
+
+        from ember_code.core.plugins.git import GitClient, GitError
+
+        # The marketplace panel sends ``source`` as the formatted
+        # display string from ``get_marketplaces`` — bare URL or the
+        # subdir form ``"<url> [<subdir>]"``. Split it back so we
+        # clone the right URL and descend into the right path.
+        m = re.match(r"^(.+?)\s+\[(.+?)\]\s*$", source.strip())
+        if m and not subdir:
+            clone_url = m.group(1).strip()
+            subdir = m.group(2).strip()
+        else:
+            clone_url = source.strip()
+
+        key = (clone_url, branch or "", subdir or "")
+        # Lazy-initialize the preview cache on first access; pin the
+        # variable's type to a concrete dict so the indexing operations
+        # below typecheck cleanly (``getattr(..., None)`` would otherwise
+        # widen ``cache`` to ``Any | None``).
+        preview_cache: dict[tuple[str, str, str], dict] = (
+            getattr(self, "_preview_cache", None) or {}
+        )
+        if not hasattr(self, "_preview_cache"):
+            self._preview_cache = preview_cache
+        if key in preview_cache:
+            return preview_cache[key]
+
+        git = GitClient()
+        if not git.is_available():
+            return {"error": "git is not installed on this machine."}
+
+        tmp = Path(tempfile.mkdtemp(prefix="ember-preview-"))
+        try:
+            await asyncio.to_thread(git.clone, clone_url, tmp, ref=branch or None, shallow=True)
+            scan_root = tmp / subdir if subdir else tmp
+            if not scan_root.is_dir():
+                return {
+                    "error": (
+                        f"Cloned repo has no '{subdir}' subdirectory — "
+                        "the marketplace entry may be stale."
+                    )
+                }
+            result = _scan_plugin_dir(scan_root, name=source)
+            # Don't leak the throwaway temp path — surface the source
+            # the user knows about instead. Echo the subdir form so
+            # the FE display matches the catalog entry.
+            result["root_path"] = f"{clone_url} [{subdir}]" if subdir else clone_url
+            preview_cache[key] = result
+            return result
+        except GitError as exc:
+            return {"error": f"git clone failed: {exc}"}
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def get_plugin_details(self) -> list[PluginInfo]:
         """Snapshot of every discovered plugin for the panel UI.
@@ -2153,7 +3120,7 @@ class BackendServer:
         from ember_code.core.scheduler.models import TaskStatus
         from ember_code.core.scheduler.store import TaskStore
 
-        store = TaskStore()
+        store = TaskStore(project_dir=self._session.project_dir)
         await store.update_status(task_id, TaskStatus.cancelled)
         return msg.Info(text=f"Cancelled task {task_id}")
 
@@ -2161,7 +3128,7 @@ class BackendServer:
         """Get all scheduled tasks."""
         from ember_code.core.scheduler.store import TaskStore
 
-        store = TaskStore()
+        store = TaskStore(project_dir=self._session.project_dir)
         return await store.get_all(include_done=include_done)
 
     def start_scheduler(
@@ -2169,12 +3136,19 @@ class BackendServer:
         on_task_started=None,
         on_task_completed=None,
     ) -> Any:
-        """Start the background scheduler. Returns the runner for stop()."""
+        """Start the background scheduler. Idempotent: caches the
+        runner on the pool so reconnects (and the Web/TUI both calling
+        this) don't spawn duplicate pollers competing for the same
+        task store. Returns the runner for stop()."""
         from ember_code.core.scheduler.runner import SchedulerRunner
         from ember_code.core.scheduler.store import TaskStore
 
+        existing = getattr(self._session.pool, "_scheduler_runner", None)
+        if existing is not None and getattr(existing, "is_running", False):
+            return existing
+
         sched_cfg = self._settings.scheduler
-        store = TaskStore()
+        store = TaskStore(project_dir=self._session.project_dir)
         runner = SchedulerRunner(
             store=store,
             execute_fn=self.execute_scheduled_task,
@@ -2185,6 +3159,7 @@ class BackendServer:
             max_concurrent=sched_cfg.max_concurrent,
         )
         runner.start()
+        self._session.pool._scheduler_runner = runner
         return runner
 
     def toggle_verbose(self) -> bool:

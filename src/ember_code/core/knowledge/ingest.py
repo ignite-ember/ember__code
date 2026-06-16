@@ -44,6 +44,29 @@ class Ingester:
         if p.is_dir():
             return await self._add_directory(p, metadata=metadata)
 
+        # Plain-text formats (markdown / source / notes): Agno readers
+        # call clean_text() which collapses every newline into a space,
+        # destroying the structure the detail page renders. Read raw and
+        # let KnowledgeIndex.add() do the chunking with our newline-
+        # preserving chunker.
+        if _is_text_path(p):
+            try:
+                content = p.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError) as exc:
+                raise IngestError(f"Failed to read {p}: {exc}") from exc
+            if not content.strip():
+                return 0
+            try:
+                await self.knowledge.add(
+                    content=content,
+                    source=str(p),
+                    metadata=dict(metadata or {}),
+                )
+                return 1
+            except Exception:
+                logger.exception("Failed to store text document from %s", p)
+                return 0
+
         reader = _reader_for_path(p)
         try:
             documents = await reader.async_read(p)
@@ -124,6 +147,57 @@ def _reader_for_url(url: str):
     return WebsiteReader()
 
 
+# Extensions we read raw (preserves newlines / markdown structure).
+# Anything else falls through to an Agno reader below.
+_TEXT_EXTENSIONS = frozenset(
+    {
+        ".md",
+        ".markdown",
+        ".mdx",
+        ".txt",
+        ".text",
+        ".rst",
+        ".log",
+        ".py",
+        ".pyi",
+        ".ipynb",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".rb",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt",
+        ".swift",
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".hpp",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".html",
+        ".htm",
+        ".xml",
+        ".css",
+        ".scss",
+        ".sql",
+    }
+)
+
+
+def _is_text_path(path: Path) -> bool:
+    return path.suffix.lower() in _TEXT_EXTENSIONS
+
+
 _PATH_READERS: dict[str, str] = {
     ".pdf": "pdf_reader.PDFReader",
     ".docx": "docx_reader.DocxReader",
@@ -133,8 +207,6 @@ _PATH_READERS: dict[str, str] = {
     ".xls": "excel_reader.ExcelReader",
     ".csv": "csv_reader.CSVReader",
     ".json": "json_reader.JSONReader",
-    ".md": "markdown_reader.MarkdownReader",
-    ".markdown": "markdown_reader.MarkdownReader",
 }
 
 

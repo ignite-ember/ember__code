@@ -169,6 +169,14 @@ class RunCompleted(Message):
     parent_run_id: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = 0
+    """Subset of ``output_tokens`` consumed by the model's reasoning
+    chain (e.g. MiniMax-M2.7 'thinking'). The visible reply tokens are
+    ``output_tokens - reasoning_tokens``. Surfaced as a separate field
+    so the FE can split the stats line into ``N think · M out`` rather
+    than conflating both as a single ``out`` number."""
+    duration: float = 0.0
+    """Run wall-clock seconds, from Agno's run metrics."""
 
 
 class StreamingDone(Message):

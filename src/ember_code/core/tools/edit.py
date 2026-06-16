@@ -1,8 +1,55 @@
 """EmberEditTools — targeted string-replacement editing."""
 
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from agno.tools import Toolkit
+
+logger = logging.getLogger(__name__)
+
+
+# ── File-edit notification hook ─────────────────────────────────────
+#
+# The backend wires a callback here at startup (see
+# ``backend/__main__.py``) that turns every successful edit into a
+# ``file_edited`` PushNotification. Downstream clients react:
+#
+#   • JetBrains plugin   → ``LocalFileSystem.refreshAndFindFileByPath``
+#                          (Local History captures the change, open
+#                          editor tabs reload, the "modified
+#                          externally" prompt stops firing).
+#   • VSCode extension   → ``workspace.openTextDocument`` reveal +
+#                          ``editor.action.revert`` reload.
+#   • Tauri / web        → no-op (the FE doesn't own an editor).
+#
+# Keeping the hook a module-level callable instead of a constructor
+# arg means we don't have to thread the wiring through every agent's
+# toolkit construction site, and tests + the TUI can leave it unset.
+
+_FileEditListener = Callable[[str], None]
+_listener: _FileEditListener | None = None
+
+
+def set_file_edit_listener(fn: _FileEditListener | None) -> None:
+    """Register (or clear) the callback fired after each successful
+    edit. ``fn`` receives the absolute path of the file that was
+    written. Exceptions are swallowed so a flaky listener can never
+    break an edit."""
+    global _listener
+    _listener = fn
+
+
+def _notify(path: Path) -> None:
+    fn = _listener
+    if fn is None:
+        return
+    try:
+        fn(str(path))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("file-edit listener raised: %s", exc)
 
 
 class EmberEditTools(Toolkit):
@@ -59,6 +106,7 @@ class EmberEditTools(Toolkit):
 
         new_content = content.replace(old_string, new_string, 1)
         path.write_text(new_content)
+        _notify(path)
 
         return f"Successfully edited {path}"
 
@@ -86,6 +134,7 @@ class EmberEditTools(Toolkit):
 
         new_content = content.replace(old_string, new_string)
         path.write_text(new_content)
+        _notify(path)
 
         return f"Successfully replaced {count} occurrence(s) in {path}"
 
@@ -106,5 +155,6 @@ class EmberEditTools(Toolkit):
 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
+        _notify(path)
 
         return f"Successfully created {path}"

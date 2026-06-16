@@ -1,9 +1,20 @@
 """Command handler — processes slash commands for the TUI."""
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from ember_code.protocol.messages import CommandAction, CommandResultKind
+
+# Word-boundaried match for time-clause keywords used by /schedule's
+# implicit-add heuristic. Bare substring matching (the old approach)
+# false-positives on "in" inside "ping", "at" inside "format", etc.,
+# which routed plain descriptions into the time parser and produced
+# a confusing "Could not parse time" error.
+_SCHEDULE_TIME_MARKER_RE = re.compile(
+    r"\b(?:every|daily|hourly|weekly|tomorrow|at|in|on)\b",
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,21 +162,22 @@ class CommandHandler:
             "**Commands:**\n"
             "- `/schedule` — list pending tasks\n"
             "- `/schedule all` — include completed and cancelled\n"
-            "- `/schedule add <description> at <time>` — one-shot task\n"
-            "- `/schedule add <description> in <duration>` — relative time\n"
-            "- `/schedule add <description> every <interval>` — recurring\n"
+            "- `/schedule <description> at <time>` — one-shot task\n"
+            "- `/schedule <description> in <duration>` — relative time\n"
+            "- `/schedule <description> every <interval>` — recurring\n"
             "- `/schedule show <id>` — show task details\n"
             "- `/schedule cancel <id>` — cancel a task\n\n"
+            "*The `add` keyword is optional — any phrasing with a time clause is treated as a new task.*\n\n"
             "**Time formats:**\n"
             "- One-shot: `at 5pm`, `at 3:30`, `tomorrow`, `tomorrow at 9am`, `2026-12-25 14:00`\n"
             "- Relative: `in 30 minutes`, `in 2 hours`, `in 1 day`\n"
             "- Recurring: `every 2 hours`, `every 30 minutes`, `daily`, `daily at 9am`, `hourly`, `weekly`\n\n"
             "**Examples:**\n"
             "```\n"
-            "/schedule add review code at 5pm\n"
-            "/schedule add run tests in 30 minutes\n"
-            "/schedule add check deps daily\n"
-            "/schedule add run linter every 2 hours\n"
+            "/schedule review code at 5pm\n"
+            "/schedule run tests in 30 minutes\n"
+            "/schedule check deps daily\n"
+            "/schedule run linter every 2 hours\n"
             "```"
         ),
         "loop": (
@@ -744,11 +756,23 @@ class CommandHandler:
         return CommandResult.hooks()
 
     async def _cmd_clear(self, _args: str) -> "CommandResult":
-        # Generate new session_id so Agno starts fresh history
+        # Generate new session_id so Agno starts fresh history.
+        # The id MUST be propagated to main_team and persistence —
+        # otherwise team.arun keeps reading the old session's
+        # history (Agno keys persistence on team.session_id, not on
+        # _session.session_id) and count_context_tokens queries an
+        # empty new id, making the footer read 0% while the agent
+        # silently continues the old conversation.
         import asyncio
         import uuid
 
-        self._session.session_id = str(uuid.uuid4())[:8]
+        new_id = str(uuid.uuid4())[:8]
+        self._session.session_id = new_id
+        self._session.main_team.session_id = new_id
+        self._session.persistence.session_id = new_id
+        # Latched ctx counter belongs to the previous conversation;
+        # the backend reads this and exposes get_status().
+        self._session._last_input_tokens = 0
 
         # New dialogue → re-pull the changeset for current HEAD
         # (fire-and-forget). Also refresh the codeindex_available flag
@@ -1215,7 +1239,7 @@ class CommandHandler:
         from ember_code.core.scheduler.models import TaskStatus
         from ember_code.core.scheduler.store import TaskStore
 
-        store = TaskStore()
+        store = TaskStore(project_dir=self._session.project_dir)
         parts = args.strip().split(None, 1)
         subcommand = parts[0].lower() if parts else "list"
         sub_args = parts[1].strip() if len(parts) > 1 else ""
@@ -1228,6 +1252,17 @@ class CommandHandler:
 
         if subcommand == "add" and sub_args:
             return await self._schedule_add(store, sub_args)
+
+        # Implicit add: any phrasing that contains a time-clause word
+        # but doesn't start with a known sub-command. So "/schedule
+        # hello task every minute" Just Works instead of silently
+        # opening the panel. Use word boundaries so we don't false-
+        # positive on "in" inside "ping" or "at" inside "format".
+        known_subcommands = {"add", "list", "rm", "remove", "cancel", "show"}
+        if subcommand not in known_subcommands:
+            raw = args.strip()
+            if _SCHEDULE_TIME_MARKER_RE.search(raw):
+                return await self._schedule_add(store, raw)
 
         if subcommand in ("rm", "remove", "cancel") and sub_args:
             task_id = sub_args.strip()
@@ -1282,9 +1317,13 @@ class CommandHandler:
                         recurrence=recurrence,
                     )
                     await store.add(task)
-                    return CommandResult.info(
-                        f'Scheduled `{task.id}`: "{description}" '
-                        f"({recurrence}, first at {scheduled.strftime('%Y-%m-%d %H:%M')})"
+                    return CommandResult(
+                        kind=CommandResultKind.INFO,
+                        content=(
+                            f'Scheduled `{task.id}`: "{description}" '
+                            f"({recurrence}, first at {scheduled.strftime('%Y-%m-%d %H:%M')})"
+                        ),
+                        action=CommandAction.SCHEDULE,
                     )
 
         # Try one-shot: "review codebase at 5pm"
@@ -1301,17 +1340,25 @@ class CommandHandler:
                         scheduled_at=scheduled,
                     )
                     await store.add(task)
-                    return CommandResult.info(
-                        f'Scheduled `{task.id}`: "{description}" at {scheduled.strftime("%Y-%m-%d %H:%M")}'
+                    return CommandResult(
+                        kind=CommandResultKind.INFO,
+                        content=(
+                            f'Scheduled `{task.id}`: "{description}" '
+                            f"at {scheduled.strftime('%Y-%m-%d %H:%M')}"
+                        ),
+                        action=CommandAction.SCHEDULE,
                     )
 
         return CommandResult.error(
-            "Could not parse time. Examples:\n"
-            "  /schedule add review the codebase at 5pm\n"
-            "  /schedule add run tests in 30 minutes\n"
-            "  /schedule add audit security tomorrow\n"
-            "  /schedule add run tests every 2 hours\n"
-            "  /schedule add check dependencies daily"
+            "Could not parse the time clause. The `add` prefix is "
+            "optional — any phrasing that contains `at`, `in`, `on`, "
+            "`tomorrow`, `every`, `daily`, `hourly`, or `weekly` works.\n\n"
+            "Examples:\n"
+            "  /schedule review the codebase at 5pm\n"
+            "  /schedule run tests in 30 minutes\n"
+            "  /schedule audit security tomorrow\n"
+            "  /schedule run tests every 2 hours\n"
+            "  /schedule check dependencies daily"
         )
 
     async def _cmd_evals(self, args: str) -> "CommandResult":
@@ -1340,12 +1387,46 @@ class CommandHandler:
         lines = [f"[{r.direction}] {r.summary}" for r in results]
         return CommandResult.info("\n".join(lines))
 
+    async def _cmd_ctx(self, _args: str) -> "CommandResult":
+        """Break down the current ctx counter into floor vs conversation.
+
+        ``/compact`` only clears the conversational runs — system prompt,
+        tool schemas, project rules, memories and the injected session
+        summary stay. ``/ctx`` shows the split so the user can see why
+        the meter doesn't drop to zero after compaction.
+        """
+        b = await self._session.context_breakdown()
+        total = b["total"]
+        runs = b["runs"]
+        floor = b["floor"]
+        pct = (runs / total * 100.0) if total else 0.0
+        lines = [
+            "**Context breakdown**",
+            "",
+            f"- **Total:** {total:,} tokens",
+            f"- **Conversation (runs):** {runs:,} tokens ({pct:.1f}% of total)",
+            f"- **Floor (system + tools + rules + memories + summary):** {floor:,} tokens",
+            "",
+            "`/compact` only clears the conversation portion — the floor "
+            "is rebaked into every prompt and cannot be compacted away.",
+        ]
+        return CommandResult(
+            kind=CommandResultKind.MARKDOWN,
+            content="\n".join(lines),
+        )
+
     async def _cmd_compact(self, _args: str) -> "CommandResult":
         status, summary = await self._session.force_compact()
+        # Pass status + summary as separate fields so the FE can render
+        # a structured "Context compacted" card with the model-generated
+        # summary as the body (markdown-aware). The old shape collapsed
+        # both into ``content``, which made an empty summary
+        # indistinguishable from a missing-summary error.
         return CommandResult(
             kind=CommandResultKind.ACTION,
             action=CommandAction.COMPACT,
-            content=summary or status,
+            content=status,
+            display_content=summary,
         )
 
     # ── /loop ─────────────────────────────────────────────────────────
@@ -1563,6 +1644,7 @@ class CommandHandler:
         "/plugin": _cmd_plugin,
         "/plugins": _cmd_plugins,
         "/compact": _cmd_compact,
+        "/ctx": _cmd_ctx,
         "/bug": _cmd_bug,
         "/evals": _cmd_evals,
         "/sync-knowledge": _cmd_sync_knowledge,

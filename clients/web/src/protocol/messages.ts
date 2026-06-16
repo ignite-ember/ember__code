@@ -31,13 +31,9 @@ export interface ToolStarted extends BaseMessage {
   run_id: string;
 }
 
-export interface DiffRow {
-  kind: string;
-  left_no: string;
-  left: string;
-  right_no: string;
-  right: string;
-}
+/** BE diff rows are (display_text, rich_style) pairs; the text embeds
+ * the +/- prefix and line number (see _format_edit_diff). */
+export type DiffRow = [text: string, style: string];
 
 export interface ToolCompleted extends BaseMessage {
   type: "tool_completed";
@@ -77,6 +73,11 @@ export interface RunCompleted extends BaseMessage {
   parent_run_id: string | null;
   input_tokens: number;
   output_tokens: number;
+  /** Subset of ``output_tokens`` spent on the model's reasoning chain
+   *  (thinking). Visible reply tokens = ``output_tokens - reasoning_tokens``. */
+  reasoning_tokens?: number;
+  /** Run wall-clock seconds (Agno run metrics). */
+  duration: number;
 }
 
 export interface StreamingDone extends BaseMessage {

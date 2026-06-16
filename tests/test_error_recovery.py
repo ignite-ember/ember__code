@@ -103,6 +103,11 @@ class TestBackendCancelRun:
             server = BackendServer.__new__(BackendServer)
             server._session = MagicMock()
             server._session.main_team = MagicMock(spec=[])  # no run_id attr
+            # ``cancel_run`` now also cancels the in-flight asyncio
+            # task (``self._current_run_task``). ``__new__``-bypassed
+            # init leaves the attribute unset; mirror the real
+            # ``__init__`` default so the cancel path runs cleanly.
+            server._current_run_task = None
 
             # Should not raise
             server.cancel_run()

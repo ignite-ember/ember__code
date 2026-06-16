@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { HITLRequest } from "../protocol/messages";
+import { HitlArgsView } from "./HitlArgsView";
 
 export interface HitlDecision {
   requirement_id: string;
@@ -35,8 +36,8 @@ export function HitlDialog({
   };
 
   return (
-    <div className="overlay">
-      <div className="dialog">
+    <div className="hitl-inline">
+      <div className="hitl-card">
         <div className="dialog-title">
           <span className="tool-status running" />
           Allow {req.friendly_name || req.tool_name}?
@@ -48,7 +49,7 @@ export function HitlDialog({
         </div>
         {req.agent_path && <div className="dialog-sub">{req.agent_path}</div>}
         {req.details && <div className="dialog-sub">{req.details}</div>}
-        <div className="dialog-pre">{JSON.stringify(req.tool_args, null, 2)}</div>
+        <HitlArgsView args={req.tool_args as Record<string, unknown> | undefined} />
         <div className="dialog-actions">
           <button className="btn btn-primary" onClick={() => decide("confirm", "once")}>
             Allow once

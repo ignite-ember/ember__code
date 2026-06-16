@@ -1,11 +1,21 @@
 """Media input utilities — detect file paths and resolve references.
 
-Two modes:
-1. **Path resolution** (active) — resolves bare filenames and relative paths
-   to absolute paths so the AI can use Read or other tools.
-2. **Media attachment** (disabled) — detects media files and creates Agno
-   media objects for multimodal models. Commented out until vision-capable
-   models are supported.
+Two modes, both active. Which one runs depends on the model's
+``vision`` flag in the registry (see ``backend/server.py:409``):
+
+1. **Path resolution** — resolves bare filenames and relative paths to
+   absolute paths so a text-only model can read them via Bash / cat /
+   pdftotext. The path lands in the user message as a string.
+2. **Media attachment** — for ``vision: true`` models only. Wraps the
+   resolved paths in Agno ``Image`` / ``Audio`` / ``Video`` / ``File``
+   objects which Agno serializes as base64-encoded content parts in
+   the provider's chat-completions request body (OpenAI ``image_url``,
+   Claude ``document``, etc.). The actual file bytes go on the wire
+   on every turn that includes the attachment — see
+   :func:`attach_resolved_files` for the entry point.
+
+A text-only model (e.g. MiniMax-M2.7) takes path 1 only; the bytes
+stay on disk in ``.ember/attachments/<session_id>/``.
 """
 
 import re

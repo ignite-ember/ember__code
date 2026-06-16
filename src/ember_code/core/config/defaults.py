@@ -73,7 +73,7 @@ DEFAULT_CONFIG = {
     "orchestration": {
         "max_nesting_depth": 5,
         "max_total_agents": 20,
-        "sub_team_timeout": 600,
+        "sub_team_timeout": 1800,
         "max_task_iterations": 10,
         "generate_ephemeral": True,
         "max_ephemeral_per_session": 5,

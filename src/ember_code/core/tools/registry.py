@@ -207,7 +207,7 @@ class ToolRegistry:
         return WebTools(**kwargs)
 
     def _make_schedule(self, confirm: bool = False):
-        return ScheduleTools()
+        return ScheduleTools(project_dir=str(self.base_dir) if self.base_dir else None)
 
     def _make_python(self, confirm: bool = False):
         from agno.tools.python import PythonTools

@@ -18,12 +18,55 @@ import { fe } from "./messages";
 declare global {
   interface Window {
     __EMBER_WS_URL__?: string;
+    /** Native OS folder picker, injected by the embedding shell
+     *  (Tauri dialog plugin, VSCode showOpenDialog, JetBrains
+     *  FileChooser). Receives the session's currently locked dir
+     *  as the starting location; resolves to an absolute path or
+     *  null on cancel. */
+    __EMBER_PICK_DIR__?: (start?: string) => Promise<string | null>;
+  }
+}
+
+/** Pick a folder via the shell's native dialog, or undefined if
+ *  this context has none (→ try the BE-side native dialog next). */
+export async function pickNativeDirectory(
+  start?: string,
+): Promise<string | null | undefined> {
+  if (!window.__EMBER_PICK_DIR__) return undefined;
+  try {
+    return await window.__EMBER_PICK_DIR__(start);
+  } catch {
+    return null;
   }
 }
 
 export function resolveWsUrl(): string {
   const param = new URLSearchParams(window.location.search).get("ws");
-  return param || window.__EMBER_WS_URL__ || "ws://127.0.0.1:8765";
+  // VSCode webviews disallow inline scripts under the default CSP, so
+  // the extension delivers the URL via <meta name="ember-ws-url">.
+  // Read that as a second source before falling back to the dev port.
+  const metaTag =
+    typeof document !== "undefined"
+      ? (document.querySelector('meta[name="ember-ws-url"]') as HTMLMetaElement | null)
+      : null;
+  const meta = metaTag?.content || null;
+  const url = param || meta || window.__EMBER_WS_URL__ || "ws://127.0.0.1:8765";
+  // Helps when debugging IDE-embedded clients (VSCode / JetBrains) where
+  // the host injects the URL — confirms which source won and what value
+  // ended up on the wire. Logged once at construction time.
+  // eslint-disable-next-line no-console
+  console.info(
+    "[Ember] WS URL:",
+    url,
+    "(param:",
+    param,
+    "meta:",
+    meta,
+    "global:",
+    window.__EMBER_WS_URL__,
+    ")",
+  );
+  return url;
 }
 
 export type ConnectionState =
@@ -154,9 +197,13 @@ export class EmberClient {
    * Send a user message; `onMessage` receives every streamed event
    * for this run. Resolves when `stream_end` arrives.
    */
-  runMessage(text: string, onMessage: StreamHandler): Promise<void> {
+  runMessage(
+    text: string,
+    onMessage: StreamHandler,
+    fileContents?: Record<string, string>,
+  ): Promise<void> {
     const id = genId("run");
-    return this.stream(fe.userMessage(text, id, this.clientId), id, onMessage);
+    return this.stream(fe.userMessage(text, id, this.clientId, fileContents), id, onMessage);
   }
 
   /** Queue a message while a run is in flight. Fire-and-forget. */
@@ -225,13 +272,17 @@ export class EmberClient {
    * `status_update`) — see _handle_message in backend/__main__.py.
    * Both shapes resolve here; typed messages resolve as themselves.
    */
-  rpc<T = unknown>(method: string, args: Record<string, unknown> = {}): Promise<T> {
+  rpc<T = unknown>(
+    method: string,
+    args: Record<string, unknown> = {},
+    timeoutMs: number = RPC_TIMEOUT_MS,
+  ): Promise<T> {
     const id = genId("rpc");
     return new Promise<T>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.rpcWaiters.delete(id);
         reject(new Error(`RPC ${method} timed out`));
-      }, RPC_TIMEOUT_MS);
+      }, timeoutMs);
       this.rpcWaiters.set(id, {
         resolve: (m) => {
           if (m.type === "rpc_response") {
@@ -256,8 +307,14 @@ export class EmberClient {
   }
 
   /** @-mention file completions (BE-side FileIndex). */
-  completeFiles(query: string, limit = 50): Promise<string[]> {
-    return this.rpc<string[]>("complete_files", { query, limit });
+  completeFiles(
+    query: string,
+    limit = 50,
+  ): Promise<{ matches: string[]; total: number }> {
+    return this.rpc<{ matches: string[]; total: number }>("complete_files", {
+      query,
+      limit,
+    });
   }
 
   /** $-prefix shell mode — captured output from the BE. */

@@ -1,27 +1,53 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyEvent,
+  applyOrchestrateEvent,
   assistantItem,
+  compactItem,
+  correctStatsCtx,
+  restoredItem,
   errorItem,
   infoItem,
+  isOrchestrateActive,
+  loopItem,
   newStreamState,
   shellItem,
   userItem,
   type ChatItem,
+  type OrchestrateEvent,
 } from "./chat/model";
+import { ClientStateStore, ensureClientId } from "./clientState";
 import { ChatItemView } from "./components/ChatItems";
 import { Composer, BUILTIN_COMMANDS, type SlashCommand } from "./components/Composer";
+import { CodeIndexIndicator } from "./components/CodeIndexIndicator";
+import { CtxMeter, SessionChip } from "./components/StatusBits";
 import { HitlDialog, type HitlDecision } from "./components/HitlDialog";
+import {
+  ChevronIcon,
+  CloseIcon,
+  CloudIcon,
+  FlameIcon,
+  FolderIcon,
+  MenuIcon,
+} from "./components/Icons";
 import { Sidebar, type SessionEntry } from "./components/Sidebar";
+import { AgentsPanel } from "./components/panels/AgentsPanel";
 import { CodeIndexPanel } from "./components/panels/CodeIndexPanel";
 import { DetailsPanel } from "./components/panels/DetailsPanel";
+import { FilePreview } from "./components/FilePreview";
+import { HooksPanel } from "./components/panels/HooksPanel";
+import { KnowledgePanel } from "./components/panels/KnowledgePanel";
+import { Toasts, type Toast } from "./components/Toasts";
+import { host } from "./lib/host";
+import { PluginsPanel } from "./components/panels/PluginsPanel";
+import { SkillsPanel } from "./components/panels/SkillsPanel";
 import { DirectoryPicker } from "./components/panels/DirectoryPicker";
 import { InfoPanel } from "./components/panels/InfoPanel";
 import { LoginPanel } from "./components/panels/LoginPanel";
 import { LoopPanel } from "./components/panels/LoopPanel";
 import { McpPanel } from "./components/panels/McpPanel";
 import { SchedulePanel } from "./components/panels/SchedulePanel";
-import { EmberClient, type ConnectionState } from "./protocol/client";
+import { EmberClient, pickNativeDirectory, type ConnectionState } from "./protocol/client";
 import type { HITLRequest, ServerMessage, StatusUpdate } from "./protocol/messages";
 
 type PanelState =
@@ -33,6 +59,11 @@ type PanelState =
   | { kind: "login" }
   | { kind: "info"; title: string; markdown: string }
   | { kind: "details"; title: string; method: string; fallback: string }
+  | { kind: "agents" }
+  | { kind: "skills" }
+  | { kind: "plugins" }
+  | { kind: "knowledge" }
+  | { kind: "hooks" }
   | { kind: "dir-picker" };
 
 interface UpdateInfo {
@@ -55,13 +86,9 @@ const TOOLS_MENU: { label: string; command: string; desc: string }[] = [
   { label: "Loop", command: "/loop", desc: "recurring prompt status" },
   { label: "Scheduled tasks", command: "/schedule", desc: "background routines" },
   { label: "Compact context", command: "/compact", desc: "summarize old turns" },
+  { label: "Context breakdown", command: "/ctx", desc: "system vs runs token split" },
   { label: "Help", command: "/help", desc: "all commands" },
 ];
-
-interface ModelRegistry {
-  default: string;
-  registry: Record<string, Record<string, unknown>>;
-}
 
 export default function App() {
   const client = useMemo(() => new EmberClient(), []);
@@ -71,25 +98,149 @@ export default function App() {
   const [status, setStatus] = useState<StatusUpdate | null>(null);
   const [hitl, setHitl] = useState<HITLRequest[] | null>(null);
   const [panel, setPanel] = useState<PanelState>({ kind: "none" });
-  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 700);
+  const [composerSeed, setComposerSeed] = useState<{ text: string; n: number } | null>(null);
+  // Plain-browser fallback for host.openFile — bridge-equipped hosts
+  // (Tauri / VSCode / JetBrains) handle the open themselves and never
+  // set this. Tracked at the App level so any panel can call
+  // host.openFile and get a consistent result.
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  useEffect(() => {
+    host.setPreviewFallback((p) => setPreviewPath(p));
+  }, []);
+
+  // IDE → web-UI event bus. Two paths converge here:
+  //
+  //   • JetBrains dispatches ``ember-host`` CustomEvents on
+  //     ``window`` via ``executeJavaScript``.
+  //   • VSCode dispatches plain ``message`` events via
+  //     ``webview.postMessage`` — the standard webview channel.
+  //
+  // Both sources carry the same shape (``{type, payload}`` for the
+  // CustomEvent detail, or ``{type, ...fields}`` for postMessage).
+  // We normalise into ``(type, payload)`` and feed a single dispatch
+  // so the rest of the handler is host-agnostic. Sub-handlers seed
+  // the composer with a structured form the model will interpret
+  // correctly — ``@<path>:start-end`` reference + fenced block.
+  useEffect(() => {
+    const dispatch = (type: string, payload: Record<string, unknown>) => {
+      if (type === "ember:addToComposer") {
+        const text = String(payload.text ?? "");
+        const path = payload.path ? String(payload.path) : null;
+        const line = typeof payload.line === "number" ? payload.line : null;
+        const endLine = typeof payload.end_line === "number" ? payload.end_line : null;
+        const range =
+          line != null
+            ? `:${line}${endLine != null && endLine !== line ? `-${endLine}` : ""}`
+            : "";
+        const ref = path ? `@${path}${range}\n` : "";
+        setComposerSeed({ text: `${ref}\`\`\`\n${text}\n\`\`\``, n: Date.now() });
+      } else if (type === "ember:attachFile") {
+        const path = payload.path ? String(payload.path) : null;
+        if (path) setComposerSeed({ text: `@${path}`, n: Date.now() });
+      } else if (type === "ember:theme") {
+        // IDE theme override — wins over OS ``prefers-color-scheme``.
+        // The CSS already keys off ``html[data-theme]`` (see
+        // ``theme.css``); we just toggle the attribute. When the
+        // bridge disconnects (web build, no IDE), the attribute is
+        // never set and the OS-detected default takes over.
+        const dark = Boolean(payload.dark);
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      }
+    };
+    const onCustom = (e: Event) => {
+      const ev = e as CustomEvent<{ type: string; payload: Record<string, unknown> }>;
+      const { type, payload } = ev.detail || { type: "", payload: {} };
+      dispatch(type, payload || {});
+    };
+    const onMessage = (e: MessageEvent) => {
+      const data = e.data as { type?: string; payload?: Record<string, unknown> } & Record<string, unknown>;
+      if (!data || typeof data.type !== "string") return;
+      // ``ember:searchCodeResult`` is correlation-id traffic owned
+      // by ``host.searchCode`` — don't dispatch as a normal event.
+      if (data.type === "ember:searchCodeResult") return;
+      // Some VSCode messages use a nested ``payload``; others (the
+      // older shape) inline fields. Tolerate both.
+      const payload = (data.payload as Record<string, unknown>) ?? data;
+      dispatch(data.type, payload);
+    };
+    window.addEventListener("ember-host", onCustom);
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("ember-host", onCustom);
+      window.removeEventListener("message", onMessage);
+    };
+  }, []);
+
+  // Toast stack — non-conversational notifications (scheduled tasks
+  // completing, background runs finishing) land here so they survive
+  // conversation switches and don't pollute the active chat. Persists
+  // top-right; auto-dismiss inside each card.
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastIdRef = useRef(1);
+  const addToast = useCallback((toast: Omit<Toast, "id">) => {
+    setToasts((prev) => [...prev, { id: toastIdRef.current++, ...toast }]);
+  }, []);
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+  // Per-client UI state — hydrated from the BE on connect. Lives in
+  // a memoized store so all three keys (session-id, sidebar, draft)
+  // round-trip the same way regardless of host (browser / VSCode /
+  // JetBrains). See clientState.ts.
+  const clientState = useMemo(
+    () => new ClientStateStore(client, ensureClientId()),
+    [client],
+  );
+  const SESSION_KEY = "session-id";
+  const SIDEBAR_KEY = "sidebar-open";
+  const [sidebarOpen, setSidebarOpenState] = useState(window.innerWidth > 700);
+  const setSidebarOpen = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      setSidebarOpenState((prev) => {
+        const resolved = typeof next === "function" ? next(prev) : next;
+        clientState.set(SIDEBAR_KEY, String(resolved));
+        return resolved;
+      });
+    },
+    [clientState],
+  );
   const [sessions, setSessions] = useState<SessionEntry[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [skills, setSkills] = useState<SlashCommand[]>([]);
-  const [modelMenu, setModelMenu] = useState<
-    { name: string; current: boolean }[] | null
-  >(null);
+  const [modelMenuSignal, setModelMenuSignal] = useState<{ n: number } | null>(null);
   const [accountMenu, setAccountMenu] = useState(false);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   // Live draft from another attached view (mirroring).
-  const [remoteDraft, setRemoteDraft] = useState("");
   // The directory this session is locked to (tools + shell cwd).
   const [projectDir, setProjectDir] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const processingRef = useRef(false);
+  // Bumped on /clear: late events from a pre-clear run (Agno's
+  // post-stream tail, e.g. run_completed) must not leak into the
+  // fresh conversation.
+  const viewGenRef = useRef(0);
   // <think>-tag parser state. `usesThinkTags` persists across runs
   // (the model identity doesn't change mid-session unless switched);
   // inThinking/carry reset at each run start.
   const streamRef = useRef(newStreamState());
+
+  /** Ping the OS / favicon when a reply finishes while the tab is
+   *  not focused, so the user knows to come back. */
+  const notifyDone = useCallback(() => {
+    // Don't bother if the user is watching the tab.
+    if (typeof document !== "undefined" && document.visibilityState === "visible") return;
+    try {
+      if (typeof Notification === "undefined") return;
+      if (Notification.permission === "granted") {
+        new Notification("Ember Code", { body: "Your reply is ready.", silent: true });
+      } else if (Notification.permission !== "denied") {
+        // Request permission once; subsequent runs honour the choice.
+        void Notification.requestPermission();
+      }
+    } catch {
+      /* notifications unsupported / blocked */
+    }
+  }, []);
 
   const append = useCallback(
     (item: ChatItem) => setItems((prev) => [...prev, item]),
@@ -100,6 +251,20 @@ export default function App() {
     processingRef.current = v;
     setProcessing(v);
   }, []);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const s = await client.rpc<StatusUpdate>("get_status");
+      if (s) setStatus(s);
+    } catch {
+      /* disconnected */
+    }
+    try {
+      setProjectDir(await client.rpc<string>("get_project_dir"));
+    } catch {
+      /* older BE */
+    }
+  }, [client]);
 
   // ── Streamed event handler (run + HITL-resume streams) ───────────
   const onStreamEvent = useCallback(
@@ -129,33 +294,114 @@ export default function App() {
         return;
       }
       setItems((prev) => applyEvent(prev, m, streamRef.current));
+      // After a top-level run finishes, Agno's reported ``input_tokens``
+      // is a sum across model iterations and is 2-3× the real session
+      // size on multi-step turns. The TUI long since switched its
+      // context meter to ``count_context_tokens`` (Agno's per-model
+      // tokenizer over the actual session messages); do the same in
+      // the web stats line by patching the just-emitted stats item
+      // with the corrected number.
+      if (m.type === "run_completed" && !m.parent_run_id && m.run_id) {
+        const runId = m.run_id;
+        void client
+          .rpc<number>("count_context_tokens")
+          .then((ctx) => {
+            if (typeof ctx === "number" && ctx > 0) {
+              setItems((prev) => correctStatsCtx(prev, runId, ctx));
+              // The same RPC latches the corrected ctx into the BE's
+              // _last_input_tokens. Refresh the status payload so the
+              // footer meter swaps from Agno's inflated wire number to
+              // the corrected one immediately, instead of waiting for
+              // the next 5s poll tick.
+              void refreshStatus();
+            }
+          })
+          .catch(() => {
+            /* leave the un-corrected (inflated) number — better than nothing */
+          });
+      }
     },
-    [setProc],
+    [client, refreshStatus, setProc, addToast],
   );
 
-  const refreshStatus = useCallback(async () => {
-    try {
-      const s = await client.rpc<StatusUpdate>("get_status");
-      if (s) setStatus(s);
-    } catch {
-      /* disconnected */
-    }
-    try {
-      setProjectDir(await client.rpc<string>("get_project_dir"));
-    } catch {
-      /* older BE */
-    }
-  }, [client]);
+  // Persisted history + interrupted-message markers for a session,
+  // as renderable items. Used on initial attach AND session picks.
+  const fetchHistoryItems = useCallback(
+    async (id: string): Promise<ChatItem[]> => {
+      const loaded: ChatItem[] = [];
+      try {
+        const history = await client.rpc<Record<string, unknown>[]>(
+          "get_chat_history",
+          { session_id: id },
+        );
+        for (const turn of history || []) {
+          const role = String(turn.role ?? "");
+          const content = String(turn.content ?? "");
+          const runId = typeof turn.run_id === "string" ? turn.run_id : "";
+          const item = restoredItem(role, content);
+          if (item) {
+            // Attach the BE-side run_id to user items so they're
+            // edit/delete-targetable after a session restore.
+            if (item.kind === "user" && runId) item.runId = runId;
+            loaded.push(item);
+          }
+        }
+      } catch {
+        /* no history — fresh session */
+      }
+      try {
+        const pending = await client.rpc<Record<string, unknown>[]>(
+          "get_pending_messages",
+          { session_id: id },
+        );
+        if (pending?.length) {
+          for (const p of pending) {
+            // Pending stores the post-process prompt (with the
+            // <attached-files> wrapper). Route through restoredItem
+            // so the bubble displays only the user-typed text; the
+            // @<path> tokens render as inline pills.
+            const item = restoredItem("user", String(p.content ?? ""));
+            if (item) loaded.push(item);
+          }
+          loaded.push(
+            infoItem(
+              `${pending.length} message(s) above were interrupted before completion — the agent knows and can pick up where it left off.`,
+            ),
+          );
+        }
+      } catch {
+        /* crash recovery is best-effort */
+      }
+      return loaded;
+    },
+    [client],
+  );
 
   const refreshSessions = useCallback(async () => {
     try {
-      const list = await client.rpc<Record<string, unknown>[]>("list_sessions");
+      // BE wraps the rows: {type: "session_list_result", sessions: [...]}.
+      const res = await client.rpc<{ sessions?: Record<string, unknown>[] }>("list_sessions");
+      const list = Array.isArray(res) ? (res as Record<string, unknown>[]) : (res?.sessions ?? []);
       setSessions(
-        (list || []).map((s) => ({
-          session_id: String(s.session_id ?? s.id ?? ""),
-          name: String(s.name ?? s.session_id ?? "?"),
-          detail: String(s.created_at ?? ""),
-        })),
+        list.map((s) => {
+          const id = String(s.session_id ?? s.id ?? "");
+          const ts = Number(s.updated_at ?? s.created_at ?? 0);
+          const when = ts
+            ? new Date(ts * 1000).toLocaleString([], {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : "";
+          // Auto-naming runs after the first turn; until then a
+          // readable timestamp beats a hex id.
+          return {
+            session_id: id,
+            name: String(s.name ?? "") || (when ? `Chat · ${when}` : id),
+            detail: [id, when].filter(Boolean).join(" · "),
+          };
+        }),
       );
     } catch {
       /* older BE or empty */
@@ -169,14 +415,61 @@ export default function App() {
       if (s === "connected") {
         void (async () => {
           try {
-            // Adopt the BE default session as this view's binding
-            // (unless the tab already bound one before a reconnect).
+            // Hydrate per-client state from the BE before any
+            // session-binding decisions — the stored session-id is
+            // what tells us whether to attach to an existing session
+            // or fall through to the BE's default.
+            await clientState.hydrate();
+            const storedSidebar = clientState.get(SIDEBAR_KEY);
+            if (storedSidebar === "true") setSidebarOpenState(true);
+            else if (storedSidebar === "false") setSidebarOpenState(false);
+            // Adopt a session for this view. Priority:
+            //   1. Already-bound sessionId on the client (reconnect
+            //      mid-session — don't churn it).
+            //   2. Stored session id from a previous load — re-attach
+            //      so the BE pool resumes that session in its
+            //      registered directory.
+            //   3. BE's default session.
             if (!client.sessionId) {
-              client.sessionId = await client.rpc<string>("get_session_id");
+              const stored = clientState.get(SESSION_KEY);
+              if (stored) {
+                try {
+                  const res = await client.rpc<{
+                    session_id: string;
+                    project_dir: string;
+                  }>("attach_session", { session_id: stored });
+                  client.sessionId = res.session_id;
+                  setProjectDir(res.project_dir);
+                } catch {
+                  // Stored id is unusable — fall through to default.
+                  client.sessionId = await client.rpc<string>("get_session_id");
+                }
+              } else {
+                client.sessionId = await client.rpc<string>("get_session_id");
+              }
             }
+            clientState.set(SESSION_KEY, client.sessionId);
             setSessionId(client.sessionId);
+            // Resumed BE session (--resume-session / crash restart):
+            // show its history instead of an empty welcome.
+            const loaded = await fetchHistoryItems(client.sessionId);
+            if (loaded.length) setItems(loaded);
           } catch {
             /* ignore */
+          }
+          // Recompute the real session-context size before fetching
+          // status — the BE's ``_last_input_tokens`` may still be the
+          // inflated value latched by ``RunCompleted.input_tokens``
+          // from a turn that pre-dated the count_context_tokens
+          // overwrite fix. ``count_context_tokens`` re-tokenises the
+          // actual session messages and writes the corrected number
+          // back into ``_last_input_tokens``, so the immediately
+          // following ``refreshStatus`` reads the right value into
+          // the footer instead of waiting for the next run.
+          try {
+            await client.rpc<number>("count_context_tokens");
+          } catch {
+            /* tokenizer not ready / older BE — fall through */
           }
           void refreshStatus();
           void refreshSessions();
@@ -206,14 +499,13 @@ export default function App() {
       // ── Mirroring events ────────────────────────────────────────
       if (m.type === "welcome") return; // client stored its id
       if (m.type === "typing") {
-        if (m.client_id !== client.clientId) setRemoteDraft(m.text);
+        // No remote-typing indicator — dropped per user request.
         return;
       }
       if (m.type === "user_message_received") {
         // Another view submitted — paint its bubble here. Our own
         // echo is skipped (we already painted on submit).
         if (m.client_id !== client.clientId) {
-          setRemoteDraft("");
           append(userItem(m.text));
           if (m.queued) append(infoItem("Queued — will run after the current turn."));
         }
@@ -233,15 +525,194 @@ export default function App() {
       else if (m.type === "status_update") setStatus(m);
       else if (m.type === "push_notification") {
         if (m.channel === "background_process_done") {
-          const p = m.payload as { cmd?: string; exit_code?: number };
-          append(infoItem(`Background process finished (exit ${p.exit_code}): ${p.cmd}`));
-        } else if (m.channel === "scheduler_started") {
-          append(infoItem(`Scheduled task started: ${m.payload.description ?? ""}`));
-        } else if (m.channel === "scheduler_completed") {
-          append(infoItem(`Scheduled task completed: ${m.payload.description ?? ""}`));
+          // Background processes complete asynchronously — they aren't
+          // tied to a specific position in the conversation, so we
+          // route them to a toast instead of injecting an info item
+          // between chat turns. Same pattern as scheduler events
+          // below. (Inline info items here used to split the
+          // team-progress card in two when one landed mid-team-run —
+          // the orchestrate_event router checked ``last item``.)
+          const p = m.payload as {
+            cmd?: string;
+            exit_code?: number;
+            duration_seconds?: number;
+          };
+          const cmd = String(p.cmd ?? "");
+          const cmdShort = cmd.length > 160 ? cmd.slice(0, 159) + "…" : cmd;
+          const ok = p.exit_code === 0;
+          const dur =
+            typeof p.duration_seconds === "number"
+              ? ` · ${p.duration_seconds.toFixed(1)}s`
+              : "";
+          const title = ok
+            ? `Background process finished${dur}`
+            : `Background process failed (exit ${p.exit_code})${dur}`;
+          addToast({ title, body: cmdShort });
+          if (typeof document !== "undefined" && document.hidden) {
+            void host.notify({
+              title,
+              body: cmdShort,
+              data: { channel: m.channel },
+            });
+          }
+        } else if (
+          m.channel === "scheduler_started" ||
+          m.channel === "scheduler_completed"
+        ) {
+          // Scheduled tasks are project-scoped, not chat-scoped — they
+          // don't belong in whichever conversation the user happens to
+          // be in. Render as a toast (top-right, persistent across
+          // conversation switches) and, if the app is backgrounded,
+          // additionally fire a native host notification (Tauri /
+          // VSCode / JetBrains) so the user notices.
+          const desc = String(m.payload.description ?? "").trim() || "(no description)";
+          const result = String(m.payload.result ?? "").trim();
+          const title =
+            m.channel === "scheduler_started"
+              ? `⏱ Scheduled task started`
+              : `⏱ Scheduled task completed`;
+          const body =
+            m.channel === "scheduler_completed" && result
+              ? `${desc}\n\n${result.length > 240 ? result.slice(0, 240) + "…" : result}`
+              : desc;
+          addToast({
+            title,
+            body,
+            onClick: () => setPanel({ kind: "schedule" }),
+          });
+          if (typeof document !== "undefined" && document.hidden) {
+            void host.notify({
+              title,
+              body,
+              data: { channel: m.channel, task_id: m.payload.task_id },
+            });
+          }
+        } else if (m.channel === "file_edited") {
+          // BE edit_file / edit_file_replace_all / create_file just
+          // wrote to disk. Forward to the host (JetBrains for now)
+          // so it can refresh the VFS — that one call drops the
+          // "modified externally" prompt, reloads any open editor
+          // tab, and snapshots a Local History entry. No-ops on
+          // hosts without an editor (web, Tauri's plain window).
+          const path = String((m.payload as { path?: unknown }).path ?? "");
+          if (path) void host.notifyFileEdited(path);
+        } else if (m.channel === "orchestrate_event") {
+          // Structured tree-event from orchestrate.py. The BE stamps a
+          // stable ``card_id`` on every event of a single ``spawn_team``
+          // / ``spawn_agent`` invocation — we route by id so the card
+          // survives interleaved info items, page refreshes, and
+          // concurrent spawns. If we've never seen this card_id, push
+          // a fresh card and seed it with the event. Older BEs without
+          // card_id fall back to "last active orchestrate item" so a
+          // version mismatch still renders something.
+          const ev = m.payload as unknown as OrchestrateEvent;
+          const cardId = String(
+            (m.payload as { card_id?: unknown }).card_id ?? "",
+          );
+          setItems((prev) => {
+            let idx = -1;
+            if (cardId) {
+              idx = prev.findIndex(
+                (it) => it.kind === "orchestrate" && it.cardId === cardId,
+              );
+            }
+            if (idx < 0 && !cardId) {
+              // Legacy BE — fall back to the most recent active card.
+              for (let i = prev.length - 1; i >= 0; i--) {
+                const it = prev[i];
+                if (
+                  it.kind === "orchestrate" &&
+                  isOrchestrateActive(it.agents, it.order)
+                ) {
+                  idx = i;
+                  break;
+                }
+              }
+            }
+            if (idx >= 0) {
+              const target = prev[idx];
+              if (target.kind !== "orchestrate") return prev;
+              const { agents, order } = applyOrchestrateEvent(
+                target.agents,
+                target.order,
+                ev,
+              );
+              // ``applyOrchestrateEvent`` returns the same refs when
+              // nothing changed (dedupped content_preview). Skip the
+              // re-render — fast-streaming teams fire ~20 events/sec
+              // and a no-op state replacement freezes the composer.
+              if (agents === target.agents && order === target.order) return prev;
+              const next = prev.slice();
+              next[idx] = { ...target, agents, order };
+              return next;
+            }
+            const { agents, order } = applyOrchestrateEvent({}, [], ev);
+            return [
+              ...prev,
+              {
+                kind: "orchestrate",
+                id: Date.now(),
+                cardId,
+                agents,
+                order,
+                streaming: true,
+              },
+            ];
+          });
         } else if (m.channel === "orchestrate_progress") {
-          // Rendered inside tool cards by the TUI; keep as dim info.
-          append({ kind: "agent", id: Date.now(), text: String(m.payload.line ?? "") });
+          // Legacy text channel — kept for backward compat in case a
+          // path in orchestrate.py still emits strings. Wraps the
+          // line as a content_preview against the "root" agent path
+          // so it shows up in the same card without ASCII art. No
+          // card_id is carried — fold into the most recent active
+          // card, or open a fresh one with an empty cardId.
+          const line = String(m.payload.line ?? "").trim();
+          if (!line) return;
+          const ev: OrchestrateEvent = {
+            type: "content_preview",
+            agent_path: "root",
+            text: line.slice(0, 120),
+          };
+          setItems((prev) => {
+            let idx = -1;
+            for (let i = prev.length - 1; i >= 0; i--) {
+              const it = prev[i];
+              if (
+                it.kind === "orchestrate" &&
+                isOrchestrateActive(it.agents, it.order)
+              ) {
+                idx = i;
+                break;
+              }
+            }
+            if (idx >= 0) {
+              const target = prev[idx];
+              if (target.kind !== "orchestrate") return prev;
+              const { agents, order } = applyOrchestrateEvent(
+                target.agents,
+                target.order,
+                ev,
+              );
+              if (agents === target.agents && order === target.order) return prev;
+              const next = prev.slice();
+              next[idx] = { ...target, agents, order };
+              return next;
+            }
+            const { agents, order } = applyOrchestrateEvent({}, [], ev);
+            return [
+              ...prev,
+              {
+                kind: "orchestrate",
+                id: Date.now(),
+                cardId: "",
+                agents,
+                order,
+                streaming: true,
+              },
+            ];
+          });
+        } else if (m.channel === "session_named") {
+          void refreshSessions();
         }
       } else if (m.type === "streaming_done" || m.type === "stream_end") {
         // A run initiated by ANOTHER view finished its content.
@@ -284,11 +755,33 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [client, hitl]);
 
-  // Autoscroll on new content.
+  // Autoscroll that respects user intent: stick to the bottom while
+  // the user is already there (within a small slack zone), release
+  // the lock the moment they scroll away. A floating "↓" button
+  // appears in the gap so they can jump back.
+  const [stickToBottom, setStickToBottom] = useState(true);
+  const SLACK_PX = 80;
   useEffect(() => {
     const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setStickToBottom(distance <= SLACK_PX);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+  useEffect(() => {
+    if (!stickToBottom) return;
+    const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [items, processing]);
+  }, [items, processing, stickToBottom]);
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setStickToBottom(true);
+  }, []);
 
   // ── Loop continuation (TUI parity: refire after each run) ────────
   const continueLoopIfPending = useCallback(async () => {
@@ -297,7 +790,12 @@ export default function App() {
         "pop_pending_loop_iteration",
       );
       if (next?.prompt) {
-        append(infoItem(`↻ loop: ${next.prompt}`));
+        // The BE wraps each iteration's prompt with autonomous-loop
+        // instructions; the chat panel renders a tidy iteration card
+        // (badge + the user's actual ask) instead of dumping the
+        // wrapper text verbatim. The full wrapped prompt is still
+        // sent to the model below.
+        append(loopItem(next.prompt));
         await runUserMessage(next.prompt);
       }
     } catch {
@@ -313,17 +811,72 @@ export default function App() {
       // cancelled run; keep usesThinkTags (model didn't change).
       streamRef.current.inThinking = false;
       streamRef.current.carry = "";
+      const gen = viewGenRef.current;
       try {
-        await client.runMessage(text, onStreamEvent);
+        await client.runMessage(text, (m) => {
+          if (gen === viewGenRef.current) onStreamEvent(m);
+        });
       } catch (e) {
         append(errorItem(String(e)));
       } finally {
         setProc(false);
+        void refreshStatus(); // keep the ctx counter live after each run
+        notifyDone();
         void continueLoopIfPending();
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [client, onStreamEvent],
+  );
+
+  // ── Edit / delete a previous user message ────────────────────────
+  // Truncates BE session history at the given run, then either stops
+  // (delete) or re-runs the new text (edit).
+  const truncateAndTrim = useCallback(
+    async (target: Extract<ChatItem, { kind: "user" }>): Promise<boolean> => {
+      if (!target.runId || !sessionId) return false;
+      try {
+        const r = await client.rpc<{ removed?: number; error?: string }>(
+          "truncate_history",
+          { session_id: sessionId, run_id: target.runId },
+        );
+        if (r?.error) {
+          append(errorItem(`Couldn't edit/delete: ${r.error}`));
+          return false;
+        }
+      } catch (e) {
+        append(errorItem(`Couldn't edit/delete: ${e instanceof Error ? e.message : String(e)}`));
+        return false;
+      }
+      // Local trim: keep everything strictly BEFORE the target item.
+      setItems((prev) => {
+        const idx = prev.findIndex((p) => p.id === target.id);
+        return idx === -1 ? prev : prev.slice(0, idx);
+      });
+      // The latched ctx number was for the old (longer) history;
+      // grab a fresh status so the footer meter reflects the trim.
+      void refreshStatus();
+      return true;
+    },
+    [client, sessionId, append, refreshStatus],
+  );
+
+  const onDeleteUser = useCallback(
+    async (target: Extract<ChatItem, { kind: "user" }>) => {
+      await truncateAndTrim(target);
+    },
+    [truncateAndTrim],
+  );
+
+  const onEditUser = useCallback(
+    async (target: Extract<ChatItem, { kind: "user" }>, newText: string) => {
+      const ok = await truncateAndTrim(target);
+      if (!ok) return;
+      // Mirror the typed-submit path: optimistic user item, then run.
+      append(userItem(newText));
+      await runUserMessage(newText);
+    },
+    [append, runUserMessage, truncateAndTrim],
   );
 
   // ── Slash command routing ─────────────────────────────────────────
@@ -342,17 +895,23 @@ export default function App() {
         const content = result.display_content || result.content;
         switch (result.action) {
           case "clear": {
+            viewGenRef.current++;
             setItems([]);
+            // The session id rotated and the new conversation has 0
+            // context; pull a fresh StatusUpdate so the footer
+            // doesn't keep showing the prior session's count.
+            void refreshStatus();
             try {
               // /clear renews the runtime's session id — rebind so
               // this view follows the fresh conversation.
               const renewed = await client.rpc<string>("get_session_id");
               client.sessionId = renewed;
+              clientState.set(SESSION_KEY, renewed);
               setSessionId(renewed);
             } catch {
               /* ignore */
             }
-            append(infoItem("New conversation started."));
+            // No info line — an empty item list renders the welcome hero.
             void refreshSessions();
             return;
           }
@@ -360,15 +919,10 @@ export default function App() {
             setSidebarOpen(true);
             void refreshSessions();
             return;
-          case "model": {
-            const reg = await client.rpc<ModelRegistry>("get_model_registry");
-            setModelMenu(
-              Object.keys(reg.registry)
-                .sort()
-                .map((name) => ({ name, current: name === reg.default })),
-            );
+          case "model":
+            // One picker UI: the composer's model menu (next to Send).
+            setModelMenuSignal({ n: Date.now() });
             return;
-          }
           case "model_switched":
             if (content) append(infoItem(content));
             void refreshStatus();
@@ -391,27 +945,20 @@ export default function App() {
             setPanel({ kind: "schedule" });
             return;
           case "agents":
-          case "skills":
-          case "plugins":
-          case "knowledge":
-          case "hooks": {
-            // These actions carry no content — the TUI builds panels
-            // from the details RPCs; we render the same data.
-            const method = {
-              agents: "get_agent_details",
-              skills: "get_skill_details",
-              plugins: "get_plugin_details",
-              knowledge: "get_knowledge_status",
-              hooks: "get_hooks_details",
-            }[result.action];
-            setPanel({
-              kind: "details",
-              title: result.action[0].toUpperCase() + result.action.slice(1),
-              method,
-              fallback: content,
-            });
+            setPanel({ kind: "agents" });
             return;
-          }
+          case "skills":
+            setPanel({ kind: "skills" });
+            return;
+          case "plugins":
+            setPanel({ kind: "plugins" });
+            return;
+          case "knowledge":
+            setPanel({ kind: "knowledge" });
+            return;
+          case "hooks":
+            setPanel({ kind: "hooks" });
+            return;
           case "help": {
             const lines = [...BUILTIN_COMMANDS, ...skills].map(
               (c) => `- \`${c.name}\` — ${c.description}`,
@@ -424,12 +971,35 @@ export default function App() {
             return;
           }
           case "run_prompt":
-            // Skills expand to a prompt that runs as a user message.
+            // Two sources land here:
+            //  - Skills expand to a bare prompt → render nothing extra,
+            //    just hand it to the run path.
+            //  - ``/loop`` iteration 1 — the BE puts the wrapped prompt
+            //    in ``result.content`` (the bare ask is in
+            //    ``display_content``). Detect the wrapper and paint
+            //    the same iteration card the live/restore paths use
+            //    so the chat shows "↻ Iteration 1" instead of nothing.
+            if (
+              typeof result.content === "string" &&
+              result.content.startsWith("<loop-iteration ")
+            ) {
+              append(loopItem(result.content));
+              await runUserMessage(result.content);
+              return;
+            }
             if (content) await runUserMessage(content);
             return;
-          case "compact":
-            append(infoItem(content || "Context compacted."));
+          case "compact": {
+            // BE packs status into ``content`` and the model-generated
+            // summary into ``display_content`` (see _cmd_compact). The
+            // compact card surfaces both with proper markdown.
+            const status = String(result.content ?? "Context compacted.");
+            const summary = String(result.display_content ?? "");
+            append(compactItem(status, summary));
+            // The context just shrunk — refresh the footer meter.
+            void refreshStatus();
             return;
+          }
           case "quit":
             append(infoItem("Use the window/tab close button to quit."));
             return;
@@ -487,12 +1057,17 @@ export default function App() {
     async (decisions: HitlDecision[]) => {
       setHitl(null);
       setProc(true);
+      const gen = viewGenRef.current;
       try {
-        await client.resolveHitlBatch(decisions, onStreamEvent);
+        await client.resolveHitlBatch(decisions, (m) => {
+          if (gen === viewGenRef.current) onStreamEvent(m);
+        });
       } catch (e) {
         append(errorItem(String(e)));
       } finally {
         setProc(false);
+        void refreshStatus(); // keep the ctx counter live after each run
+        notifyDone();
         void continueLoopIfPending();
       }
     },
@@ -512,6 +1087,7 @@ export default function App() {
           { project_dir: dir },
         );
         client.sessionId = res.session_id;
+        clientState.set(SESSION_KEY, res.session_id);
         setSessionId(res.session_id);
         setProjectDir(res.project_dir);
         setItems([]);
@@ -535,49 +1111,12 @@ export default function App() {
         // parallel. First contact can take a few seconds (Session
         // construction), hence the loading note.
         client.sessionId = id;
+        clientState.set(SESSION_KEY, id);
         setSessionId(id);
         setItems([]);
         append(infoItem(`Loading session ${id}…`));
-        // Load persisted history for the resumed session (TUI parity).
-        try {
-          const history = await client.rpc<Record<string, unknown>[]>(
-            "get_chat_history",
-            { session_id: id },
-          );
-          const loaded: ChatItem[] = [];
-          for (const turn of history || []) {
-            const role = String(turn.role ?? "");
-            const content = String(turn.content ?? "");
-            if (!content) continue;
-            if (role === "user") loaded.push(userItem(content));
-            else if (role === "assistant") loaded.push(assistantItem(content));
-          }
-          setItems(loaded);
-        } catch {
-          /* no history RPC result — start empty */
-        }
-        // Crash recovery (TUI parity): surface messages whose run
-        // never completed so the user sees their interrupted prompt.
-        try {
-          const pending = await client.rpc<Record<string, unknown>[]>(
-            "get_pending_messages",
-            { session_id: id },
-          );
-          if (pending?.length) {
-            for (const p of pending) {
-              const text = String(p.text ?? "");
-              if (text) append(userItem(text));
-            }
-            append(
-              infoItem(
-                `${pending.length} message(s) above were interrupted before completion — the agent knows and can pick up where it left off.`,
-              ),
-            );
-          }
-        } catch {
-          /* pending-message recovery is best-effort */
-        }
-        append(infoItem(`Resumed session ${id}.`));
+        const loaded = await fetchHistoryItems(id);
+        setItems([...loaded, infoItem(`Resumed session ${id}.`)]);
         void refreshStatus();
       } catch (e) {
         append(errorItem(String(e)));
@@ -590,7 +1129,6 @@ export default function App() {
 
   const pickModel = useCallback(
     async (name: string) => {
-      setModelMenu(null);
       try {
         const res = await client.switchModel(name);
         if (res.type === "info") append(infoItem(res.text));
@@ -614,6 +1152,7 @@ export default function App() {
         open={sidebarOpen}
         sessions={sessions}
         currentId={sessionId}
+        conn={conn}
         onNewChat={() => void runCommand("/clear", false)}
         onPick={(id) => void pickSession(id)}
         onClose={() => setSidebarOpen(false)}
@@ -629,7 +1168,7 @@ export default function App() {
               </a>
             )}
             <button className="icon-btn" onClick={() => setUpdate(null)}>
-              ✕
+              <CloseIcon />
             </button>
           </div>
         )}
@@ -639,40 +1178,86 @@ export default function App() {
             title="Toggle sessions"
             onClick={() => setSidebarOpen(!sidebarOpen)}
           >
-            ☰
+            <MenuIcon />
           </button>
           {!sidebarOpen && (
             <div className="brand">
-              <div className="brand-flame" />
+              <FlameIcon size={20} />
               <span>Ember Code</span>
+              <span
+                className={`dot ${conn === "replaced" ? "disconnected" : conn}`}
+                title={`backend ${conn}`}
+                style={{ cursor: "default" }}
+              />
             </div>
           )}
           <div className="header-spacer" />
-          <button
-            className="chip"
-            title={
-              projectDir
-                ? `Session locked to ${projectDir} — click to lock a different project`
-                : "Lock this session to a project folder"
-            }
-            onClick={() => setPanel({ kind: "dir-picker" })}
-          >
-            📁 <span className="chip-label">{projectDir.split("/").pop() || "project"}</span>
-          </button>
-          <button
-            className="chip"
-            title="Switch model"
-            onClick={() => void runCommand("/model", false)}
-          >
-            <span className="chip-label">{status?.model || "model"}</span> ▾
-          </button>
+          {/* Project chip — hidden when running inside an IDE (VSCode /
+              JetBrains): the IDE's workspace folder IS the project root,
+              and the FE shouldn't offer a switcher that would force the
+              user to override the IDE's notion of "the current project". */}
+          {host.kind !== "vscode" && host.kind !== "jetbrains" && (
+            <button
+              className="chip"
+              title={
+                projectDir
+                  ? `Session locked to ${projectDir} — click to lock a different project`
+                  : "Lock this session to a project folder"
+              }
+              onClick={() =>
+                void (async () => {
+                  // 1. Shell-injected native dialog (Tauri/IDE webviews).
+                  const native = await pickNativeDirectory(projectDir);
+                  if (native) return void attachInFolder(native);
+                  if (native === null) return; // user cancelled
+                  // 2. BE-side native dialog: the BE runs on the user's
+                  //    machine, so it can open the real OS picker even
+                  //    for a plain browser tab. 10-min timeout — the
+                  //    dialog waits for a human.
+                  try {
+                    const res = await client.rpc<{
+                      path: string;
+                      cancelled: boolean;
+                      error: string;
+                    }>("pick_dir_native", {}, 600_000);
+                    if (res.path) return void attachInFolder(res.path);
+                    if (res.cancelled) return;
+                    // fall through on error (headless Linux, etc.)
+                  } catch {
+                    /* fall through to in-app picker */
+                  }
+                  // 3. Last resort: in-app server-side browser.
+                  setPanel({ kind: "dir-picker" });
+                })()
+              }
+            >
+              <FolderIcon />{" "}
+              <span
+                className="chip-label"
+                style={{
+                  // Full path, truncated from the LEFT so the project
+                  // name (the informative end) stays visible.
+                  maxWidth: 380,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  direction: "rtl",
+                  textAlign: "left",
+                  color: "var(--fg)",
+                  fontWeight: 500,
+                }}
+              >
+                {projectDir ? `⁨${projectDir}⁩` : "project"}
+              </span>
+            </button>
+          )}
           {status?.cloud_connected ? (
             <button
               className="chip"
               title="Account"
               onClick={() => setAccountMenu(!accountMenu)}
             >
-              <span className="chip-label">☁ {status.cloud_org}</span> ▾
+              <CloudIcon /> <span className="chip-label">{status.cloud_org}</span> <ChevronIcon size={9} down />
             </button>
           ) : (
             <button
@@ -687,7 +1272,7 @@ export default function App() {
               Log in
             </button>
           )}
-          {conn === "replaced" ? (
+          {conn === "replaced" && (
             <button
               className="chip"
               title="This chat was opened in another tab/window. Click to take over here."
@@ -696,33 +1281,8 @@ export default function App() {
               <span className="dot disconnected" />
               <span className="chip-label">opened elsewhere — reconnect</span>
             </button>
-          ) : (
-            <span className="chip" style={{ cursor: "default" }} title={`backend ${conn}`}>
-              <span className={`dot ${conn}`} />
-              <span className="chip-label">{conn}</span>
-            </span>
           )}
 
-          {modelMenu && (
-            <>
-              <div
-                style={{ position: "fixed", inset: 0, zIndex: 39 }}
-                onClick={() => setModelMenu(null)}
-              />
-              <div className="dropdown">
-                {modelMenu.map((m) => (
-                  <div
-                    key={m.name}
-                    className={`popup-item ${m.current ? "active" : ""}`}
-                    onClick={() => void pickModel(m.name)}
-                  >
-                    <span className="cmd">{m.name}</span>
-                    {m.current && <span className="desc">current</span>}
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
           {accountMenu && (
             <>
               <div
@@ -751,82 +1311,166 @@ export default function App() {
           <div className={`col${processing ? " streaming" : ""}`}>
             {items.length === 0 && (
               <div className="welcome">
-                <div
-                  className="brand-flame"
-                  style={{ width: 52, height: 52, margin: "0 auto", borderRadius: 14 }}
-                />
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  <FlameIcon size={56} />
+                </div>
                 <h1>Ember Code</h1>
                 <p>Your AI coding agent, in this project.</p>
-                <div className="welcome-hints">
-                  <button className="chip" onClick={() => void runCommand("/help", false)}>
-                    Commands
-                  </button>
-                  <button className="chip" onClick={() => void runCommand("/model", false)}>
-                    Pick a model
-                  </button>
-                  <button
-                    className="chip"
-                    onClick={() => void runCommand("/codeindex", false)}
-                  >
-                    CodeIndex
-                  </button>
-                  <button className="chip" onClick={() => void runCommand("/agents", false)}>
-                    Agents
-                  </button>
+                <div className="welcome-caps">
+                  {(
+                    [
+                      ["/agents", "Dispatch to a specialist — architect, debugger, …"],
+                      ["/skills", "Workflows like /commit and /resolve-issues"],
+                      ["/codeindex", "Semantic search across your repo"],
+                      ["/schedule", "Background tasks that report back"],
+                      ["/loop", "Repeat a prompt across a batch until done"],
+                      ["/mcp", "Plug in external tools and data sources"],
+                      ["/plugins", "Install skills, agents and hooks"],
+                      ["/knowledge", "A knowledge base carried in git"],
+                    ] as const
+                  ).map(([cmd, desc]) => (
+                    <div
+                      key={cmd}
+                      className="welcome-cap"
+                      onClick={() => void runCommand(cmd, false)}
+                    >
+                      <code>{cmd}</code>
+                      <span>{desc}</span>
+                    </div>
+                  ))}
                 </div>
+                <p style={{ color: "var(--fg-faint)", fontSize: 12.5, marginTop: 22 }}>
+                  Enter to send · Shift+Enter newline · / commands · @ files · $ shell
+                </p>
               </div>
             )}
             {items.map((item) => (
-              <ChatItemView key={item.id} item={item} />
+              <ChatItemView
+                key={item.id}
+                item={item}
+                onEditUser={onEditUser}
+                onDeleteUser={onDeleteUser}
+                onStopTeam={() => client.cancel()}
+                onStopAgent={(runId) =>
+                  void client
+                    .rpc("cancel_agent_run", { run_id: runId })
+                    .catch((err) => console.warn("cancel_agent_run failed", err))
+                }
+                onRetryAgent={(agentName, newTask) => {
+                  // Send a follow-up user message asking the main
+                  // agent to respawn the specialist with the
+                  // (possibly tweaked) task. Free-form text — the
+                  // model can interpret context, decide which mode
+                  // to use, etc.
+                  const msg =
+                    `Please retry the ${agentName} sub-agent with this task:` +
+                    `\n\n${newTask}`;
+                  void runUserMessage(msg);
+                }}
+              />
             ))}
             {processing && (
-              <div className="msg-info" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <span className="dot connecting" />
-                Thinking… <span style={{ color: "var(--fg-faint)" }}>Esc to cancel</span>
+              <div className="typing-indicator" aria-live="polite">
+                <span className="typing-dots">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <span className="typing-label">Ember is replying…</span>
+                <span className="typing-hint">Esc to cancel</span>
               </div>
+            )}
+            {!stickToBottom && (
+              <button
+                type="button"
+                className="scroll-to-bottom"
+                title="Scroll to latest"
+                aria-label="Scroll to latest"
+                onClick={scrollToBottom}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M8 3v9.5M3.8 8.3L8 12.5l4.2-4.2" />
+                </svg>
+              </button>
             )}
           </div>
         </div>
 
-        {remoteDraft && (
-          <div className="remote-draft">
-            <span className="remote-draft-pen">✎</span> another window:&nbsp;
-            <span className="remote-draft-text">{remoteDraft}</span>
-            <span className="remote-caret">▍</span>
-          </div>
-        )}
         <Composer
+          hitlSlot={
+            hitl ? (
+              <HitlDialog requirements={hitl} onResolve={(d) => void resolveHitl(d)} />
+            ) : null
+          }
           client={client}
           connected={conn === "connected"}
           processing={processing}
           skills={skills}
           tools={TOOLS_MENU}
+          seed={composerSeed}
+          sessionId={sessionId}
+          clientState={clientState}
+          model={status?.model}
+          modelMenuSignal={modelMenuSignal}
+          onPickModel={(name) => void pickModel(name)}
           onTool={(cmd) => void runCommand(cmd, false)}
-          onTyping={(t) => client.sendTyping(t)}
           onSubmit={(t) => void submit(t)}
           onStop={() => client.cancel()}
         />
         <div className="statusline" style={{ marginTop: 0, paddingBottom: 8 }}>
           {status && (
             <>
-              <span>{status.model}</span>
-              <span>session {sessionId || "—"}</span>
-              {status.cloud_connected && <span>☁ {status.cloud_org}</span>}
-              <span>ctx {ctxPct}%</span>
+              <SessionChip sessionId={sessionId} />
+              <CtxMeter
+                tokens={status.context_tokens}
+                max={status.max_context}
+                pct={ctxPct}
+              />
+              <CodeIndexIndicator
+                client={client}
+                onOpen={() => setPanel({ kind: "codeindex" })}
+              />
             </>
           )}
         </div>
       </div>
 
-      {hitl && <HitlDialog requirements={hitl} onResolve={(d) => void resolveHitl(d)} />}
       {panel.kind === "mcp" && (
-        <McpPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+        <McpPanel
+          client={client}
+          onClose={() => setPanel({ kind: "none" })}
+          onAddServer={(seed) => {
+            setPanel({ kind: "none" });
+            setComposerSeed({ text: seed, n: Date.now() });
+          }}
+        />
       )}
       {panel.kind === "codeindex" && (
         <CodeIndexPanel client={client} onClose={() => setPanel({ kind: "none" })} />
       )}
       {panel.kind === "loop" && (
-        <LoopPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+        <LoopPanel
+          client={client}
+          onClose={() => setPanel({ kind: "none" })}
+          onResume={(prompt) => {
+            // Close the panel so the user can watch the iteration
+            // stream in the chat — same UX as the slash-command path
+            // for /loop resume.
+            setPanel({ kind: "none" });
+            append(loopItem(prompt));
+            void runUserMessage(prompt);
+          }}
+        />
       )}
       {panel.kind === "schedule" && (
         <SchedulePanel client={client} onClose={() => setPanel({ kind: "none" })} />
@@ -847,10 +1491,45 @@ export default function App() {
           onClose={() => setPanel({ kind: "none" })}
         />
       )}
+      {panel.kind === "agents" && (
+        <AgentsPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "skills" && (
+        <SkillsPanel
+          client={client}
+          onRun={(cmd) => {
+            // Don't fire the skill — drop it into the composer so the
+            // user can add arguments and send when ready.
+            setPanel({ kind: "none" });
+            // No trailing space — keeps the autocomplete menu open so
+            // the user can pick a sub-suggestion or just press Enter.
+            setComposerSeed({ text: cmd, n: Date.now() });
+          }}
+          onClose={() => setPanel({ kind: "none" })}
+        />
+      )}
+      {panel.kind === "plugins" && (
+        <PluginsPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "knowledge" && (
+        <KnowledgePanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "hooks" && (
+        <HooksPanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {previewPath && (
+        <FilePreview
+          client={client}
+          path={previewPath}
+          onClose={() => setPreviewPath(null)}
+        />
+      )}
+      <Toasts items={toasts} onDismiss={dismissToast} />
       {panel.kind === "dir-picker" && (
         <DirectoryPicker
           client={client}
           title="Lock session to a project folder"
+          initialPath={projectDir}
           onSelect={(dir) => void attachInFolder(dir)}
           onCancel={() => setPanel({ kind: "none" })}
         />

@@ -1,3 +1,6 @@
+import { FlameIcon } from "./Icons";
+import { ThemeToggle } from "./ThemeToggle";
+
 export interface SessionEntry {
   session_id: string;
   name: string;
@@ -8,6 +11,7 @@ export function Sidebar({
   open,
   sessions,
   currentId,
+  conn,
   onNewChat,
   onPick,
   onClose,
@@ -15,6 +19,8 @@ export function Sidebar({
   open: boolean;
   sessions: SessionEntry[];
   currentId: string;
+  /** Backend connection state — rendered as a dot next to the brand. */
+  conn: string;
   onNewChat: () => void;
   onPick: (id: string) => void;
   onClose: () => void;
@@ -29,8 +35,15 @@ export function Sidebar({
       )}
       <nav className={`sidebar ${open ? "" : "closed"}`}>
         <div className="sidebar-head">
-          <div className="brand-flame" />
+          <FlameIcon size={20} />
           <strong>Ember Code</strong>
+          <span
+            className={`dot ${conn === "replaced" ? "disconnected" : conn}`}
+            title={`backend ${conn}`}
+            style={{ cursor: "default" }}
+          />
+          <div className="sidebar-head-spacer" />
+          <ThemeToggle />
         </div>
         <div style={{ padding: "6px 12px" }}>
           <button className="btn" style={{ width: "100%" }} onClick={onNewChat}>
@@ -51,7 +64,8 @@ export function Sidebar({
               title={s.detail || s.name}
               onClick={() => onPick(s.session_id)}
             >
-              {s.name || s.session_id}
+              <span className="session-name">{s.name || s.session_id}</span>
+              <span className="session-id">{s.session_id.slice(0, 8)}</span>
             </div>
           ))}
         </div>

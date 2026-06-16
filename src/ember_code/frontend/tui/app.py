@@ -1298,7 +1298,7 @@ class EmberApp(App):
         details = (
             await self._backend._rpc(RpcMethod.GET_MCP_SERVER_DETAILS)
             if hasattr(self._backend, "_rpc")
-            else self._backend.get_mcp_server_details()
+            else await self._backend.get_mcp_server_details()
         )
         for info in details or []:
             servers.append(
@@ -2265,7 +2265,7 @@ class EmberApp(App):
         "/agents — list loaded agents and their tools",
         "/skills — list available skills",
         "/config — show current settings",
-        "/schedule add <task> at <time> — schedule deferred tasks",
+        "/schedule <task> at <time> — schedule deferred tasks",
         "/mcp — manage MCP server connections",
         "Ctrl+T — toggle the task panel",
     ]

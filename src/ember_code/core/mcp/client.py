@@ -6,10 +6,12 @@ and connect manually using the MCP SDK's ``stdio_client`` with
 corruption caused by subprocess stderr mixing with Textual's output.
 """
 
+import json
 import logging
 import os
 import tempfile
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from ember_code.core.mcp.approval import MCPApprovalManager
@@ -26,11 +28,18 @@ class MCPClientManager:
     def __init__(self, project_dir=None, *, policy: MCPPolicy | None = None):
         self.configs = MCPConfigLoader(project_dir).load()
         self._clients: dict[str, Any] = {}
+        # Snapshot of every server's full ``functions`` dict at the
+        # time we first connected. We restore from here whenever the
+        # disabled set changes, so a re-enabled tool comes back
+        # without a reconnect.
+        self._original_functions: dict[str, dict[str, Any]] = {}
         self._errors: dict[str, str] = {}
         self._approval = MCPApprovalManager()
         self._policy: MCPPolicy = (
             policy if policy is not None else MCPPolicy.from_managed_settings()
         )
+        self._project_dir: Path | None = Path(project_dir) if project_dir else None
+        self._disabled_tools: dict[str, set[str]] = self._load_disabled()
 
     async def connect(self, name: str) -> Any | None:
         """Connect to an MCP server by name.
@@ -88,7 +97,13 @@ class MCPClientManager:
                 await mcp_tools.__aexit__(None, None, None)
                 return None
 
+            # Cache the full functions dict so we can restore an
+            # individually-disabled tool without reconnecting later.
+            funcs = getattr(mcp_tools, "functions", None)
+            if isinstance(funcs, dict):
+                self._original_functions[name] = dict(funcs)
             self._clients[name] = mcp_tools
+            self._apply_disabled(name)
             return mcp_tools
         except ImportError:
             self._errors[name] = "MCP dependencies not installed (pip install agno[mcp])"
@@ -184,15 +199,31 @@ class MCPClientManager:
         return True
 
     def get_tools(self, name: str) -> list[str]:
-        """Return tool names provided by a connected MCP server."""
+        """Return tool names provided by a connected MCP server.
+
+        Returns the full set including individually-disabled tools so
+        the panel can show them with a disabled state. Use
+        ``get_disabled_tools(name)`` for the per-tool toggle state.
+        """
+        funcs = self._original_functions.get(name)
+        if funcs:
+            return list(funcs.keys())
         client = self._clients.get(name)
         if client is None:
             return []
-        functions = getattr(client, "functions", None) or {}
-        return list(functions.keys())
+        return list((getattr(client, "functions", None) or {}).keys())
+
+    def get_disabled_tools(self, name: str) -> list[str]:
+        """Tools the user has individually disabled on this server."""
+        return sorted(self._disabled_tools.get(name, set()))
 
     def get_tool_descriptions(self, name: str) -> dict[str, str]:
         """Return {tool_name: description} for a connected MCP server."""
+        funcs = self._original_functions.get(name)
+        if funcs:
+            return {
+                fname: (getattr(func, "description", "") or "") for fname, func in funcs.items()
+            }
         client = self._clients.get(name)
         if client is None:
             return {}
@@ -202,6 +233,49 @@ class MCPClientManager:
             for fname, func in functions.items()
             if hasattr(func, "description")
         }
+
+    async def get_resources(self, name: str) -> list[dict[str, str]]:
+        """Resources exposed by a connected MCP server.
+
+        Servers that don't implement the resources capability raise
+        "Method not found" — treated as an empty list.
+        """
+        session = getattr(self._clients.get(name), "session", None)
+        if session is None:
+            return []
+        try:
+            result = await session.list_resources()
+        except Exception as exc:
+            logger.debug("MCP '%s' list_resources failed: %s", name, exc)
+            return []
+        return [
+            {
+                "uri": str(r.uri),
+                "name": r.name or "",
+                "description": r.description or "",
+                "mime_type": r.mimeType or "",
+            }
+            for r in result.resources or []
+        ]
+
+    async def get_prompts(self, name: str) -> list[dict[str, Any]]:
+        """Prompts exposed by a connected MCP server."""
+        session = getattr(self._clients.get(name), "session", None)
+        if session is None:
+            return []
+        try:
+            result = await session.list_prompts()
+        except Exception as exc:
+            logger.debug("MCP '%s' list_prompts failed: %s", name, exc)
+            return []
+        return [
+            {
+                "name": p.name,
+                "description": p.description or "",
+                "arguments": [a.name for a in (p.arguments or [])],
+            }
+            for p in result.prompts or []
+        ]
 
     def list_servers(self) -> list[str]:
         """List available MCP server names."""
@@ -215,3 +289,76 @@ class MCPClientManager:
         """List servers required by admin policy that are not yet connected."""
         connected = set(self._clients.keys())
         return [s for s in self._policy.required if s not in connected]
+
+    # ── per-tool enable/disable ───────────────────────────────────
+
+    def _state_path(self) -> Path | None:
+        if self._project_dir is None:
+            return None
+        return self._project_dir / ".ember" / "mcp-tool-state.json"
+
+    def _load_disabled(self) -> dict[str, set[str]]:
+        path = self._state_path()
+        if not path or not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text() or "{}")
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("MCP tool state read failed (%s): %s", path, exc)
+            return {}
+        out: dict[str, set[str]] = {}
+        for server, tools in (data.get("disabled") or {}).items():
+            if isinstance(tools, list):
+                out[server] = {str(t) for t in tools}
+        return out
+
+    def _save_disabled(self) -> None:
+        path = self._state_path()
+        if not path:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "disabled": {
+                    server: sorted(tools) for server, tools in self._disabled_tools.items() if tools
+                }
+            }
+            path.write_text(json.dumps(payload, indent=2) + "\n")
+        except OSError as exc:
+            logger.warning("MCP tool state write failed (%s): %s", path, exc)
+
+    def _apply_disabled(self, name: str) -> None:
+        """Filter the live MCPTools.functions dict to hide disabled
+        tools from the agent. Re-applies the full original set first
+        so a previously-disabled tool that's been re-enabled comes
+        back."""
+        client = self._clients.get(name)
+        if client is None:
+            return
+        live = getattr(client, "functions", None)
+        if not isinstance(live, dict):
+            return
+        # Lazily snapshot the original set on first use — covers
+        # servers that were connected before this code path existed.
+        if name not in self._original_functions:
+            self._original_functions[name] = dict(live)
+        original = self._original_functions[name]
+        disabled = self._disabled_tools.get(name, set())
+        live.clear()
+        for fname, func in original.items():
+            if fname not in disabled:
+                live[fname] = func
+
+    def set_tool_enabled(self, server: str, tool: str, enabled: bool) -> None:
+        """Toggle a single tool on a server. Persists state and
+        re-applies the filter so the change is visible to the next
+        agent run."""
+        disabled = self._disabled_tools.setdefault(server, set())
+        if enabled:
+            disabled.discard(tool)
+        else:
+            disabled.add(tool)
+        if not disabled:
+            self._disabled_tools.pop(server, None)
+        self._save_disabled()
+        self._apply_disabled(server)

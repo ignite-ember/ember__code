@@ -1,21 +1,76 @@
 {
   "name": "ember-code-vscode",
   "displayName": "Ember Code",
-  "description": "Ember Code AI coding assistant — chat panel backed by the local Ember backend",
-  "version": "0.1.0",
+  "description": "AI coding assistant with multi-agent orchestration — chat panel with zero-touch backend install",
+  "version": "0.6.0",
   "publisher": "ignite-ember",
   "license": "MIT",
+  "icon": "icon.png",
+  "homepage": "https://ignite-ember.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ignite-ember/ember__code"
+  },
+  "bugs": {
+    "url": "https://github.com/ignite-ember/ember__code/issues"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["AI", "Chat"],
+  "categories": ["AI", "Chat", "Programming Languages", "Other"],
+  "keywords": ["ai", "agent", "chat", "coding-assistant", "claude", "openai"],
   "main": "./out/extension.js",
   "activationEvents": [],
   "contributes": {
     "commands": [
       {
         "command": "emberCode.open",
-        "title": "Ember Code: Open Chat"
+        "title": "Open Chat",
+        "category": "Ember Code"
+      },
+      {
+        "command": "emberCode.addSelectionToChat",
+        "title": "Add Selection to Ember Chat",
+        "category": "Ember Code"
+      },
+      {
+        "command": "emberCode.addFileToChat",
+        "title": "Add to Ember Chat",
+        "category": "Ember Code"
+      },
+      {
+        "command": "emberCode.restart",
+        "title": "Restart Backend",
+        "category": "Ember Code"
+      },
+      {
+        "command": "emberCode.reinstall",
+        "title": "Reinstall Backend (Clean)",
+        "category": "Ember Code"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "emberCode.addSelectionToChat",
+          "group": "1_modification@1",
+          "when": "editorTextFocus"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "emberCode.addFileToChat",
+          "group": "1_modification@1",
+          "when": "!explorerResourceIsFolder"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "emberCode.addSelectionToChat",
+        "key": "ctrl+e",
+        "mac": "cmd+e",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {
@@ -23,21 +78,24 @@
       "properties": {
         "emberCode.pythonPath": {
           "type": "string",
-          "default": "python3",
-          "description": "Python interpreter with ignite-ember installed (e.g. a venv's bin/python)."
+          "default": "",
+          "description": "Optional: path to a Python interpreter with an editable ignite-ember install. Bypasses the managed venv. Intended for ember-code contributors; end users should leave empty so the extension manages everything via uv."
         }
       }
     }
   },
   "scripts": {
     "build:ui": "npm --prefix ../web run build && rm -rf media && cp -r ../web/dist media",
-    "compile": "tsc -p .",
+    "sync:version": "node ../../scripts/sync-version.mjs",
+    "compile": "npm run sync:version && tsc -p .",
     "build": "npm run build:ui && npm run compile",
+    "package": "npm run build && vsce package --no-dependencies",
     "watch": "tsc -w -p ."
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.0",
     "typescript": "^5.7.2"
   }
 }

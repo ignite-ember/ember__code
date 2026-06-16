@@ -44,9 +44,14 @@ class WebSocketServerTransport(Transport):
     """BE-side transport: loopback WS server, N mirrored clients."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
+        from websockets.asyncio.server import Server
+
         self._host = host
         self._port = port
-        self._server = None
+        # Set by ``start()`` to the awaited ``serve(...)`` result.
+        # Annotated explicitly so mypy sees the union with ``None``
+        # and accepts the later assignment to a ``Server`` instance.
+        self._server: Server | None = None
         # client_id → live connection. Insertion order preserved so
         # broadcast order is stable (oldest first).
         self._conns: dict[str, object] = {}
@@ -75,7 +80,10 @@ class WebSocketServerTransport(Transport):
             self._port,
             max_size=_MAX_FRAME_BYTES,
         )
-        sockets = self._server.sockets or []
+        # ``Server.sockets`` is typed as ``Iterable[socket]`` but can
+        # be falsy on platforms that don't expose underlying sockets;
+        # widen to ``list`` so the empty fallback typechecks.
+        sockets: list = list(self._server.sockets or [])
         if sockets:
             self._port = sockets[0].getsockname()[1]
         logger.info("BE listening on ws://%s:%d", self._host, self._port)

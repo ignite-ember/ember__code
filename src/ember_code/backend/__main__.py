@@ -20,6 +20,10 @@ import click
 
 logger = logging.getLogger(__name__)
 
+# Strong refs to fire-and-forget naming tasks (create_task results are
+# weakly held by the loop and can be GC'd mid-flight otherwise).
+_AUTO_NAME_TASKS: set[asyncio.Task[None]] = set()
+
 
 async def _watch_parent(parent_pid: int, shutdown_event: asyncio.Event) -> None:
     """Self-terminate if the FE parent process dies.
@@ -173,7 +177,7 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
 
     _file_index_cache: dict[str, Any] = {}
 
-    async def _complete_files(args: dict) -> list[str]:
+    async def _complete_files(args: dict) -> dict:
         from ember_code.core.utils.file_index import FileIndex
 
         idx = _file_index_cache.get("idx")
@@ -181,7 +185,10 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
             idx = FileIndex(backend.project_dir)
             _file_index_cache["idx"] = idx
         await idx.ensure_loaded()
-        return idx.match(str(args.get("query", "")), limit=int(args.get("limit", 50)))
+        query = str(args.get("query", ""))
+        limit = int(args.get("limit", 50))
+        matches, total = idx.match_with_total(query, limit=limit)
+        return {"matches": matches, "total": total}
 
     async def _list_dirs(args: dict) -> dict:
         """Subdirectory listing for the GUI folder browser.
@@ -223,6 +230,77 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
 
         return await asyncio.to_thread(_scan)
 
+    async def _pick_dir_native(args: dict) -> dict:
+        """Open the OS folder picker on this machine, return the path.
+
+        The BE always runs on the user's machine (loopback-only
+        transport), so the dialog appears on their desktop — even
+        when the view is a plain browser tab that could never get a
+        real path out of its own sandboxed file dialogs. No timeout:
+        the user may take their time; the FE uses a long RPC timeout
+        for this call.
+        """
+        import sys
+
+        async def _run_cmd(cmd: list[str]) -> tuple[int | None, str]:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await proc.communicate()
+            return proc.returncode, out.decode(errors="replace").strip()
+
+        # Start browsing at the session's CURRENTLY locked directory
+        # (or an explicit override) — not at the OS default.
+        start = Path(str(args.get("start") or backend.project_dir)).expanduser()
+        start_dir = str(start) if start.is_dir() else ""
+
+        if sys.platform == "darwin":
+            script = 'choose folder with prompt "Lock session to a project folder"'
+            if start_dir:
+                escaped = start_dir.replace("\\", "\\\\").replace('"', '\\"')
+                script += f' default location POSIX file "{escaped}"'
+            rc, out = await _run_cmd(["osascript", "-e", f"POSIX path of ({script})"])
+            if rc == 0 and out:
+                return {"path": out.rstrip("/") or "/", "cancelled": False, "error": ""}
+            # osascript exits non-zero on user cancel.
+            return {"path": "", "cancelled": True, "error": ""}
+
+        if sys.platform.startswith("linux"):
+            zenity_cmd = ["zenity", "--file-selection", "--directory"]
+            if start_dir:
+                zenity_cmd.append(f"--filename={start_dir}/")
+            kdialog_cmd = ["kdialog", "--getexistingdirectory"]
+            if start_dir:
+                kdialog_cmd.append(start_dir)
+            for cmd in (zenity_cmd, kdialog_cmd):
+                try:
+                    rc, out = await _run_cmd(cmd)
+                except FileNotFoundError:
+                    continue
+                if rc == 0 and out:
+                    return {"path": out, "cancelled": False, "error": ""}
+                return {"path": "", "cancelled": True, "error": ""}
+            return {"path": "", "cancelled": False, "error": "no native dialog available"}
+
+        if sys.platform == "win32":
+            selected = (
+                f"$d.SelectedPath = '{start_dir}'; " if start_dir and "'" not in start_dir else ""
+            )
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                f"{selected}"
+                "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }"
+            )
+            rc, out = await _run_cmd(["powershell", "-NoProfile", "-Command", ps])
+            if rc == 0 and out:
+                return {"path": out, "cancelled": False, "error": ""}
+            return {"path": "", "cancelled": True, "error": ""}
+
+        return {"path": "", "cancelled": False, "error": f"unsupported platform: {sys.platform}"}
+
     async def _run_shell(args: dict) -> dict:
         """$-prefix shell mode. Captured (non-interactive) by design —
         parity with the TUI's inline shell for the common cases."""
@@ -255,6 +333,11 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.GET_MCP_STATUS: lambda args: backend.get_mcp_status(),
         RpcMethod.GET_MCP_SERVER_DETAILS: lambda args: backend.get_mcp_server_details(),
         RpcMethod.GET_MCP_SERVERS: lambda args: backend.get_mcp_servers(),
+        RpcMethod.SET_MCP_TOOL_ENABLED: lambda args: backend.set_mcp_tool_enabled(
+            server=args["server"],
+            tool=args["tool"],
+            enabled=args["enabled"],
+        ),
         # ── Compaction / learning ─────────────────────────────────
         RpcMethod.COMPACT_IF_NEEDED: lambda args: backend.compact_if_needed(
             args["ctx_tokens"], args["max_ctx"]
@@ -278,6 +361,9 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         # ── Session / status ──────────────────────────────────────
         RpcMethod.SHUTDOWN: lambda args: backend.shutdown(),
         RpcMethod.GET_CHAT_HISTORY: lambda args: backend.get_chat_history(args["session_id"]),
+        RpcMethod.UPLOAD_ATTACHMENT: lambda args: backend.upload_attachment(
+            args["filename"], args["content_base64"]
+        ),
         RpcMethod.GET_PENDING_MESSAGES: lambda args: backend.get_pending_messages(
             args["session_id"]
         ),
@@ -288,6 +374,7 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.GET_RUN_TIMEOUT: lambda args: backend.run_timeout,
         RpcMethod.GET_STATUS: lambda args: backend.get_status(),
         RpcMethod.CANCEL_RUN: lambda args: backend.cancel_run(),
+        RpcMethod.CANCEL_AGENT_RUN: lambda args: backend.cancel_agent_run(args.get("run_id", "")),
         # ── Scheduler ─────────────────────────────────────────────
         RpcMethod.EXECUTE_SCHEDULED_TASK: lambda args: backend.execute_scheduled_task(
             args["description"]
@@ -326,6 +413,7 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.COMPLETE_FILES: _complete_files,
         RpcMethod.RUN_SHELL: _run_shell,
         RpcMethod.LIST_DIRS: _list_dirs,
+        RpcMethod.PICK_DIR_NATIVE: _pick_dir_native,
         RpcMethod.GET_PROJECT_DIR: lambda args: str(backend.project_dir),
         # Pool-level method — intercepted in the dispatch loop before
         # per-runtime routing; this stub only exists so the
@@ -333,6 +421,18 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         # interception being removed) fails loudly.
         RpcMethod.ATTACH_SESSION: lambda args: (_ for _ in ()).throw(
             RuntimeError("attach_session must be handled at the session-pool level")
+        ),
+        # Per-client UI state — handled at the pool level so a single
+        # global ClientStateStore serves every runtime. Stubs only
+        # exist so the exhaustiveness check passes.
+        RpcMethod.GET_CLIENT_STATE: lambda args: (_ for _ in ()).throw(
+            RuntimeError("get_client_state must be handled at the session-pool level")
+        ),
+        RpcMethod.SET_CLIENT_STATE: lambda args: (_ for _ in ()).throw(
+            RuntimeError("set_client_state must be handled at the session-pool level")
+        ),
+        RpcMethod.DELETE_CLIENT_STATE: lambda args: (_ for _ in ()).throw(
+            RuntimeError("delete_client_state must be handled at the session-pool level")
         ),
         # ── Agents ────────────────────────────────────────────────
         RpcMethod.GET_AGENT_DETAILS: lambda args: backend.get_agent_details(),
@@ -351,6 +451,16 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.GET_KNOWLEDGE_STATUS: lambda args: backend.get_knowledge_status(),
         RpcMethod.KNOWLEDGE_SEARCH: lambda args: backend.knowledge_search(args["query"]),
         RpcMethod.KNOWLEDGE_ADD: lambda args: backend.knowledge_add(args["source"]),
+        RpcMethod.KNOWLEDGE_LIST: lambda args: backend.knowledge_list(),
+        RpcMethod.KNOWLEDGE_GET: lambda args: backend.knowledge_get(args["id"]),
+        RpcMethod.KNOWLEDGE_REMOVE: lambda args: backend.knowledge_remove(args["id"]),
+        RpcMethod.READ_FILE: lambda args: backend.read_file(args["path"]),
+        RpcMethod.SEARCH_CODE: lambda args: backend.search_code(
+            args["snippet"], args.get("max_results", 20)
+        ),
+        RpcMethod.TRUNCATE_HISTORY: lambda args: backend.truncate_history(
+            args["session_id"], args["run_id"]
+        ),
         # ── Conversation ──────────────────────────────────────────
         RpcMethod.COUNT_CONTEXT_TOKENS: lambda args: backend.count_context_tokens(),
         # ── CodeIndex ─────────────────────────────────────────────
@@ -359,8 +469,16 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.CODEINDEX_RESYNC: lambda args: backend.codeindex_resync(args.get("sha")),
         RpcMethod.CODEINDEX_CLEAN: lambda args: backend.codeindex_clean(),
         RpcMethod.CODEINDEX_INSTALL: lambda args: backend.codeindex_install(),
+        RpcMethod.CODEINDEX_HEAD_BREAKDOWN: lambda args: backend.codeindex_head_breakdown(),
+        RpcMethod.CODEINDEX_ACTIVITY: lambda args: backend.codeindex_activity(),
         # ── Plugins ───────────────────────────────────────────────
         RpcMethod.GET_PLUGIN_DETAILS: lambda args: backend.get_plugin_details(),
+        RpcMethod.GET_PLUGIN_CONTENTS: lambda args: backend.get_plugin_contents(args["name"]),
+        RpcMethod.PREVIEW_PLUGIN: lambda args: backend.preview_plugin(
+            source=args["source"],
+            branch=args.get("branch"),
+            subdir=args.get("subdir"),
+        ),
         RpcMethod.SET_PLUGIN_ENABLED: lambda args: backend.set_plugin_enabled(
             args["name"], args["enabled"]
         ),
@@ -558,15 +676,49 @@ async def _run(
 
     subscribe_to_process_completion(_on_process_done)
 
-    # Orchestrate progress → push notification
-    def _on_progress(line: str) -> None:
+    # Orchestrate progress → push notification. ``orchestrate.py`` now
+    # emits structured event dicts (``{type, agent_path, …}``); we
+    # forward them on a dedicated channel so the FE can build a proper
+    # tree UI instead of trying to parse tree-art strings. Plain
+    # strings still work for any path that hasn't been ported.
+    def _on_progress(event: Any) -> None:
+        if isinstance(event, dict):
+            payload = event
+            channel = "orchestrate_event"
+        else:
+            payload = {"line": str(event)}
+            channel = "orchestrate_progress"
         asyncio.ensure_future(
-            transport.send(
-                msg.PushNotification(channel="orchestrate_progress", payload={"line": line})
-            )
+            transport.send(msg.PushNotification(channel=channel, payload=payload))
         )
 
     backend.wire_orchestrate_progress(_on_progress)
+
+    # ── File-edit push notifications ─────────────────────────────
+    # Edit tools call ``set_file_edit_listener`` from any thread the
+    # toolkit happens to run on, so the listener can't directly
+    # ``await transport.send(...)``. Hop onto the event loop via
+    # ``call_soon_threadsafe`` and then schedule the coroutine.
+    # Downstream clients (JetBrains plugin in particular) react by
+    # refreshing the VFS so Local History captures the change.
+    from ember_code.core.tools.edit import set_file_edit_listener
+
+    _loop = asyncio.get_running_loop()
+
+    def _on_file_edit(abs_path: str) -> None:
+        def _schedule() -> None:
+            asyncio.ensure_future(
+                transport.send(
+                    msg.PushNotification(
+                        channel="file_edited",
+                        payload={"path": abs_path},
+                    )
+                )
+            )
+
+        _loop.call_soon_threadsafe(_schedule)
+
+    set_file_edit_listener(_on_file_edit)
 
     login_state: dict[str, Any] = {"task": None}
     rpc_table = _build_rpc_table(backend, transport, login_state)
@@ -596,6 +748,16 @@ async def _run(
     # Refresh plugin marketplace catalogs in the background. Failures
     # are logged but don't gate session readiness.
     backend._session.start_marketplace_refresh_background()
+
+    # Start the scheduled-task poller. Push notifications (started /
+    # completed) flow through the same transport every client shares.
+    # ``start_scheduler`` is idempotent (caches the runner on the pool)
+    # so the existing client-side ``start_scheduler`` RPC call stays
+    # safe — calling it again just returns the running instance.
+    try:
+        _start_scheduler_with_push(backend, transport)
+    except Exception:
+        logger.exception("Auto-start of scheduler failed; will retry on client RPC")
 
     try:
         if ws_port is not None:
@@ -636,6 +798,13 @@ async def _run(
         # BE). Recorded on boot/rename, consulted on lazy resume.
         dir_registry = SessionDirectoryStore.from_data_dir(settings.storage.data_dir)
         dir_registry.set_dir(backend.session_id, backend.project_dir)
+
+        # Per-client UI state — survives reloads, shared across all
+        # clients (web, JetBrains, VSCode) since each holds the same
+        # opaque ``client_id`` and the BE is the source of truth.
+        from ember_code.core.session.client_state import ClientStateStore
+
+        client_state = ClientStateStore.from_data_dir(settings.storage.data_dir)
 
         default_runtime = SessionRuntime(
             backend=backend,
@@ -700,9 +869,7 @@ async def _run(
                 wd = Path(wanted_dir).expanduser()
                 if not wd.is_dir():
                     await transport.send(
-                        msg.RPCResponse(
-                            id=message.id or "", error=f"not a directory: {wanted_dir}"
-                        )
+                        msg.RPCResponse(id=message.id or "", error=f"not a directory: {wanted_dir}")
                     )
                     return
                 if not session_id:
@@ -727,6 +894,35 @@ async def _run(
                 )
             )
 
+        async def _client_state_rpc(message: Any) -> None:
+            """Pool-level RPC: read/write per-client UI state. Not
+            tied to any session — clients only need a stable
+            ``client_id`` to round-trip their preferences."""
+            args = message.args or {}
+            client_id = str(args.get("client_id") or "").strip()
+            method = message.method
+            try:
+                # ``result`` straddles two response shapes (read returns
+                # ``dict[str, str]``, write returns ``{"ok": True}``);
+                # annotate as a generic mapping so mypy stops narrowing
+                # the type on the first branch.
+                result: dict[str, Any]
+                if method == RpcMethod.GET_CLIENT_STATE:
+                    result = client_state.get_for_client(client_id)
+                elif method == RpcMethod.SET_CLIENT_STATE:
+                    client_state.set_value(
+                        client_id, str(args.get("key") or ""), str(args.get("value") or "")
+                    )
+                    result = {"ok": True}
+                else:  # DELETE_CLIENT_STATE
+                    client_state.delete_value(client_id, str(args.get("key") or ""))
+                    result = {"ok": True}
+                await transport.send(msg.RPCResponse(id=message.id or "", result=result))
+            except Exception as exc:
+                await transport.send(
+                    msg.RPCResponse(id=message.id or "", error=f"client_state: {exc}")
+                )
+
         async def _dispatch(message: Any) -> None:
             try:
                 # Pool-level RPCs bypass per-runtime routing.
@@ -735,6 +931,13 @@ async def _run(
                     and message.method == RpcMethod.ATTACH_SESSION
                 ):
                     await _attach_session(message)
+                    return
+                if isinstance(message, msg.RPCRequest) and message.method in (
+                    RpcMethod.GET_CLIENT_STATE,
+                    RpcMethod.SET_CLIENT_STATE,
+                    RpcMethod.DELETE_CLIENT_STATE,
+                ):
+                    await _client_state_rpc(message)
                     return
                 rt = await pool.get_or_create(message.session_id or "")
                 rt.remember_id()
@@ -816,6 +1019,22 @@ async def _handle_message(
             await transport.send(proto)
         await transport.send(msg.StreamEnd(id=req_id))
 
+        # First completed run: name the session in the background so a
+        # queued follow-up isn't blocked on the naming model call.
+        async def _auto_name() -> None:
+            name = await backend.maybe_auto_name_session()
+            if name:
+                await transport.send(
+                    msg.PushNotification(
+                        channel="session_named",
+                        payload={"session_id": backend.session_id, "name": name},
+                    )
+                )
+
+        task = asyncio.create_task(_auto_name())
+        _AUTO_NAME_TASKS.add(task)
+        task.add_done_callback(_AUTO_NAME_TASKS.discard)
+
     # ── Streaming: resolve_hitl ──
     elif isinstance(message, msg.HITLResponse):
         # Mirroring: dismiss the now-stale permission dialog on every
@@ -886,9 +1105,13 @@ async def _handle_message(
     # ── Cancel login ──
     elif isinstance(message, msg.CancelLogin):
         if login_state:
-            task = login_state.get("task")
-            if task and not task.done():
-                task.cancel()
+            # ``login_state["task"]`` is set to an ``asyncio.Task`` by
+            # ``_login`` but the dict is typed ``dict[str, Any]``;
+            # annotate locally (under a non-shadowing name) so the
+            # ``.done()`` / ``.cancel()`` calls don't trip mypy.
+            login_task: asyncio.Task[None] | None = login_state.get("task")
+            if login_task and not login_task.done():
+                login_task.cancel()
 
     # ── Generic RPC ──
     elif isinstance(message, msg.RPCRequest):

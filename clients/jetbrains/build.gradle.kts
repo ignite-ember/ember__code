@@ -5,7 +5,20 @@ plugins {
 }
 
 group = "sh.igniteember"
-version = "0.1.0"
+
+// ``pyproject.toml`` is the single source of truth for the version
+// across the Python package + every plugin/client that ships with
+// it. The plugin's own version, the bundled ``ember-version.properties``
+// resource, AND the ``ignite-ember`` pip pin all derive from it —
+// bumping one place flows everywhere.
+val pyprojectFile = rootProject.file("../../pyproject.toml")
+val pyprojectVersion: String = run {
+    val line = pyprojectFile.readLines().firstOrNull { it.trim().startsWith("version") }
+        ?: error("version not found in pyproject.toml")
+    Regex("""version\s*=\s*"([^"]+)"""").find(line)?.groupValues?.get(1)
+        ?: error("could not parse version from: $line")
+}
+version = pyprojectVersion
 
 repositories {
     mavenCentral()
@@ -16,30 +29,81 @@ repositories {
 
 dependencies {
     intellijPlatform {
+        // Build against IntelliJ IDEA Community 2024.2.4 — the lowest
+        // platform version the plugin supports. The resulting plugin
+        // jar runs in any 2024.2+ IDE (IntelliJ, PyCharm, WebStorm,
+        // RubyMine, etc) because they share the same IntelliJ
+        // Platform — the user installs the built zip into their own
+        // PyCharm via Settings → Plugins → ⚙ → Install from Disk.
         intellijIdeaCommunity("2024.2.4")
     }
 }
 
 kotlin {
-    jvmToolchain(17)
+    // 21 matches the JBR shipped with 2024.2+. Avoids needing a
+    // separate JDK download — we point JAVA_HOME at PyCharm's
+    // bundled JBR (``/Applications/PyCharm.app/Contents/jbr``).
+    jvmToolchain(21)
 }
 
-// Bundle the shared web UI (clients/web/dist) into plugin resources.
-// Run `npm --prefix ../web run build` first (or wire it into CI).
-val prepareWebUi by tasks.registering(Copy::class) {
-    from(layout.projectDirectory.dir("../web/dist"))
-    into(layout.buildDirectory.dir("resources/main/webui"))
+// The shared web UI is staged into ``src/main/resources/webui`` by
+// ``scripts/build-clients.sh`` at the repo root (which runs the web
+// build and copies into both VSCode + JetBrains trees). gradle then
+// picks the contents up via the standard resource pipeline. Run the
+// script before ``gradle buildPlugin``/``gradle runIde`` whenever the
+// web UI changes.
+
+// ── Resource generator for the runtime version pin ──────────────
+//
+// ``pyprojectVersion`` (parsed at the top of this file) is the SoT.
+// The Kotlin runtime needs ``IGNITE_EMBER_VERSION`` at load time;
+// rather than hardcoding it in source, we generate a properties
+// resource at build time and the plugin reads it via classloader.
+// Values are captured into local vals so the task body avoids
+// ``project`` references and stays configuration-cache-safe.
+val pluginVersionString: String = project.version.toString()
+val versionResourceDir = layout.buildDirectory.dir("generated/resources/ember-version")
+
+val generateEmberVersion by tasks.registering {
+    val outDirProvider = versionResourceDir
+    val captured = pyprojectVersion
+    val capturedPlugin = pluginVersionString
+    inputs.file(pyprojectFile)
+    inputs.property("ignite-ember-version", captured)
+    inputs.property("plugin-version", capturedPlugin)
+    outputs.dir(outDirProvider)
+    doLast {
+        val target = outDirProvider.get().asFile.resolve("META-INF/ember-version.properties")
+        target.parentFile.mkdirs()
+        target.writeText(
+            "ignite-ember-version=$captured\n" +
+                "plugin-version=$capturedPlugin\n"
+        )
+    }
 }
 
-tasks.named("processResources") {
-    dependsOn(prepareWebUi)
-}
+sourceSets["main"].resources.srcDir(generateEmberVersion)
+tasks.named("processResources") { dependsOn(generateEmberVersion) }
 
 intellijPlatform {
     pluginConfiguration {
         name = "Ember Code"
         ideaVersion {
             sinceBuild = "242"
+            // Marketplace prefers an explicit upper bound. Bumped in
+            // lockstep with each verified-against IntelliJ Platform
+            // release; the verifier task below catches breakage
+            // before we publish a new bound.
+            untilBuild = "253.*"
+        }
+    }
+    pluginVerification {
+        // ``./gradlew verifyPlugin`` runs the IntelliJ Plugin
+        // Verifier against the listed IDE builds and catches binary
+        // incompatibilities BEFORE Marketplace does. Cheap to run
+        // locally and an obvious thing to add to CI.
+        ides {
+            recommended()
         }
     }
 }

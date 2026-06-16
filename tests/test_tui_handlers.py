@@ -233,8 +233,13 @@ class TestCommandHandler:
             display = MockDisplay()
 
         class MockPersistence:
+            session_id = "test-123"
+
             async def rename(self, name):
                 pass
+
+        class MockMainTeam:
+            session_id = "test-123"
 
         class MockMemoryMgr:
             async def get_memories(self):
@@ -260,6 +265,17 @@ class TestCommandHandler:
             persistence = MockPersistence()
             memory_mgr = MockMemoryMgr()
             code_index_sync = MockCodeIndexSync()
+            # ``/clear`` rotates the session id across the team, the
+            # persistence layer, and the latched ctx counter — the
+            # mock has to expose all three or the rotation crashes
+            # mid-sequence. ``refresh_codeindex_availability`` is the
+            # post-sync hook the command fires after kicking the
+            # async re-sync.
+            main_team = MockMainTeam()
+            _last_input_tokens = 0
+
+            def refresh_codeindex_availability(self):
+                pass
 
         return MockSession()
 

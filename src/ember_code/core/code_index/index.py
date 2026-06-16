@@ -678,6 +678,52 @@ class CodeIndex:
         chunks = await asyncio.to_thread(_get_or_create_collection, client, CHUNKS_COLLECTION)
         return docs, chunks
 
+    async def head_stats(self, sha: str) -> dict[str, Any]:
+        """Quick per-commit stats for the CodeIndex panel.
+
+        Returns ``{files_indexed, languages_indexed}``. The index
+        stores items at three granularities (``folder`` / ``file`` /
+        ``entity``), so a naive ``docs.count()`` would conflate files
+        with the functions and classes inside them — producing
+        Coverage values above 100%. We filter to ``type == "file"``
+        and dedupe by path so the numbers are directly comparable to
+        ``git ls-files``.
+        """
+        from collections import Counter
+
+        chroma_dir = commit_chroma_path(self.project, sha, data_dir=self.data_dir)
+        if not chroma_dir.exists():
+            return {"files_indexed": 0, "languages_indexed": {}}
+        docs, _ = await self._collections(sha)
+        total = await asyncio.to_thread(docs.count)
+        if total == 0:
+            return {"files_indexed": 0, "languages_indexed": {}}
+        # Fetch only file-typed docs' metadatas — folders/entities
+        # are noise for file-count purposes. ``where`` filters at the
+        # chroma layer so we don't pull entity rows over the wire on
+        # large repos.
+        page = await asyncio.to_thread(
+            docs.get,
+            where={"type": "file"},
+            include=["metadatas"],
+            limit=50_000,
+        )
+        seen_paths: set[str] = set()
+        ext_counts: Counter[str] = Counter()
+        for meta in page.get("metadatas") or []:
+            m = meta or {}
+            path = (m.get("path") or "").strip()
+            if path and path in seen_paths:
+                continue
+            if path:
+                seen_paths.add(path)
+            ext = (m.get("file_extension") or "").lower()
+            ext_counts[ext or "(other)"] += 1
+        return {
+            "files_indexed": len(seen_paths) if seen_paths else sum(ext_counts.values()),
+            "languages_indexed": dict(ext_counts),
+        }
+
     @staticmethod
     async def _resolve_parent_ids_for(docs: Any, where: dict[str, Any]) -> list[str]:
         """Find parent doc IDs matching a metadata ``where`` filter.

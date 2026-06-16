@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EmberClient } from "../../protocol/client";
+import { ArrowUpIcon, FolderIcon } from "../Icons";
 
 interface DirListing {
   path: string;
@@ -18,11 +19,15 @@ interface DirListing {
 export function DirectoryPicker({
   client,
   title,
+  initialPath,
   onSelect,
   onCancel,
 }: {
   client: EmberClient;
   title: string;
+  /** Where to start browsing — the session's currently locked dir.
+   *  Empty falls back to the BE's home directory. */
+  initialPath?: string;
   onSelect: (path: string) => void;
   onCancel: () => void;
 }) {
@@ -55,7 +60,7 @@ export function DirectoryPicker({
   );
 
   useEffect(() => {
-    void load(""); // BE defaults to the home directory
+    void load(initialPath || ""); // empty → BE home directory
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -80,7 +85,7 @@ export function DirectoryPicker({
             disabled={!listing?.parent}
             onClick={() => listing?.parent && void load(listing.parent)}
           >
-            ↑
+            <ArrowUpIcon size={13} />
           </button>
           <input
             className="dir-path-input"
@@ -108,7 +113,9 @@ export function DirectoryPicker({
                 className="popup-item"
                 onClick={() => void load(`${listing.path}${sep}${name}`)}
               >
-                <span className="dir-icon">▸</span>
+                <span className="dir-icon" style={{ display: "inline-flex" }}>
+                  <FolderIcon size={12} />
+                </span>
                 <span className="cmd">{name}</span>
               </div>
             ))}

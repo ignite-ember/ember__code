@@ -12,20 +12,23 @@ from ember_code.core.scheduler.store import TaskStore
 class ScheduleTools(Toolkit):
     """Toolkit for managing scheduled tasks from within agent conversations."""
 
-    def __init__(self, store: TaskStore | None = None, **kwargs):
+    def __init__(self, store: TaskStore | None = None, project_dir: str | None = None, **kwargs):
         super().__init__(name="schedule_tools", **kwargs)
         # Lazy: ``TaskStore()`` runs alembic migrations against the
         # per-project state.db on construction. Defer that until the
         # first tool call so cheap toolkit-creation paths (mocks, agent
         # registration) don't open a database.
         self._store: TaskStore | None = store
+        # Without this the store falls back to Path.cwd(), which is the
+        # BE process cwd — not the session's project — in ws mode.
+        self._project_dir = project_dir
         self.register(self.schedule_task)
         self.register(self.list_scheduled_tasks)
         self.register(self.cancel_scheduled_task)
 
     def _ensure_store(self) -> TaskStore:
         if self._store is None:
-            self._store = TaskStore()
+            self._store = TaskStore(project_dir=self._project_dir)
         return self._store
 
     async def schedule_task(self, description: str, when: str) -> str:
