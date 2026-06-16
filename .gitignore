@@ -239,3 +239,8 @@ clients/vscode/out/
 
 # Packaged VSCode extension artifacts
 clients/vscode/*.vsix
+
+# Playwright e2e artifacts
+clients/web/test-results/
+clients/web/playwright-report/
+clients/web/.playwright/

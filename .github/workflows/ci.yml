@@ -88,6 +88,26 @@ jobs:
       - name: Unit tests
         run: npx vitest run
 
+      # End-to-end tests run only on Linux — the Playwright browser
+      # binary download (~100 MB) is the same on every platform, and
+      # the demo page tests don't exercise any host-specific code path.
+      # Keeping it to one OS keeps the matrix lean.
+      - name: Install Playwright browsers
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E tests (demo page)
+        if: runner.os == 'Linux'
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: clients/web/playwright-report/
+          retention-days: 7
+
   # The JetBrains plugin compiles Kotlin against the IntelliJ
   # Platform 2024.2.4 SDK. Builds on every host platform because the
   # plugin's own runtime (uv download, venv bootstrap) is exercised
