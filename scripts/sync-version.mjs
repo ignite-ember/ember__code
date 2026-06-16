@@ -69,6 +69,14 @@ const targets = [
     path: join(repoRoot, "src/ember_code/__init__.py"),
     pattern: /(__version__\s*=\s*")[^"]+(")/,
   },
+  {
+    kind: "patch",
+    label: "Tauri config (tauri.conf.json)",
+    path: join(repoRoot, "clients/tauri/src-tauri/tauri.conf.json"),
+    // Anchor on the top-level ``"version"`` key. The schema places
+    // it directly under the root object, so the first match wins.
+    pattern: /("version"\s*:\s*")[^"]+(")/,
+  },
 ];
 
 let changed = 0;

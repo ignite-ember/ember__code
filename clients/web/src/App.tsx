@@ -137,6 +137,25 @@ export default function App() {
       } else if (type === "ember:attachFile") {
         const path = payload.path ? String(payload.path) : null;
         if (path) setComposerSeed({ text: `@${path}`, n: Date.now() });
+      } else if (type === "ember:menu") {
+        // Native-menu items routed through the host bridge. Tauri
+        // and (future) JetBrains menu hooks both emit these. ``id``
+        // is the menu item identifier the native side registered.
+        const id = String(payload.id ?? "");
+        if (id === "new_chat") {
+          // Empty the chat — same effect as the ``/clear`` command.
+          setItems([]);
+        } else if (id === "restart_backend") {
+          // Best-effort reconnect signal. The native side already
+          // restarts the BE process; here we just kick the WS
+          // client to re-connect so it doesn't sit on the closed
+          // socket. ``client.connect()`` is idempotent.
+          try {
+            client.close();
+          } catch {
+            /* already closed */
+          }
+        }
       } else if (type === "ember:theme") {
         // IDE theme override — wins over OS ``prefers-color-scheme``.
         // The CSS already keys off ``html[data-theme]`` (see

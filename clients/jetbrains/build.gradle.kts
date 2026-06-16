@@ -36,7 +36,19 @@ dependencies {
         // Platform — the user installs the built zip into their own
         // PyCharm via Settings → Plugins → ⚙ → Install from Disk.
         intellijIdeaCommunity("2024.2.4")
+        // Plain JUnit 5 is all we need — our tests cover pure
+        // helpers (path resolution, JSON escaping) without spinning
+        // up the platform. A heavier ``testFramework(Platform)``
+        // dependency would unlock ``BasePlatformTestCase`` but
+        // would add ~10 s per test for IDE bootstrap; not worth it
+        // for unit-level coverage.
     }
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 kotlin {

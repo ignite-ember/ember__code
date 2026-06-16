@@ -50,7 +50,7 @@ object EmberHostEvents {
         )
     }
 
-    private fun jsonEscape(s: String): String {
+    internal fun jsonEscape(s: String): String {
         val sb = StringBuilder(s.length + 8)
         for (c in s) {
             when (c) {

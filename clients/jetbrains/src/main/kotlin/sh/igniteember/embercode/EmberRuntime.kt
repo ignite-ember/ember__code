@@ -172,8 +172,9 @@ object EmberRuntime {
 
     /** ``~/.cache/ember-code`` on macOS/Linux, ``%LOCALAPPDATA%/ember-code``
      *  on Windows. Picks a stable per-user location that survives
-     *  plugin reinstalls. */
-    private fun cacheRoot(): Path {
+     *  plugin reinstalls. ``internal`` so the unit-test suite can
+     *  verify path resolution without spinning up an IDE. */
+    internal fun cacheRoot(): Path {
         val os = System.getProperty("os.name").lowercase()
         val home = System.getProperty("user.home")
         return when {
@@ -190,18 +191,18 @@ object EmberRuntime {
         }
     }
 
-    private fun uvBinName(): String =
+    internal fun uvBinName(): String =
         if (System.getProperty("os.name").lowercase().contains("win")) "uv.exe" else "uv"
 
-    private fun venvPythonRelPath(): String =
+    internal fun venvPythonRelPath(): String =
         if (System.getProperty("os.name").lowercase().contains("win")) "Scripts/python.exe"
         else "bin/python"
 
     /** Map the running JVM's OS+arch onto the GitHub release asset
      *  name uv ships. We deliberately fail loud for anything off the
      *  beaten path so silent fallbacks don't leave a half-bootstrapped
-     *  cache lying around. */
-    private fun uvTarget(): String {
+     *  cache lying around. ``internal`` for unit-test coverage. */
+    internal fun uvTarget(): String {
         val os = System.getProperty("os.name").lowercase()
         val arch = System.getProperty("os.arch").lowercase()
         return when {
