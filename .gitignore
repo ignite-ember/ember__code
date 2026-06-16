@@ -17,8 +17,11 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchor with a leading slash so this Python convention (which
+# only ever lives at the repo root) doesn't accidentally match
+# nested directories like ``clients/web/src/lib``.
+/lib/
+/lib64/
 parts/
 sdist/
 var/

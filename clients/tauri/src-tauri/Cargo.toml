@@ -1,6 +1,9 @@
 [package]
 name = "ember-code-app"
-version = "0.1.0"
+# Kept in lockstep with ``pyproject.toml`` by
+# ``scripts/sync-version.mjs`` (also drives the runtime's
+# ``IGNITE_EMBER_VERSION`` pin via ``CARGO_PKG_VERSION``).
+version = "0.6.0"
 description = "Ember Code — standalone desktop app"
 edition = "2021"
 
@@ -14,6 +17,27 @@ tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+
+# ── Bootstrap runtime (see ``src/runtime.rs``) ─────────────────────
+# Sync HTTP client — ``ureq`` pulls in a fraction of what ``reqwest``
+# does and we don't need async for a serial download → install
+# pipeline. ``rustls`` rather than the system-openssl backend so the
+# install is hermetic on Linux distros that ship with old OpenSSL.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# Tar + gzip for the macOS / Linux uv release archives.
+flate2 = "1"
+tar = "0.4"
+# Cross-platform per-user cache dir (``~/Library/Caches`` on mac,
+# ``$XDG_CACHE_HOME`` on linux, ``%LOCALAPPDATA%`` on windows).
+dirs = "5"
+# Free-space check before bootstrap so we fail fast on a full disk
+# instead of mid-pip-install.
+fs2 = "0.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# uv ships its Windows release as a .zip. Tar.gz on every other
+# platform — see ``runtime::extract_uv``.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lib]
 name = "ember_code_app_lib"

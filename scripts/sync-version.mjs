@@ -77,6 +77,16 @@ const targets = [
     // it directly under the root object, so the first match wins.
     pattern: /("version"\s*:\s*")[^"]+(")/,
   },
+  {
+    kind: "patch",
+    label: "Tauri Cargo crate (Cargo.toml)",
+    path: join(repoRoot, "clients/tauri/src-tauri/Cargo.toml"),
+    // The Cargo package version doubles as ``CARGO_PKG_VERSION``
+    // in ``runtime.rs`` — the value pinned in
+    // ``uv pip install ignite-ember==<X>``. Drift here means the
+    // Tauri shell installs a wrong ignite version on first launch.
+    pattern: /(^version\s*=\s*")[^"]+(")/m,
+  },
 ];
 
 let changed = 0;

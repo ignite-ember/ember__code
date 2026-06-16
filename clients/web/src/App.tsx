@@ -232,6 +232,30 @@ export default function App() {
   // Live draft from another attached view (mirroring).
   // The directory this session is locked to (tools + shell cwd).
   const [projectDir, setProjectDir] = useState("");
+
+  // Tauri title-bar bridge. macOS Finder convention: the window
+  // title is the folder name; the org goes after a middle dot.
+  // This effect re-runs every time projectDir or status.cloud_org
+  // changes so the title stays current across login/logout and
+  // project-lock switches.
+  useEffect(() => {
+    const setTitle = (
+      window as unknown as {
+        __EMBER_HOST__?: { setAppTitle?: (folder: string, org: string) => void };
+      }
+    ).__EMBER_HOST__?.setAppTitle;
+    if (typeof setTitle !== "function") return;
+    const folder = projectDir
+      ? projectDir.split("/").filter(Boolean).pop() || projectDir
+      : "";
+    const org = status?.cloud_org || "";
+    try {
+      setTitle(folder, org);
+    } catch {
+      /* shell unavailable — title falls back to whatever the
+         Tauri builder set at window create. */
+    }
+  }, [projectDir, status?.cloud_org]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const processingRef = useRef(false);
   // Bumped on /clear: late events from a pre-clear run (Agno's

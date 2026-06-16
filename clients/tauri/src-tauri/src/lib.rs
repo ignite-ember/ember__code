@@ -6,33 +6,47 @@
 //! `?ws=` query param. The backend self-terminates if this process dies
 //! (EMBER_PARENT_PID watchdog), and we also kill it on window close.
 
+mod runtime;
+
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use tauri::menu::{AboutMetadata, Menu, MenuBuilder, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 struct BackendHandle(Mutex<Option<Child>>);
 
-/// Spawn the backend and block until its ready line reports the WS port.
-fn spawn_backend(project_dir: &str) -> Result<(Child, u16), String> {
-    // EMBER_PYTHON lets users point at a venv; default to PATH python3.
-    let python = std::env::var("EMBER_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let mut child = Command::new(&python)
-        .args([
-            "-m",
-            "ember_code.backend",
-            "--ws-port",
-            "0",
-            "--project-dir",
-            project_dir,
-        ])
-        .env("EMBER_PARENT_PID", std::process::id().to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("failed to spawn backend via `{python}`: {e}"))?;
+/// Spawn the backend and block until its ready line reports the WS
+/// port. ``progress`` is invoked with short status strings during
+/// the (potentially multi-minute) first-launch bootstrap; the
+/// caller surfaces them in the loading webview.
+fn spawn_backend(
+    project_dir: &str,
+    progress: &(dyn Fn(&str) + Sync),
+) -> Result<(Child, u16), String> {
+    progress("Preparing Ember backend…");
+    let install = runtime::ensure_backend_python(progress)?;
+
+    progress("Starting Ember backend…");
+    let mut cmd = Command::new(&install.python);
+    cmd.args([
+        "-m",
+        "ember_code.backend",
+        "--ws-port",
+        "0",
+        "--project-dir",
+        project_dir,
+    ])
+    .env("EMBER_PARENT_PID", std::process::id().to_string())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+    for (k, v) in &install.env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("failed to spawn backend via `{}`: {e}", install.python.display())
+    })?;
 
     let stdout = child.stdout.take().ok_or("backend stdout unavailable")?;
     let mut reader = BufReader::new(stdout);
@@ -65,10 +79,19 @@ fn spawn_backend(project_dir: &str) -> Result<(Child, u16), String> {
 }
 
 fn project_dir() -> String {
-    // CLI arg wins; fall back to cwd (launching from a project root).
+    // First positional non-flag argument wins; fall back to cwd
+    // (launching from a project root).
     std::env::args()
-        .nth(1)
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
         .unwrap_or_else(|| ".".to_string())
+}
+
+/// True if the user passed ``--reinstall`` on the CLI. Triggers a
+/// cache wipe before the bootstrap runs — recovery path for users
+/// who can't reach the Tools menu.
+fn reinstall_flag() -> bool {
+    std::env::args().any(|a| a == "--reinstall")
 }
 
 /// Parse a single stdout line from the backend and return the bound
@@ -147,6 +170,13 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         Some("CmdOrCtrl+Shift+R"),
     )?;
+    let reinstall_backend_item = MenuItem::with_id(
+        app,
+        "reinstall_backend",
+        "Reinstall Backend (Clean)",
+        true,
+        None::<&str>,
+    )?;
     let close_window = PredefinedMenuItem::close_window(app, None)?;
     let file_menu = Submenu::with_items(
         app,
@@ -155,6 +185,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &new_chat,
             &restart_backend,
+            &reinstall_backend_item,
             &PredefinedMenuItem::separator(app)?,
             &close_window,
         ],
@@ -212,11 +243,104 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .build()
 }
 
+/// Title-bar text: ``<folder> · <org>`` (org omitted when empty),
+/// mirroring Finder's "name only" convention rather than the
+/// older "App Name — Document" style. Called by the FE on every
+/// ``status_update`` so the bar reflects the *current* project
+/// dir + cloud-org pair, including changes from ``/clear``,
+/// project-lock changes, and login/logout.
+#[tauri::command]
+fn set_app_title(
+    window: tauri::WebviewWindow,
+    folder: Option<String>,
+    org: Option<String>,
+) -> Result<(), String> {
+    let folder = folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Ember Code")
+        .to_string();
+    let org = org.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let title = match org {
+        Some(o) => format!("{folder} · {o}"),
+        None => folder,
+    };
+    window.set_title(&title).map_err(|e| e.to_string())
+}
+
+/// Reinstall the managed Python toolchain from scratch — wired to
+/// the "Reinstall Backend (Clean)" Tools-menu item and to the
+/// ``--reinstall`` CLI flag. Wipes the cache then restarts the BE.
+#[tauri::command]
+fn reinstall_backend(app: AppHandle) -> Result<(), String> {
+    if let Some(handle) = app.try_state::<BackendHandle>() {
+        if let Some(mut child) = handle.0.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    runtime::reset_cache()?;
+    // Walk the user back through the loading view; the next
+    // ``open_main_app`` call (triggered by the menu wiring) will
+    // re-bootstrap from scratch.
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.eval("location.href = 'loading.html?msg=Reinstalling…'");
+    }
+    let app2 = app.clone();
+    let dir = project_dir();
+    std::thread::spawn(move || {
+        if let Err(e) = bootstrap_and_open(&app2, &dir) {
+            eprintln!("reinstall failed: {e}");
+        }
+    });
+    Ok(())
+}
+
+/// Bootstrap the BE on a background thread, emit progress to the
+/// loading page, then navigate the main window to the real UI.
+/// Used both at startup and from ``reinstall_backend``.
+fn bootstrap_and_open(app: &AppHandle, project_dir: &str) -> Result<(), String> {
+    // CLI flag: ``ember-code --reinstall`` wipes the managed cache
+    // before bootstrap runs, same effect as the menu item.
+    if reinstall_flag() {
+        let _ = runtime::reset_cache();
+    }
+
+    let app_for_progress = app.clone();
+    let progress: Box<dyn Fn(&str) + Sync> = Box::new(move |msg: &str| {
+        if let Some(w) = app_for_progress.get_webview_window("main") {
+            let _ = w.emit("ember-bootstrap-progress", msg.to_string());
+        }
+    });
+
+    let (child, port) = spawn_backend(project_dir, &progress)?;
+    app.manage(BackendHandle(Mutex::new(Some(child))));
+
+    // Initial title: project-dir basename, Finder-style. The FE
+    // re-issues ``set_app_title`` on every status_update with the
+    // cloud org as a subtitle, so this just covers the case where
+    // the BE never connects (no status push fires).
+    let folder = std::path::Path::new(project_dir)
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "Ember Code".to_string());
+
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_title(&folder);
+        let target = format!("index.html?ws=ws%3A%2F%2F127.0.0.1%3A{port}");
+        let _ = w.eval(&format!("location.href = {}", serde_json::json!(target)));
+    }
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .invoke_handler(tauri::generate_handler![set_app_title, reinstall_backend])
         .setup(|app| {
             // Native menu — has to be set before the first window
             // builds or macOS shows the default Tauri stub.
@@ -224,13 +348,15 @@ pub fn run() {
             app.set_menu(menu)?;
 
             let dir = project_dir();
-            let (child, port) = spawn_backend(&dir).map_err(|e| -> Box<dyn std::error::Error> {
-                format!("Ember backend failed to start: {e}").into()
-            })?;
-            app.manage(BackendHandle(Mutex::new(Some(child))));
 
-            let url = format!("index.html?ws=ws%3A%2F%2F127.0.0.1%3A{port}");
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App(url.into()))
+            // Open the loading view IMMEDIATELY so the user sees a
+            // window appear on app launch instead of a bouncing
+            // dock icon while uv downloads. The bootstrap runs on a
+            // background thread; progress events update the page;
+            // when the BE is ready we navigate the same window to
+            // the real UI. Same pattern as the JetBrains tool-
+            // window placeholder.
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("loading.html".into()))
                 .title("Ember Code")
                 .inner_size(1100.0, 780.0)
                 // Native folder picker for the web UI's project-lock
@@ -281,9 +407,37 @@ pub fn run() {
                                 detail: { type: 'ember:menu', payload: { id } }
                             }));
                         });
-                    }"#,
+                    }
+                    // Title-bar bridge: the FE calls
+                    // ``window.__EMBER_HOST__.setAppTitle(folder, org)``
+                    // on every status_update so the title reflects
+                    // the *current* project dir + org.
+                    window.__EMBER_HOST__ = Object.assign(window.__EMBER_HOST__ || {}, {
+                        setAppTitle: (folder, org) => window.__TAURI__.core.invoke(
+                            'set_app_title', { folder, org }
+                        ),
+                    });"#,
                 )
                 .build()?;
+
+            // Bootstrap kicks off on a background thread so the
+            // loading window stays responsive.
+            let app_handle = app.handle().clone();
+            let dir_for_bootstrap = dir.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = bootstrap_and_open(&app_handle, &dir_for_bootstrap) {
+                    if let Some(w) = app_handle.get_webview_window("main") {
+                        let escaped = serde_json::to_string(&e).unwrap_or_default();
+                        let _ = w.emit("ember-bootstrap-error", &e);
+                        let _ = w.eval(&format!(
+                            "document.body.innerHTML = '<div class=\"ember-loading-error\">Bootstrap failed: ' + {} + '</div>';",
+                            escaped
+                        ));
+                    }
+                    eprintln!("Ember Code bootstrap failed: {e}");
+                }
+            });
+
             Ok(())
         })
         // Native menu items emit ``ember-menu`` events on the
@@ -306,11 +460,15 @@ pub fn run() {
                     }
                     #[cfg(not(debug_assertions))]
                     {
-                        // Devtools are stripped from release builds;
-                        // surface a no-op so the menu item stays
-                        // visible but doesn't appear broken.
                         let _ = w;
                     }
+                }
+            }
+            "reinstall_backend" => {
+                // Rust-side action — wipe the cache + restart the
+                // BE without round-tripping through the FE.
+                if let Err(e) = reinstall_backend(app.clone()) {
+                    eprintln!("reinstall_backend failed: {e}");
                 }
             }
             id => {
