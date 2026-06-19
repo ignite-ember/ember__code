@@ -13,6 +13,26 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>0.6.0</h3>
+        <ul>
+          <li>Multi-agent orchestration — the chat panel now drives a
+              session pool, so you can run multiple parallel
+              conversations (one per project, or N per project) in
+              the same IDE window. Each tool window gets its own
+              session, with live typing + message mirroring across
+              IDE / web / Tauri views bound to the same session.</li>
+          <li>Project-lock UX — header chip shows which project the
+              session is bound to; backend-managed directory picker
+              for switching between repos without losing context.</li>
+          <li>BE reliability pass — WAL-mode SQLite for the per-
+              session stores, idle eviction so a long-lived BE
+              releases memory once a session goes dormant, and a
+              slow-client back-pressure fix so a single wedged view
+              never stalls the other sessions' streams.</li>
+          <li>First-launch onboarding polish — clearer progress
+              during the uv/Python bootstrap, IDE proxy is now
+              propagated to the backend, disk-space precheck.</li>
+        </ul>
         <h3>0.1.0</h3>
         <ul>
           <li>Zero-touch install — plugin bootstraps <code>uv</code> +

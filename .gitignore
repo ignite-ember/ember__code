@@ -247,3 +247,8 @@ clients/vscode/*.vsix
 clients/web/test-results/
 clients/web/playwright-report/
 clients/web/.playwright/
+
+# @vscode/test-electron downloads a full VSCode binary (~200 MB)
+# into ``clients/vscode/.vscode-test/`` on first ``npm test`` run.
+# Never check this in.
+clients/vscode/.vscode-test/

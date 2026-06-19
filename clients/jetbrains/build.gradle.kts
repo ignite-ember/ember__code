@@ -118,4 +118,20 @@ intellijPlatform {
             recommended()
         }
     }
+    publishing {
+        // Marketplace upload token. Sourced from the
+        // ``ORG_GRADLE_PROJECT_jbToken`` env var in CI (set by the
+        // ``JETBRAINS_MARKETPLACE_TOKEN`` GitHub secret); on a
+        // developer's machine the gradle.properties file in the
+        // user's ~/.gradle dir is the conventional place if you
+        // ever want to publish locally.
+        //
+        // Generate one at
+        // https://plugins.jetbrains.com/author/me/tokens — scope
+        // "Upload Plugin" for the ``Ember Code`` plugin. First-time
+        // publish triggers JetBrains' moderation review (1-10
+        // business days); subsequent updates pass through within
+        // minutes.
+        token = providers.gradleProperty("jbToken").orNull
+    }
 }

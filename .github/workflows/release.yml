@@ -110,6 +110,23 @@ jobs:
           path: clients/jetbrains/build/distributions/*.zip
           retention-days: 30
 
+      # Push to the JetBrains Marketplace. ``publishPlugin`` reads
+      # the already-built zip from ``build/distributions/`` — same
+      # bytes that get uploaded as the GitHub-Release artifact, so
+      # users get an identical bundle through either channel.
+      #
+      # ``JETBRAINS_MARKETPLACE_TOKEN`` is an upload token created
+      # at https://plugins.jetbrains.com/author/me/tokens with the
+      # "Upload Plugin" scope for the ``Ember Code`` plugin.
+      # First-time publish triggers JetBrains' moderation review
+      # (1-10 business days); subsequent updates clear in minutes.
+      - name: Publish to JetBrains Marketplace
+        env:
+          ORG_GRADLE_PROJECT_jbToken: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+        run: |
+          cd clients/jetbrains
+          ./gradlew publishPlugin --no-daemon
+
   # VSCode extension — built against the just-published
   # ignite-ember version. Same SoT trick as the JetBrains plugin:
   # ``scripts/sync-version.mjs`` reads pyproject.toml and writes
@@ -144,6 +161,25 @@ jobs:
           name: vscode-extension
           path: clients/vscode/*.vsix
           retention-days: 30
+
+      # Push to the VS Code Marketplace. ``vsce publish --packagePath``
+      # uploads the already-built .vsix instead of rebuilding — keeps
+      # the marketplace artifact byte-identical to the GitHub-Release
+      # artifact, so users get exactly the same bundle whether they
+      # install from the marketplace or download the VSIX directly.
+      #
+      # ``VSCE_PAT`` is a Personal Access Token from
+      # https://dev.azure.com/<org>/_usersSettings/tokens with the
+      # ``Marketplace > Manage`` scope. The publisher ``ignite-ember``
+      # (per ``package.json``) must already exist on
+      # https://marketplace.visualstudio.com/manage.
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          cd clients/vscode
+          VSIX=$(ls *.vsix | head -1)
+          npx --yes @vscode/vsce publish --packagePath "$VSIX" --pat "$VSCE_PAT"
 
   # Tauri desktop installers — mac (arm + intel), windows, linux.
   # Tauri Action handles the per-platform bundle (.dmg/.msi/.AppImage),
