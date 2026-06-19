@@ -24,10 +24,18 @@ suite("Ember Code extension", () => {
   suiteSetup(async () => {
     // Anchor the fake "Python" path on the extension's install
     // directory (the source tree, not the compiled-output mirror)
-    // so we don't have to copy fake-backend.js into ``out/``.
+    // so we don't have to copy fake-backend.{js,cmd} into ``out/``.
+    //
+    // Platform split: Unix can ``spawn(*.js)`` directly thanks to
+    // the ``#!/usr/bin/env node`` shebang in the script. Windows
+    // doesn't honour shebangs — ``spawn`` rejects a bare .js with
+    // ``EFTYPE``, so we route via a tiny .cmd wrapper that calls
+    // ``node fake-backend.js``. Same final behaviour either way.
     const ext = vscode.extensions.getExtension(PUBLISHER_ID);
     assert.ok(ext, `extension ${PUBLISHER_ID} not found in test host`);
-    const fakeBe = path.join(ext!.extensionPath, "test", "fake-backend.js");
+    const fakeBeName =
+      process.platform === "win32" ? "fake-backend.cmd" : "fake-backend.js";
+    const fakeBe = path.join(ext!.extensionPath, "test", fakeBeName);
     await vscode.workspace
       .getConfiguration("emberCode")
       .update("pythonPath", fakeBe, vscode.ConfigurationTarget.Global);
