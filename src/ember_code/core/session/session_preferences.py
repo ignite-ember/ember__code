@@ -18,9 +18,12 @@ existing databases pick up the table on next launch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from pathlib import Path
+
+from ember_code.core.session._sqlite_utils import connect_kv
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +48,11 @@ class SessionPreferencesStore:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with contextlib.closing(self._connect()) as conn, conn:
             conn.executescript(_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+        return connect_kv(self._db_path)
 
     def set_model(self, session_id: str, model_name: str) -> None:
         """Upsert the model preference for ``session_id``.
@@ -62,7 +63,7 @@ class SessionPreferencesStore:
         is that ``--continue`` won't restore this specific choice.
         """
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn, conn:
                 conn.execute(
                     "INSERT INTO ember_session_preferences (session_id, model_name) "
                     "VALUES (?, ?) "
@@ -71,14 +72,13 @@ class SessionPreferencesStore:
                     "updated_at=strftime('%s', 'now')",
                     (session_id, model_name),
                 )
-                conn.commit()
         except Exception as exc:
             logger.debug("set_model failed for %s: %s", session_id, exc)
 
     def get_model(self, session_id: str) -> str | None:
         """Return the persisted model for ``session_id`` or None."""
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn:
                 row = conn.execute(
                     "SELECT model_name FROM ember_session_preferences WHERE session_id=?",
                     (session_id,),

@@ -8,6 +8,7 @@ the matching Agno reader to fetch and chunk, then stores the result as
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,10 @@ class Ingester:
         # preserving chunker.
         if _is_text_path(p):
             try:
-                content = p.read_text(encoding="utf-8")
+                # Offload the file read so the BE event loop keeps
+                # dispatching other sessions' RPCs while a large note
+                # is loaded into memory.
+                content = await asyncio.to_thread(p.read_text, encoding="utf-8")
             except (UnicodeDecodeError, OSError) as exc:
                 raise IngestError(f"Failed to read {p}: {exc}") from exc
             if not content.strip():

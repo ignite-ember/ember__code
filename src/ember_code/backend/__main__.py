@@ -591,6 +591,31 @@ async def _run(
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _signal_handler)
 
+    # SIGUSR1 → diagnostic "release as much memory as you can now":
+    # forces a ``gc.collect()`` AND schedules an immediate
+    # ``pool.evict_idle()`` sweep on the loop. Used by the
+    # release-phase profiler to demonstrate the downward RSS trend
+    # without waiting for the 5-minute sweep interval, and useful in
+    # production triage to confirm a long-lived BE can still reclaim.
+    def _release_handler():
+        import gc as _gc
+
+        before = _gc.get_count()
+        collected = _gc.collect()
+        logger.info(
+            "SIGUSR1: forced gc.collect — collected %d objects (generation counts before: %s)",
+            collected,
+            before,
+        )
+        # Pool not yet created (boot-time signal) → NameError → noop;
+        # ``pool`` is late-bound via the enclosing scope so we can't
+        # check ``is None`` at definition time.
+        with contextlib.suppress(NameError):
+            loop.create_task(pool.evict_idle())  # noqa: F821 — late-bound
+
+    with contextlib.suppress(NotImplementedError):  # not on Windows
+        loop.add_signal_handler(signal.SIGUSR1, _release_handler)
+
     # Watchdog: exit if the FE parent dies. ``EMBER_PARENT_PID`` is
     # injected by ``process_manager.BackendProcess.start``.
     parent_pid_str = os.environ.get("EMBER_PARENT_PID", "0") or "0"
@@ -856,7 +881,45 @@ async def _run(
                 transport=stamped,
             )
 
-        pool = SessionPool(default_runtime, _create_runtime)
+        # ``EMBER_SESSION_IDLE_TIMEOUT`` lets ops tune the eviction
+        # window without a code change (e.g. very long-running CI
+        # supervisors want a tighter timeout to cap RAM). Default is
+        # 30 minutes — defined in ``session_pool._DEFAULT_IDLE_TIMEOUT``.
+        try:
+            _idle_secs = float(os.environ.get("EMBER_SESSION_IDLE_TIMEOUT", ""))
+        except ValueError:
+            _idle_secs = 0.0
+        pool_kwargs: dict[str, Any] = {}
+        if _idle_secs > 0:
+            pool_kwargs["idle_timeout_seconds"] = _idle_secs
+        pool = SessionPool(default_runtime, _create_runtime, **pool_kwargs)
+
+        # Background evictor: sweep every 5 minutes and drop runtimes
+        # idle longer than ``idle_timeout_seconds``. The default
+        # runtime + any currently-processing runtimes are spared (see
+        # ``SessionPool.evict_idle``). Keep the strong ref so the task
+        # isn't GC'd mid-loop — that's a real asyncio footgun.
+        async def _evictor_loop() -> None:
+            sweep_interval = 5 * 60
+            while not shutdown_event.is_set():
+                try:
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=sweep_interval)
+                    # Shutdown fired — exit cleanly.
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    evicted = await pool.evict_idle()
+                    if evicted:
+                        logger.info(
+                            "session pool: evicted %d idle session(s): %s",
+                            len(evicted),
+                            evicted,
+                        )
+                except Exception as exc:
+                    logger.warning("evictor sweep failed: %s", exc)
+
+        evictor_task = asyncio.create_task(_evictor_loop())
 
         async def _attach_session(message: Any) -> None:
             """Pool-level RPC: bind/create a session, optionally in a
@@ -948,7 +1011,18 @@ async def _run(
                 # the old id keep routing here, and keep the directory
                 # registry current for the renewed id.
                 rt.remember_id()
-                dir_registry.set_dir(rt.backend.session_id, rt.backend.project_dir)
+                # Dedupe: only write to ``sessions.db`` when this
+                # runtime's id or project_dir actually changed. Without
+                # this, every single dispatched message (including
+                # idempotent get_status polls) opens a SQLite
+                # connection — at ~330 req/s with 4 sessions that piled
+                # ~180 KiB of resident Connection state per RPC until
+                # GC caught up, masquerading as a memory leak.
+                current_dir_key = (rt.backend.session_id, str(rt.backend.project_dir))
+                last_key = getattr(rt, "_last_dir_registered", None)
+                if current_dir_key != last_key:
+                    dir_registry.set_dir(rt.backend.session_id, rt.backend.project_dir)
+                    rt._last_dir_registered = current_dir_key  # type: ignore[attr-defined]
             except Exception as exc:
                 logger.error("message handler crashed: %s", exc, exc_info=True)
                 with contextlib.suppress(Exception):
@@ -979,10 +1053,14 @@ async def _run(
     finally:
         parent_watch_task.cancel()
         shutdown_close_task.cancel()
+        with contextlib.suppress(NameError):
+            evictor_task.cancel()  # noqa: F821 — set in the try body
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await parent_watch_task
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await shutdown_close_task
+        with contextlib.suppress(asyncio.CancelledError, Exception, NameError):
+            await evictor_task  # noqa: F821
         try:
             # Shut down every pooled runtime (includes the default).
             await pool.shutdown()  # noqa: F821 — defined in the try body

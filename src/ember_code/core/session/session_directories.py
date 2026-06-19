@@ -14,6 +14,7 @@ exactly the pre-pool behaviour.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 from pathlib import Path
@@ -46,17 +47,25 @@ class SessionDirectoryStore:
         return cls(data_root(data_dir) / "sessions.db")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+        from ember_code.core.session._sqlite_utils import connect_kv
+
+        return connect_kv(self._db_path)
 
     def set_dir(self, session_id: str, project_dir: str | Path) -> None:
         """Upsert. Best-effort — a failed write only means a later
-        resume falls back to the BE's boot directory."""
+        resume falls back to the BE's boot directory.
+
+        Implementation note: ``sqlite3.Connection.__exit__`` (the
+        context-manager protocol) only commits/rollbacks — it does
+        NOT close the connection. Wrapping with
+        ``contextlib.closing`` guarantees the underlying handle is
+        released immediately, so a hot caller doesn't pile up live
+        Connection objects waiting for GC.
+        """
         if not session_id:
             return
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn, conn:
                 conn.execute(
                     "INSERT INTO ember_session_directories (session_id, project_dir) "
                     "VALUES (?, ?) "
@@ -65,13 +74,12 @@ class SessionDirectoryStore:
                     "updated_at=strftime('%s', 'now')",
                     (session_id, str(project_dir)),
                 )
-                conn.commit()
         except Exception as exc:
             logger.debug("set_dir failed for %s: %s", session_id, exc)
 
     def get_dir(self, session_id: str) -> str | None:
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn:
                 row = conn.execute(
                     "SELECT project_dir FROM ember_session_directories WHERE session_id=?",
                     (session_id,),

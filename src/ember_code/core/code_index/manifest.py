@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,7 +76,11 @@ class Manifest:
             "head": state.head,
             "commits": [asdict(state.commits[sha]) for sha in state.commits],
         }
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        # Per-writer tmp filename so two concurrent saves (one BE, N
+        # sessions in the same project) don't clobber each other's
+        # tmp and trip ``os.replace`` with ``FileNotFoundError``.
+        # ``os.replace`` is atomic, so the last writer wins safely.
+        tmp = self.path.with_suffix(self.path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex}")
         tmp.write_text(json.dumps(payload, indent=2))
         os.replace(tmp, self.path)
 

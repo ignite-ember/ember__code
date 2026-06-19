@@ -39,15 +39,29 @@ logger = logging.getLogger(__name__)
 # MCP tool catalogues or large tool results.
 _MAX_FRAME_BYTES = 64 * 1024 * 1024
 
+# Per-client send timeout during broadcast. A slow or wedged client
+# must not block every other attached view: after this deadline the
+# offending conn is dropped from ``_conns`` and broadcast continues
+# without it. 2s is plenty for any healthy localhost websocket; a
+# client that misses it has either crashed mid-frame or backed up its
+# OS buffer enough that recovery is unlikely.
+_BROADCAST_SEND_TIMEOUT = 2.0
+
 
 class WebSocketServerTransport(Transport):
     """BE-side transport: loopback WS server, N mirrored clients."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 0):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        broadcast_send_timeout: float = _BROADCAST_SEND_TIMEOUT,
+    ):
         from websockets.asyncio.server import Server
 
         self._host = host
         self._port = port
+        self._broadcast_send_timeout = broadcast_send_timeout
         # Set by ``start()`` to the awaited ``serve(...)`` result.
         # Annotated explicitly so mypy sees the union with ``None``
         # and accepts the later assignment to a ``Server`` instance.
@@ -115,20 +129,44 @@ class WebSocketServerTransport(Transport):
             logger.info("FE client %s detached (%d left)", client_id, len(self._conns))
 
     async def send(self, message: Message) -> None:
-        """Broadcast to every attached client; drop dead connections."""
+        """Broadcast to every attached client concurrently; drop dead /
+        stalled connections.
+
+        Concurrency matters here: with multiple sessions live on one
+        BE, a single wedged client (e.g. a webview the OS suspended
+        mid-tab) used to stall *every* session's emit loop while we
+        awaited its ``conn.send`` in series. Each conn now gets its
+        own ``wait_for`` so a slow client only delays itself, and is
+        evicted from ``_conns`` after the per-conn timeout.
+        """
         if self._closed or not self._conns:
             # No views attached (e.g. all webviews mid-reload). Events
             # are fire-and-forget; RPC callers re-issue after reconnect.
             return
         payload = message.model_dump_json()
-        dead: list[str] = []
-        for client_id, conn in list(self._conns.items()):
+
+        async def _send_to(client_id: str, conn) -> str | None:
             try:
-                await conn.send(payload)  # type: ignore[attr-defined]
+                await asyncio.wait_for(
+                    conn.send(payload),  # type: ignore[attr-defined]
+                    timeout=self._broadcast_send_timeout,
+                )
+                return None
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "WS send to %s timed out after %.1fs — dropping client",
+                    client_id,
+                    self._broadcast_send_timeout,
+                )
+                return client_id
             except Exception as exc:
                 logger.debug("WS send to %s failed (client gone?): %s", client_id, exc)
-                dead.append(client_id)
-        for client_id in dead:
+                return client_id
+
+        results = await asyncio.gather(
+            *(_send_to(cid, conn) for cid, conn in list(self._conns.items()))
+        )
+        for client_id in (r for r in results if r is not None):
             self._conns.pop(client_id, None)
 
     async def receive(self) -> AsyncIterator[Message]:

@@ -280,7 +280,10 @@ class CodeIndexSyncManager:
         if self.resolver is None:
             return SyncResult(skipped=True, reason="resolver not available")
 
-        target_sha = sha or self.current_sha()
+        # ``current_sha`` shells out to ``git`` (sync subprocess);
+        # offload so the BE's event loop keeps dispatching other
+        # sessions' RPCs while git resolves HEAD.
+        target_sha = sha or await asyncio.to_thread(self.current_sha)
         if not target_sha:
             return SyncResult(skipped=True, reason="not a git repository")
 
@@ -495,7 +498,10 @@ class CodeIndexSyncManager:
         while True:
             try:
                 await asyncio.sleep(self._watch_interval)
-                sha = self.current_sha()
+                # Offload the git call: every tick of this watch loop
+                # would otherwise pause the BE event loop for the
+                # duration of ``git rev-parse``.
+                sha = await asyncio.to_thread(self.current_sha)
                 if not sha:
                     continue
 

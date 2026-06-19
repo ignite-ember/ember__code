@@ -14,9 +14,12 @@ individual entries with ``set_value``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 from pathlib import Path
+
+from ember_code.core.session._sqlite_utils import connect_kv
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ class ClientStateStore:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with contextlib.closing(self._connect()) as conn, conn:
             conn.executescript(_SCHEMA)
 
     @classmethod
@@ -48,15 +51,13 @@ class ClientStateStore:
         return cls(data_root(data_dir) / "client_state.db")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+        return connect_kv(self._db_path)
 
     def get_for_client(self, client_id: str) -> dict[str, str]:
         if not client_id:
             return {}
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn:
                 rows = conn.execute(
                     "SELECT key, value FROM ember_client_state WHERE client_id=?",
                     (client_id,),
@@ -70,7 +71,7 @@ class ClientStateStore:
         if not client_id or not key:
             return
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn, conn:
                 conn.execute(
                     "INSERT INTO ember_client_state (client_id, key, value) "
                     "VALUES (?, ?, ?) "
@@ -79,7 +80,6 @@ class ClientStateStore:
                     "updated_at=strftime('%s', 'now')",
                     (client_id, key, value),
                 )
-                conn.commit()
         except Exception as exc:
             logger.debug("client_state set_value failed: %s", exc)
 
@@ -87,11 +87,10 @@ class ClientStateStore:
         if not client_id or not key:
             return
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn, conn:
                 conn.execute(
                     "DELETE FROM ember_client_state WHERE client_id=? AND key=?",
                     (client_id, key),
                 )
-                conn.commit()
         except Exception as exc:
             logger.debug("client_state delete_value failed: %s", exc)

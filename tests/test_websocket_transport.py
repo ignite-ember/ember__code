@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -182,6 +183,83 @@ async def test_send_without_client_is_noop():
     await tr.start()
     try:
         await tr.send(msg.Info(text="nobody listening"))  # must not raise
+    finally:
+        await tr.close()
+
+
+@pytest.mark.asyncio
+async def test_slow_client_does_not_stall_other_clients():
+    """A wedged client must not back-pressure the broadcast loop into
+    blocking every other attached view. The fix is per-conn concurrent
+    ``gather`` + a ``wait_for`` deadline that evicts the offender.
+
+    Without the fix, this test would take ≈ slow_delay × N_sends before
+    the fast client sees the last message; with the fix, the fast
+    client's stream completes near-instantly while the slow conn is
+    evicted on the first send.
+    """
+    # Short timeout so the eviction path is cheap to verify.
+    tr = WebSocketServerTransport(port=0, broadcast_send_timeout=0.10)
+    await tr.start()
+    try:
+        ws_fast, _ = await _connect_and_welcome(tr.port)
+        ws_slow, _ = await _connect_and_welcome(tr.port)
+        assert tr.client_count == 2
+
+        # Monkey-patch the slow conn's send to park forever. The
+        # transport stores live conns in ``_conns`` keyed by client_id;
+        # one of the two will have its send replaced.
+        slow_cid = next(
+            cid
+            for cid, c in tr._conns.items()
+            if c is not tr._conns[next(iter(tr._conns))]
+            or True  # pick second (insertion order: fast, then slow)
+        )
+        # Insertion order on the BE side mirrors connect order, so the
+        # second-inserted conn is the slow one we just connected.
+        slow_cid = list(tr._conns.keys())[1]
+
+        wedge = asyncio.Event()
+
+        async def parked(_payload):
+            await wedge.wait()
+
+        # ``_conns`` holds the raw websocket server conn; replace its
+        # send with our parking coroutine.
+        tr._conns[slow_cid].send = parked  # type: ignore[attr-defined]
+
+        # One broadcast — the slow conn will time out at 100 ms and be
+        # dropped; the fast conn receives normally. ``send()`` must
+        # return within the timeout budget, not block waiting on the
+        # parked conn beyond it.
+        t0 = time.monotonic()
+        await tr.send(msg.Info(text="hello"))
+        elapsed = time.monotonic() - t0
+        # Generous upper bound: timeout (0.1s) plus a little scheduler
+        # slack. Pre-fix value would be unbounded (never returns until
+        # the wedge releases).
+        assert elapsed < 0.30, f"slow conn stalled send() for {elapsed:.2f}s"
+
+        # Fast client got its frame …
+        raw = await asyncio.wait_for(ws_fast.recv(), 1.0)
+        assert json.loads(raw)["text"] == "hello"
+
+        # … and the slow conn was evicted.
+        assert slow_cid not in tr._conns
+        assert tr.client_count == 1
+
+        # A follow-up broadcast also delivers immediately, confirming
+        # the slow conn isn't lingering in the loop.
+        t0 = time.monotonic()
+        await tr.send(msg.Info(text="second"))
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.10
+        raw = await asyncio.wait_for(ws_fast.recv(), 1.0)
+        assert json.loads(raw)["text"] == "second"
+
+        wedge.set()  # let the parked coroutine exit cleanly
+        await ws_fast.close()
+        await ws_slow.close()
     finally:
         await tr.close()
 

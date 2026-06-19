@@ -21,6 +21,7 @@ pre-pool views work unchanged.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -38,6 +39,15 @@ class SessionRuntime:
     queue: list[str]
     transport: Any  # session-stamping transport wrapper
     known_ids: set[str] = field(default_factory=set)
+    # Monotonic timestamp of the most recent ``find`` hit. Used by the
+    # idle-eviction sweep so sessions a user hasn't touched in a while
+    # can release their in-memory state (Agno team, chroma client,
+    # cached embeddings). State on disk is unchanged — the next message
+    # for an evicted session re-spawns a runtime via the resume path.
+    # ``0.0`` means "never accessed" — older than every initialised
+    # runtime, so an evictor sweeping at boot would NOT touch any
+    # never-used runtime by mistake (we set this at creation).
+    last_used_at: float = field(default=0.0)
 
     def remember_id(self) -> None:
         """Record the runtime's CURRENT session id as an alias.
@@ -53,6 +63,13 @@ class SessionRuntime:
             pass
 
 
+# Default: 30 minutes. Long enough that a user briefly switching to
+# another project doesn't lose warm state when they come back; short
+# enough that a forgotten BE doesn't hold every session it has ever
+# seen forever. Tunable via ``SessionPool(idle_timeout_seconds=...)``.
+_DEFAULT_IDLE_TIMEOUT = 30 * 60
+
+
 class SessionPool:
     """Find-or-create SessionRuntimes keyed by (current or past) id."""
 
@@ -60,12 +77,27 @@ class SessionPool:
         self,
         default: SessionRuntime,
         factory: Callable[[str], Awaitable[SessionRuntime]],
+        *,
+        idle_timeout_seconds: float = _DEFAULT_IDLE_TIMEOUT,
+        clock: Callable[[], float] | None = None,
     ) -> None:
+        import time
+
+        # ``clock`` is injectable so tests can fast-forward without
+        # sleeping the wall clock. Default to ``time.monotonic`` — its
+        # tick is independent of the event loop's, which matters when
+        # the loop is paused for a debugger.
+        self._clock = clock if clock is not None else time.monotonic
         default.remember_id()
+        # Stamp default's last_used_at so the eviction sweep doesn't
+        # treat the boot runtime as "never used" → infinitely idle.
+        default.last_used_at = self._clock()
         self._runtimes: list[SessionRuntime] = [default]
         self._factory = factory
+        self._idle_timeout = idle_timeout_seconds
         # Serialises creation so two messages for the same not-yet-
-        # loaded session don't resume it twice.
+        # loaded session don't resume it twice. Also held during
+        # ``evict_idle`` so we never evict a runtime mid-resume.
         self._create_lock = asyncio.Lock()
 
     @property
@@ -78,10 +110,12 @@ class SessionPool:
 
     def find(self, session_id: str) -> SessionRuntime | None:
         if not session_id:
+            self.default.last_used_at = self._clock()
             return self.default
         for rt in self._runtimes:
             rt.remember_id()
             if session_id in rt.known_ids:
+                rt.last_used_at = self._clock()
                 return rt
         return None
 
@@ -99,8 +133,58 @@ class SessionPool:
             rt = await self._factory(session_id)
             rt.known_ids.add(session_id)
             rt.remember_id()
+            rt.last_used_at = self._clock()
             self._runtimes.append(rt)
             return rt
+
+    async def evict_idle(self) -> list[str]:
+        """Drop runtimes idle longer than ``idle_timeout_seconds``.
+
+        The default runtime (index 0) is NEVER evicted — it serves
+        empty-``session_id`` traffic (the TUI's default behaviour)
+        and there's no way to lazily resume "the default session"
+        if it disappears.
+
+        A runtime that's currently processing a run (``backend.processing``
+        True) is also skipped — evicting mid-stream would cancel the
+        active run and confuse the FE.
+
+        Returns the list of evicted session ids for logging. Note:
+        Python's allocator typically does not return freed pages to
+        the OS, so process-RSS won't shrink immediately — but the
+        memory IS reclaimed and reused by subsequent allocations,
+        so a BE that cycles through many sessions reaches a steady
+        working-set size instead of growing unboundedly.
+        """
+        async with self._create_lock:
+            now = self._clock()
+            cutoff = now - self._idle_timeout
+            keep: list[SessionRuntime] = [self._runtimes[0]]
+            evicted: list[str] = []
+            for rt in self._runtimes[1:]:
+                if rt.last_used_at >= cutoff:
+                    keep.append(rt)
+                    continue
+                if getattr(rt.backend, "processing", False):
+                    # Mid-run — leave alone; the next sweep picks it
+                    # up once the run finishes and idle time grows.
+                    keep.append(rt)
+                    continue
+                sid = ""
+                with contextlib.suppress(Exception):  # pragma: no cover — defensive
+                    sid = rt.backend.session_id or ""
+                try:
+                    await rt.backend.shutdown()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.debug("evict shutdown failed for %s: %s", sid, exc)
+                evicted.append(sid or "<unknown>")
+                logger.info(
+                    "session pool: evicted idle session %s (idle %.0fs)",
+                    sid or "<unknown>",
+                    now - rt.last_used_at,
+                )
+            self._runtimes = keep
+            return evicted
 
     async def shutdown(self) -> None:
         for rt in self._runtimes:

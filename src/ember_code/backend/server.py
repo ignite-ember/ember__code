@@ -2296,7 +2296,7 @@ class BackendServer:
 
     # ── CodeIndex ──────────────────────────────────────────────────
 
-    def codeindex_status(self) -> dict:
+    async def codeindex_status(self) -> dict:
         """Status snapshot for the CodeIndex panel header.
 
         Focuses on the *current commit*: whether HEAD is indexed
@@ -2308,11 +2308,15 @@ class BackendServer:
         round-trips — ``sync_progress_pct`` / ``sync_step`` come
         from ``_last_sync_result``, which the watcher (or a manual
         sync) populates on its own cadence.
+
+        Async because ``current_sha`` shells out to ``git`` — running
+        it inline on the event loop blocks every other session's RPC
+        for the duration of the subprocess (worst case 5 s timeout).
         """
         sync = self._session.code_index_sync
         index = self._session.code_index
         state = index.manifest.load()
-        local_sha = sync.current_sha() or ""
+        local_sha = (await asyncio.to_thread(sync.current_sha)) or ""
         head_indexed = bool(local_sha) and local_sha in state.commits
 
         last = sync._last_sync_result
@@ -2478,7 +2482,7 @@ class BackendServer:
         the underlying recovery path is identical: ``forget_commit`` +
         ``sync_now(force_snapshot=True)``.
         """
-        target_sha = sha or self._session.code_index_sync.current_sha()
+        target_sha = sha or (await asyncio.to_thread(self._session.code_index_sync.current_sha))
         forgot = False
         if target_sha:
             forgot = await self._session.code_index.forget_commit(target_sha)
@@ -2524,8 +2528,12 @@ class BackendServer:
         from collections import Counter
 
         project = self._session.project_dir
+        # ``git`` calls run in a thread so a slow git invocation (or its
+        # 5s timeout) doesn't block the event loop — under multi-session
+        # load this RPC used to stall every other session's dispatch.
         try:
-            files = subprocess.run(
+            files = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "ls-files"],
                 cwd=project,
                 capture_output=True,
@@ -2563,7 +2571,8 @@ class BackendServer:
         state = self._session.code_index.manifest.load()
         indexed_shas = set(state.commits.keys())
         try:
-            log = subprocess.run(
+            log = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "log", "-5", "--pretty=format:%H%x09%h%x09%s%x09%cr"],
                 cwd=project,
                 capture_output=True,

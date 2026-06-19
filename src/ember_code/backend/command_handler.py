@@ -1,5 +1,6 @@
 """Command handler — processes slash commands for the TUI."""
 
+import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -1026,7 +1027,7 @@ class CommandHandler:
             # snapshot. Used when the local index drifts from the cloud
             # definition — e.g. an earlier sync took the delta path with
             # an absent parent and stored only the diff's items.
-            target_sha = sub_args or sync.current_sha()
+            target_sha = sub_args or await asyncio.to_thread(sync.current_sha)
             if not target_sha:
                 return CommandResult.error("Not a git repository — pass an explicit sha.")
             forgot = await index.forget_commit(target_sha)
@@ -1078,10 +1079,14 @@ class CommandHandler:
             )
 
         if subcommand == "status":
-            local_sha = sync.current_sha()
+            # Both helpers shell out to ``git``; offload to a thread so
+            # the BE's dispatcher keeps serving other sessions' RPCs.
+            local_sha = await asyncio.to_thread(sync.current_sha)
             last = sync.last_synced_sha
             head = index.head()
-            remote_url = sync.resolver.remote_url() if sync.resolver else None
+            remote_url = (
+                await asyncio.to_thread(sync.resolver.remote_url) if sync.resolver else None
+            )
             resolved = sync.resolver.cached if sync.resolver else None
             lines = "## CodeIndex Status\n"
             lines += f"- local HEAD: `{local_sha or 'not a git repo'}`\n"
