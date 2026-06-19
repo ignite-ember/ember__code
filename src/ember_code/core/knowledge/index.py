@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import threading
 from collections.abc import Iterable
 from pathlib import Path
@@ -26,7 +27,28 @@ from ember_code.core.code_index.paths import (
     knowledge_chroma_path,
 )
 from ember_code.core.code_index.project import resolve_project_id
-from ember_code.core.embeddings import EmbeddingFunction
+from ember_code.core.embeddings import EMBEDDING_DIMENSIONS, EmbeddingFunction
+
+
+class _NewlinePreservingChunker(RecursiveChunking):
+    """RecursiveChunking that preserves paragraph structure.
+
+    Agno's base ``clean_text`` runs ``re.sub(r"\\s+", " ", ...)`` which
+    folds every newline into a single space — destroying markdown layout
+    (headings, lists, fenced code) at ingest time. The chunked content
+    is exactly what the detail page renders, so the loss is visible.
+
+    Override to collapse only intra-line whitespace, keeping ``\\n``
+    untouched. We also cap runs of blank lines at one (two newlines)
+    so paragraph spacing stays normalized.
+    """
+
+    def clean_text(self, text: str) -> str:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r"[ \t\f\v]+", " ", text)
+        return text
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +63,10 @@ class KnowledgeIndex:
         project: project directory (used to derive the on-disk path).
         data_dir: ember root, defaults to ``~/.ember``.
         chunker: how to split inline content for ``add(...)``. Default
-            ``RecursiveChunking(chunk_size=800, overlap=100)`` — sized
-            for our 384-dim ``all-MiniLM-L6-v2`` embedder.
+            ``_NewlinePreservingChunker(chunk_size=550, overlap=75)`` —
+            sized so chunks stay under the 256-token window of our
+            ``all-MiniLM-L6-v2`` embedder. Markdown/code is token-dense
+            (~0.36 tokens/char), so 550 chars ≈ 200 tokens with headroom.
     """
 
     def __init__(
@@ -55,7 +79,7 @@ class KnowledgeIndex:
         self.project = project
         self.project_id = resolve_project_id(project)
         self.data_dir = data_dir
-        self.chunker = chunker or RecursiveChunking(chunk_size=800, overlap=100)
+        self.chunker = chunker or _NewlinePreservingChunker(chunk_size=550, overlap=75)
         self._client: Any | None = None
         self._docs: Any | None = None
         self._chunks: Any | None = None
@@ -138,9 +162,12 @@ class KnowledgeIndex:
         document_text = full_content if full_content is not None else "\n\n".join(chunks)
         eid = entry_id or _content_hash(document_text)
 
-        # Upsert parent — embedding from the full content; metadata
-        # carries name/source/extra so list_entries / sync can return
-        # the dict shape callers expect.
+        # Upsert parent — metadata carries name/source/extra so
+        # list_entries / sync can return the dict shape callers expect.
+        # Pass a zero-vector embedding to skip the model: parents are
+        # NEVER queried for similarity (search hits the chunks
+        # collection and rolls up); embedding 13k-char docs to a
+        # truncated 256-token vector was wasted work + storage.
         doc_metadata = _flatten_metadata(
             entry_id=eid, name=name or eid, source=source, extras=metadata
         )
@@ -148,6 +175,7 @@ class KnowledgeIndex:
             self._docs.upsert,
             ids=[eid],
             documents=[document_text],
+            embeddings=[[0.0] * EMBEDDING_DIMENSIONS],
             metadatas=[doc_metadata],
         )
 
@@ -258,6 +286,17 @@ class KnowledgeIndex:
             except Exception:
                 logger.exception("delete failed for %s", eid)
         return deleted
+
+    async def delete_entry(self, entry_id: str) -> bool:
+        """Public single-entry delete — used by the panel's Remove
+        button. Wraps :meth:`_delete_doc` with a presence check so a
+        missing id returns ``False`` instead of throwing."""
+        await self._ensure_started()
+        result = await asyncio.to_thread(self._docs.get, ids=[entry_id], include=[])
+        if not result.get("ids"):
+            return False
+        await self._delete_doc(entry_id)
+        return True
 
     async def has_entry(self, entry_id: str) -> bool:
         await self._ensure_started()

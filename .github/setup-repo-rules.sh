@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Configure GitHub repository rulesets for ignite-ember/ember-code.
+# Configure GitHub repository rulesets for ignite-ember/ember__code.
 # Requires: gh CLI authenticated with admin access.
 #
 # Protections applied:
@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-REPO="ignite-ember/ember-code"
+REPO="ignite-ember/ember__code"
 OWNER="dmytrozezyk"
 
 echo "==> Configuring rulesets for $REPO"

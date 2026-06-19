@@ -63,6 +63,16 @@ class RpcMethod(StrEnum):
     GET_MCP_STATUS = "get_mcp_status"
     GET_MCP_SERVERS = "get_mcp_servers"
     GET_MCP_SERVER_DETAILS = "get_mcp_server_details"
+    SET_MCP_TOOL_ENABLED = "set_mcp_tool_enabled"
+
+    # ── CodeIndex extras ──────────────────────────────────────────
+    CODEINDEX_HEAD_BREAKDOWN = "codeindex_head_breakdown"
+    CODEINDEX_ACTIVITY = "codeindex_activity"
+
+    # ── Per-client UI state (browser / IDE plugin) ────────────────
+    GET_CLIENT_STATE = "get_client_state"
+    SET_CLIENT_STATE = "set_client_state"
+    DELETE_CLIENT_STATE = "delete_client_state"
 
     # ── Session / status ──────────────────────────────────────────
     GET_SESSION_ID = "get_session_id"
@@ -74,6 +84,7 @@ class RpcMethod(StrEnum):
     LIST_SESSIONS = "list_sessions"
     SWITCH_SESSION = "switch_session"
     CANCEL_RUN = "cancel_run"
+    CANCEL_AGENT_RUN = "cancel_agent_run"
     SHUTDOWN = "shutdown"
 
     # ── Compaction / learning ────────────────────────────────────
@@ -93,6 +104,9 @@ class RpcMethod(StrEnum):
 
     # ── Knowledge ─────────────────────────────────────────────────
     AUTO_SYNC_KNOWLEDGE = "auto_sync_knowledge"
+
+    # ── Attachments (drag/drop, paste, OS picker) ────────────────
+    UPLOAD_ATTACHMENT = "upload_attachment"
 
     # ── Hooks ─────────────────────────────────────────────────────
     FIRE_SESSION_START_HOOK = "fire_session_start_hook"
@@ -121,6 +135,30 @@ class RpcMethod(StrEnum):
     # ── Misc ──────────────────────────────────────────────────────
     CHECK_FOR_UPDATE = "check_for_update"
 
+    # ── GUI-client parity (TUI does these FE-side) ────────────────
+    # @-mention file completions — webviews can't touch the FS, so
+    # the FileIndex runs in the BE for them.
+    COMPLETE_FILES = "complete_files"
+    # $-prefix shell mode — the TUI spawns the shell in its own
+    # process; GUI shells route it through the BE (same machine,
+    # same user, the SESSION's project dir as cwd).
+    RUN_SHELL = "run_shell"
+    # Bind/create a session, optionally in a specific project
+    # directory. Handled at the session-pool level (backend/__main__
+    # dispatch), NOT by per-runtime tables — the per-runtime entry is
+    # a guard stub.
+    ATTACH_SESSION = "attach_session"
+    # Directory listing for the GUI folder browser (picking a
+    # project dir for a new session). Webviews can't touch the FS.
+    LIST_DIRS = "list_dirs"
+    # Open the OS-native folder dialog ON THE BE's machine (same
+    # machine — loopback transport) and return the chosen path.
+    # Lets even plain browser tabs use the real OS picker; the
+    # in-app browser is the last-resort fallback (headless Linux).
+    PICK_DIR_NATIVE = "pick_dir_native"
+    # The directory the session is locked to (tools + shell cwd).
+    GET_PROJECT_DIR = "get_project_dir"
+
     # ── Agents ────────────────────────────────────────────────────
     GET_AGENT_DETAILS = "get_agent_details"
     PROMOTE_EPHEMERAL_AGENT = "promote_ephemeral_agent"
@@ -133,6 +171,14 @@ class RpcMethod(StrEnum):
     GET_KNOWLEDGE_STATUS = "get_knowledge_status"
     KNOWLEDGE_SEARCH = "knowledge_search"
     KNOWLEDGE_ADD = "knowledge_add"
+    KNOWLEDGE_LIST = "knowledge_list"
+    KNOWLEDGE_GET = "knowledge_get"
+    KNOWLEDGE_REMOVE = "knowledge_remove"
+
+    # ── File access (sandboxed to project/.ember) ────────────────
+    READ_FILE = "read_file"
+    TRUNCATE_HISTORY = "truncate_history"
+    SEARCH_CODE = "search_code"
 
     # ── Conversation ──────────────────────────────────────────────
     COUNT_CONTEXT_TOKENS = "count_context_tokens"
@@ -146,6 +192,8 @@ class RpcMethod(StrEnum):
 
     # ── Plugins ───────────────────────────────────────────────────
     GET_PLUGIN_DETAILS = "get_plugin_details"
+    GET_PLUGIN_CONTENTS = "get_plugin_contents"
+    PREVIEW_PLUGIN = "preview_plugin"
     SET_PLUGIN_ENABLED = "set_plugin_enabled"
     INSTALL_PLUGIN = "install_plugin"
     UPDATE_PLUGIN = "update_plugin"

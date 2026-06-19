@@ -84,6 +84,12 @@ class Message(BaseModel):
 
     type: str
     id: str = ""  # optional correlation ID
+    # Session routing (multi-session BE). FE→BE: which session this
+    # message targets — empty routes to the default session, so views
+    # that predate the pool (the TUI) keep working unchanged. BE→FE:
+    # which session emitted the event — views filter to their bound
+    # session; empty means session-agnostic (Welcome, global pushes).
+    session_id: str = ""
 
 
 # ── BE → FE messages ─────────────────────────────────────────────────
@@ -163,6 +169,14 @@ class RunCompleted(Message):
     parent_run_id: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = 0
+    """Subset of ``output_tokens`` consumed by the model's reasoning
+    chain (e.g. MiniMax-M2.7 'thinking'). The visible reply tokens are
+    ``output_tokens - reasoning_tokens``. Surfaced as a separate field
+    so the FE can split the stats line into ``N think · M out`` rather
+    than conflating both as a single ``out`` number."""
+    duration: float = 0.0
+    """Run wall-clock seconds, from Agno's run metrics."""
 
 
 class StreamingDone(Message):
@@ -330,11 +344,19 @@ class RunPaused(Message):
 
 
 class UserMessage(Message):
-    """User sends a chat message."""
+    """User sends a chat message.
+
+    ``client_id`` (mirroring) identifies the sending view so the BE's
+    ``UserMessageReceived`` broadcast lets every OTHER view paint the
+    bubble while the sender skips its own echo. Empty for views that
+    predate mirroring — the echo then renders everywhere except
+    nowhere, which is harmless for a single view.
+    """
 
     type: Literal["user_message"] = "user_message"
     text: str = ""
     file_contents: dict[str, str] = Field(default_factory=dict)  # path → content
+    client_id: str = ""
 
 
 class QueueMessage(Message):
@@ -342,6 +364,7 @@ class QueueMessage(Message):
 
     type: Literal["queue_message"] = "queue_message"
     text: str = ""
+    client_id: str = ""
 
 
 class HITLResponse(Message):
@@ -460,3 +483,53 @@ class PushNotification(Message):
     type: Literal["push_notification"] = "push_notification"
     channel: str = ""  # "scheduler_event", "orchestrate_progress", "login_status"
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Multi-client session mirroring ──────────────────────────────────
+# One BE session, N attached views (web tabs, IDE webviews, the TUI).
+# Every state change is an event so all views render identically.
+
+
+class Welcome(Message):
+    """First message the BE sends a newly attached client.
+
+    ``client_id`` lets a view recognise its own broadcasts (e.g. skip
+    rendering an echo of a message it already painted locally).
+    """
+
+    type: Literal["welcome"] = "welcome"
+    client_id: str = ""
+
+
+class Typing(Message):
+    """Live draft of a client's composer, broadcast to every view.
+
+    Carries the FULL draft text (not per-character deltas) so views
+    can't drift on a dropped frame; senders throttle. Empty ``text``
+    clears the remote draft (sent on submit/clear).
+    """
+
+    type: Literal["typing"] = "typing"
+    text: str = ""
+    client_id: str = ""
+
+
+class UserMessageReceived(Message):
+    """Broadcast echo of an accepted user/queue message.
+
+    The sending view already painted the bubble locally; other views
+    paint it from this event (and the sender skips it by client_id).
+    """
+
+    type: Literal["user_message_received"] = "user_message_received"
+    text: str = ""
+    client_id: str = ""
+    queued: bool = False
+
+
+class RequirementResolved(Message):
+    """Broadcast when a HITL requirement is decided by any view, so
+    the other views dismiss their (now stale) permission dialogs."""
+
+    type: Literal["requirement_resolved"] = "requirement_resolved"
+    requirement_id: str = ""

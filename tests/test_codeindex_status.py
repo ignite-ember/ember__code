@@ -66,18 +66,18 @@ def _stub_index(*, head: str = "abc1234") -> MagicMock:
 
 
 class TestCodeIndexStatusApplyProgress:
-    def test_reports_sync_in_progress_while_applying(self):
+    async def test_reports_sync_in_progress_while_applying(self):
         """Even with no server-side IN_PROGRESS preflight, a local
         apply running counts as "syncing" — the panel needs to know
         the operation isn't idle so it shows the yellow spinner."""
         sync = _stub_sync(applying=True, apply_done=10, apply_total=28)
         backend = _make_backend(sync=sync, code_index=_stub_index())
 
-        status = backend.codeindex_status()
+        status = await backend.codeindex_status()
 
         assert status["sync_in_progress"] is True
 
-    def test_progress_pct_derived_from_apply_counters(self):
+    async def test_progress_pct_derived_from_apply_counters(self):
         """``sync_progress_pct`` is computed live from
         ``apply_done / apply_total * 100``. The TUI's busy label
         renders this as the headline percent."""
@@ -89,12 +89,12 @@ class TestCodeIndexStatusApplyProgress:
         )
         backend = _make_backend(sync=sync, code_index=_stub_index())
 
-        status = backend.codeindex_status()
+        status = await backend.codeindex_status()
 
         assert status["sync_progress_pct"] == 50
         assert status["sync_step"] == "math_utils.py::evaluate"
 
-    def test_apply_counters_passed_through_raw(self):
+    async def test_apply_counters_passed_through_raw(self):
         """The TUI also reads the raw N/M so it can render
         ``Resyncing 50% — 14/28 items · current_item`` without
         having to back-compute denominators from a percent."""
@@ -106,13 +106,13 @@ class TestCodeIndexStatusApplyProgress:
         )
         backend = _make_backend(sync=sync, code_index=_stub_index())
 
-        status = backend.codeindex_status()
+        status = await backend.codeindex_status()
 
         assert status["apply_done"] == 14
         assert status["apply_total"] == 28
         assert status["apply_step"] == "security_helpers.py"
 
-    def test_apply_fields_zeroed_when_not_applying(self):
+    async def test_apply_fields_zeroed_when_not_applying(self):
         """After ``_applying`` flips back to False, the apply fields
         zero out even if the counters still hold the final values.
         Without this zeroing a TUI poll arriving right after a sync
@@ -121,14 +121,14 @@ class TestCodeIndexStatusApplyProgress:
         sync = _stub_sync(applying=False, apply_done=28, apply_total=28, apply_step="leftover")
         backend = _make_backend(sync=sync, code_index=_stub_index())
 
-        status = backend.codeindex_status()
+        status = await backend.codeindex_status()
 
         assert status["sync_in_progress"] is False
         assert status["apply_done"] == 0
         assert status["apply_total"] == 0
         assert status["apply_step"] == ""
 
-    def test_apply_progress_takes_precedence_over_stale_preflight(self):
+    async def test_apply_progress_takes_precedence_over_stale_preflight(self):
         """When both a stale preflight in-progress result and a fresh
         local apply are present, the local apply wins — it's the
         most accurate current state."""
@@ -152,31 +152,31 @@ class TestCodeIndexStatusApplyProgress:
         )
         backend = _make_backend(sync=sync, code_index=_stub_index())
 
-        status = backend.codeindex_status()
+        status = await backend.codeindex_status()
 
         # Local apply's 7/28 = 25%, not the preflight's stale 88%.
         assert status["sync_progress_pct"] == 25
         assert status["sync_step"] == "hello.py"
 
-    def test_progress_pct_uses_step_default_when_label_missing(self):
+    async def test_progress_pct_uses_step_default_when_label_missing(self):
         """If ``apply_step`` is empty (callback fired before the first
         item, or simply not provided), ``sync_step`` falls back to
         ``"indexing"`` so the panel still renders something useful."""
         sync = _stub_sync(applying=True, apply_done=0, apply_total=28, apply_step="")
         backend = _make_backend(sync=sync, code_index=_stub_index())
 
-        status = backend.codeindex_status()
+        status = await backend.codeindex_status()
 
         assert status["sync_step"] == "indexing"
 
-    def test_zero_total_does_not_compute_pct(self):
+    async def test_zero_total_does_not_compute_pct(self):
         """Guard against division-by-zero: while ``_applying`` is True
         but the pre-count hasn't run yet (apply_total still 0), we
         must not produce a percent — pct stays at None / falsy."""
         sync = _stub_sync(applying=True, apply_done=0, apply_total=0, apply_step="")
         backend = _make_backend(sync=sync, code_index=_stub_index())
 
-        status = backend.codeindex_status()
+        status = await backend.codeindex_status()
 
         # sync_progress_pct stays falsy (None) — the panel hides the
         # percent slot when this is missing.

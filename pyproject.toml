@@ -4,11 +4,31 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ignite-ember"
-version = "0.5.17"
-description = "Terminal-based AI coding assistant built on Agno"
+version = "0.6.0"
+description = "AI coding assistant with multi-agent orchestration — TUI, web, JetBrains, VSCode, and Tauri clients"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+authors = [{ name = "Ignite Ember" }]
+keywords = ["ai", "coding-assistant", "agent", "agno", "claude", "openai", "tui", "jetbrains"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Plugins",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Terminals",
+]
+
 # Tight ``~=X.Y.Z`` pins (PEP 440 "compatible release", which expands
 # to ``>= X.Y.Z, < X.(Y+1).0``). Any minor-version bump from an
 # upstream package goes through an explicit ember-code release, not
@@ -43,7 +63,14 @@ dependencies = [
     "dateparser~=1.4.0",
     "chromadb~=1.5.9",
     "sentence-transformers~=5.5.1",
+    "websockets~=16.0",
 ]
+
+[project.urls]
+Homepage = "https://ignite-ember.sh"
+Repository = "https://github.com/ignite-ember/ember__code"
+Issues = "https://github.com/ignite-ember/ember__code/issues"
+Changelog = "https://github.com/ignite-ember/ember__code/releases"
 
 [project.optional-dependencies]
 dev = [

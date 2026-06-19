@@ -140,7 +140,7 @@ class TaskPanel(Widget):
         # List
         if not visible:
             msg = (
-                "[dim]No scheduled tasks. Use /schedule add <task> at <time> to create one.[/dim]"
+                "[dim]No scheduled tasks. Use /schedule <task> at <time> to create one.[/dim]"
                 if not self._tasks
                 else "[dim]No active tasks. Press Tab to show all.[/dim]"
             )

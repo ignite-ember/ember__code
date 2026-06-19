@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ember_code.frontend.tui.widgets import InputHistory
 
 if TYPE_CHECKING:
-    from ember_code.frontend.tui.file_index import FileIndex
+    from ember_code.core.utils.file_index import FileIndex
 
 # Matches @path tokens: @ at start of line or after whitespace, followed by
 # non-whitespace path characters.  Does NOT match email-style user@domain

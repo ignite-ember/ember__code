@@ -88,6 +88,13 @@ def serialize_event(event: Any) -> msg.Message | None:
     if isinstance(event, REASONING_CONTENT_EVENTS):
         rc = getattr(event, "reasoning_content", "") or ""
         if rc:
+            # Defensive strip: some providers (notably MiniMax) emit the
+            # reasoning_content wrapped in literal "<think>...</think>"
+            # tags even though Agno surfaces it as a dedicated reasoning
+            # event. The FE renders this in a thinking bubble that
+            # already styles "this is reasoning" — keeping the tags
+            # leaves them visible as raw text in the bubble.
+            rc = rc.replace("<think>", "").replace("</think>", "")
             return msg.ContentDelta(text=rc, is_thinking=True)
         return None
 
@@ -170,6 +177,10 @@ def serialize_event(event: Any) -> msg.Message | None:
             parent_run_id=str(getattr(event, "parent_run_id", "") or ""),
             input_tokens=getattr(evt_metrics, "input_tokens", 0) or 0 if evt_metrics else 0,
             output_tokens=getattr(evt_metrics, "output_tokens", 0) or 0 if evt_metrics else 0,
+            reasoning_tokens=(getattr(evt_metrics, "reasoning_tokens", 0) or 0)
+            if evt_metrics
+            else 0,
+            duration=float(getattr(evt_metrics, "duration", 0) or 0) if evt_metrics else 0.0,
         )
 
     # ── Streaming done ──

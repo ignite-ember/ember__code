@@ -24,8 +24,8 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from ember_code import __version__
+from ember_code.core.utils.file_index import FileIndex
 from ember_code.frontend.tui.conversation_view import ConversationView
-from ember_code.frontend.tui.file_index import FileIndex
 from ember_code.frontend.tui.hitl_handler import HITLHandler
 from ember_code.frontend.tui.input_handler import InputHandler, extract_at_mention, shortcut_label
 from ember_code.frontend.tui.run_controller import RunController
@@ -64,6 +64,7 @@ from ember_code.frontend.tui.widgets import (
     TipBar,
     UpdateBar,
 )
+from ember_code.protocol import messages as pmsg
 from ember_code.protocol.messages import CommandAction, CommandResult, CommandResultKind
 from ember_code.protocol.rpc import RpcMethod
 
@@ -474,6 +475,11 @@ class EmberApp(App):
         )
         self._backend = await self._process_mgr.start()
 
+        # Mirroring: render events from other views attached to the
+        # same BE (web tabs over --ws-port). Remote drafts go to the
+        # tip bar; remote user messages appear as dim info lines.
+        self._backend.set_mirror_handler(self._on_mirror_event)
+
         # Replace loading indicator with welcome content
         await container.remove_children()
         self._conversation = ConversationView(container, display_config=self.settings.display)
@@ -671,6 +677,15 @@ class EmberApp(App):
     def _on_input_changed(self, event: PromptInput.Changed) -> None:
         text_area = event.text_area
         text = text_area.text
+
+        # ── Mirroring: broadcast the live draft to other views ───
+        # (web tabs attached to the same BE). Throttled inside the
+        # client; fire-and-forget. getattr: keystrokes can arrive
+        # before the backend finishes starting.
+        backend = getattr(self, "_backend", None)
+        if backend is not None:
+            with contextlib.suppress(Exception):
+                backend.notify_typing(text)
 
         # ── Mode toggles (/, !, $) ─────────────────────────────
         if not self._shell_mode and not self._command_mode and text in ("/", "!", "$"):
@@ -1283,7 +1298,7 @@ class EmberApp(App):
         details = (
             await self._backend._rpc(RpcMethod.GET_MCP_SERVER_DETAILS)
             if hasattr(self._backend, "_rpc")
-            else self._backend.get_mcp_server_details()
+            else await self._backend.get_mcp_server_details()
         )
         for info in details or []:
             servers.append(
@@ -2250,7 +2265,7 @@ class EmberApp(App):
         "/agents — list loaded agents and their tools",
         "/skills — list available skills",
         "/config — show current settings",
-        "/schedule add <task> at <time> — schedule deferred tasks",
+        "/schedule <task> at <time> — schedule deferred tasks",
         "/mcp — manage MCP server connections",
         "Ctrl+T — toggle the task panel",
     ]
@@ -2273,6 +2288,32 @@ class EmberApp(App):
             tip_bar.set_tip(random.choice(self._TIPS))
         except Exception:
             pass
+
+    def _on_mirror_event(self, message: pmsg.Message) -> None:
+        """Render mirroring events from other views on the same BE.
+
+        Called from the BackendClient reader task — UI mutations are
+        scheduled via ``call_later`` onto Textual's message pump.
+        """
+        if isinstance(message, pmsg.Typing) and message.client_id != "tui":
+            import random
+
+            def _update_tip(text: str = message.text) -> None:
+                with contextlib.suppress(Exception):
+                    tip = self.query_one("#tip-bar", TipBar)
+                    if text:
+                        tip.set_tip(f"✎ another window: {text}")
+                    else:
+                        tip.set_tip(random.choice(self._TIPS))
+
+            self.call_later(_update_tip)
+        elif isinstance(message, pmsg.UserMessageReceived) and message.client_id != "tui":
+            # A message submitted from another view — show it so the
+            # TUI's conversation matches what the agent sees.
+            conv = self._conversation
+            if conv is not None and message.text:
+                label = "queued from another window" if message.queued else "another window"
+                self.call_later(conv.append_info, f"[{label}] {message.text}")
 
     def on_resize(self) -> None:
         """Clear the compositor + force a full repaint on every resize.

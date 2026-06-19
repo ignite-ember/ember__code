@@ -1,0 +1,378 @@
+{
+  "messages": {
+    "Message": [
+      "id",
+      "session_id",
+      "type"
+    ],
+    "cancel": [
+      "id",
+      "session_id",
+      "type"
+    ],
+    "cancel_login": [
+      "id",
+      "session_id",
+      "type"
+    ],
+    "command": [
+      "id",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "command_result": [
+      "action",
+      "content",
+      "display_content",
+      "id",
+      "kind",
+      "session_id",
+      "type"
+    ],
+    "content_delta": [
+      "id",
+      "is_thinking",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "error": [
+      "id",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "hitl_decision": [
+      "action",
+      "choice",
+      "id",
+      "requirement_id",
+      "session_id",
+      "type"
+    ],
+    "hitl_request": [
+      "agent_path",
+      "details",
+      "friendly_name",
+      "id",
+      "requirement_id",
+      "session_id",
+      "tool_args",
+      "tool_name",
+      "type"
+    ],
+    "hitl_response": [
+      "action",
+      "choice",
+      "id",
+      "requirement_id",
+      "session_id",
+      "type"
+    ],
+    "hitl_response_batch": [
+      "decisions",
+      "id",
+      "session_id",
+      "type"
+    ],
+    "info": [
+      "id",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "mcp_toggle": [
+      "connect",
+      "id",
+      "server_name",
+      "session_id",
+      "type"
+    ],
+    "model_completed": [
+      "id",
+      "input_tokens",
+      "output_tokens",
+      "parent_run_id",
+      "run_id",
+      "session_id",
+      "type"
+    ],
+    "model_switch": [
+      "id",
+      "model_name",
+      "session_id",
+      "type"
+    ],
+    "push_notification": [
+      "channel",
+      "id",
+      "payload",
+      "session_id",
+      "type"
+    ],
+    "queue_message": [
+      "client_id",
+      "id",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "reasoning_started": [
+      "id",
+      "run_id",
+      "session_id",
+      "type"
+    ],
+    "requirement_resolved": [
+      "id",
+      "requirement_id",
+      "session_id",
+      "type"
+    ],
+    "rpc_request": [
+      "args",
+      "id",
+      "method",
+      "session_id",
+      "type"
+    ],
+    "rpc_response": [
+      "error",
+      "id",
+      "result",
+      "session_id",
+      "type"
+    ],
+    "run_completed": [
+      "duration",
+      "id",
+      "input_tokens",
+      "output_tokens",
+      "parent_run_id",
+      "reasoning_tokens",
+      "run_id",
+      "session_id",
+      "type"
+    ],
+    "run_error": [
+      "error",
+      "id",
+      "session_id",
+      "type"
+    ],
+    "run_paused": [
+      "id",
+      "requirements",
+      "run_id",
+      "session_id",
+      "type"
+    ],
+    "run_started": [
+      "agent_name",
+      "id",
+      "model",
+      "parent_run_id",
+      "run_id",
+      "session_id",
+      "type"
+    ],
+    "scheduler_event": [
+      "description",
+      "event_type",
+      "id",
+      "result",
+      "session_id",
+      "task_id",
+      "type"
+    ],
+    "session_cleared": [
+      "id",
+      "new_session_id",
+      "session_id",
+      "summary",
+      "type"
+    ],
+    "session_list": [
+      "id",
+      "session_id",
+      "type"
+    ],
+    "session_list_result": [
+      "id",
+      "session_id",
+      "sessions",
+      "type"
+    ],
+    "session_switch": [
+      "id",
+      "session_id",
+      "type"
+    ],
+    "shutdown": [
+      "id",
+      "session_id",
+      "type"
+    ],
+    "status_update": [
+      "cloud_connected",
+      "cloud_org",
+      "context_tokens",
+      "id",
+      "input_tokens",
+      "max_context",
+      "model",
+      "output_tokens",
+      "session_id",
+      "type"
+    ],
+    "stream_end": [
+      "id",
+      "session_id",
+      "type"
+    ],
+    "streaming_done": [
+      "id",
+      "run_id",
+      "session_id",
+      "type"
+    ],
+    "task_created": [
+      "assignee",
+      "id",
+      "session_id",
+      "status",
+      "task_id",
+      "title",
+      "type"
+    ],
+    "task_iteration": [
+      "id",
+      "iteration",
+      "max_iterations",
+      "session_id",
+      "type"
+    ],
+    "task_state_updated": [
+      "id",
+      "session_id",
+      "tasks",
+      "type"
+    ],
+    "task_updated": [
+      "assignee",
+      "id",
+      "session_id",
+      "status",
+      "task_id",
+      "type"
+    ],
+    "tool_completed": [
+      "diff_rows",
+      "full_result",
+      "has_markup",
+      "id",
+      "is_error",
+      "run_id",
+      "session_id",
+      "summary",
+      "type"
+    ],
+    "tool_error": [
+      "error",
+      "id",
+      "run_id",
+      "session_id",
+      "type"
+    ],
+    "tool_started": [
+      "args_summary",
+      "friendly_name",
+      "id",
+      "run_id",
+      "session_id",
+      "tool_name",
+      "type"
+    ],
+    "typing": [
+      "client_id",
+      "id",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "user_message": [
+      "client_id",
+      "file_contents",
+      "id",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "user_message_received": [
+      "client_id",
+      "id",
+      "queued",
+      "session_id",
+      "text",
+      "type"
+    ],
+    "welcome": [
+      "client_id",
+      "id",
+      "session_id",
+      "type"
+    ]
+  },
+  "rpc": {
+    "agent_info": [
+      "can_orchestrate",
+      "color",
+      "description",
+      "is_ephemeral",
+      "mcp_servers",
+      "model",
+      "name",
+      "source_path",
+      "system_prompt",
+      "tags",
+      "tools"
+    ],
+    "loop_status": [
+      "active",
+      "announced_total",
+      "cap_explicit",
+      "iteration_index",
+      "iterations_remaining",
+      "paused",
+      "prompt"
+    ],
+    "mcp_server": [
+      "connected",
+      "error",
+      "name",
+      "policy_blocked",
+      "prompts",
+      "resources",
+      "tool_descriptions",
+      "tool_names",
+      "transport"
+    ],
+    "pending_message": [
+      "content",
+      "message_id",
+      "received_at",
+      "role"
+    ],
+    "scheduled_task": [
+      "created_at",
+      "description",
+      "error",
+      "id",
+      "recurrence",
+      "result",
+      "scheduled_at",
+      "status"
+    ]
+  }
+}

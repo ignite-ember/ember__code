@@ -1,0 +1,107 @@
+<idea-plugin>
+    <id>sh.igniteember.ember-code</id>
+    <name>Ember Code</name>
+    <vendor url="https://ignite-ember.sh">Ignite Ember</vendor>
+    <description><![CDATA[
+        Ember Code AI coding assistant — chat tool window backed by a
+        managed local Ember backend. <br>
+        <br>
+        Nothing to install: the plugin downloads <code>uv</code> on
+        first launch and uses it to provision Python and
+        <code>ignite-ember</code> into a per-user cache. Network
+        access is required on first run only.
+    ]]></description>
+
+    <change-notes><![CDATA[
+        <h3>0.6.0</h3>
+        <ul>
+          <li>Multi-agent orchestration — the chat panel now drives a
+              session pool, so you can run multiple parallel
+              conversations (one per project, or N per project) in
+              the same IDE window. Each tool window gets its own
+              session, with live typing + message mirroring across
+              IDE / web / Tauri views bound to the same session.</li>
+          <li>Project-lock UX — header chip shows which project the
+              session is bound to; backend-managed directory picker
+              for switching between repos without losing context.</li>
+          <li>BE reliability pass — WAL-mode SQLite for the per-
+              session stores, idle eviction so a long-lived BE
+              releases memory once a session goes dormant, and a
+              slow-client back-pressure fix so a single wedged view
+              never stalls the other sessions' streams.</li>
+          <li>First-launch onboarding polish — clearer progress
+              during the uv/Python bootstrap, IDE proxy is now
+              propagated to the backend, disk-space precheck.</li>
+        </ul>
+        <h3>0.1.0</h3>
+        <ul>
+          <li>Zero-touch install — plugin bootstraps <code>uv</code> +
+              Python + <code>ignite-ember</code> on first launch
+              instead of requiring a manual <code>pip install</code>.</li>
+          <li>Editor integration — right-click selection /
+              project view → "Add to Ember chat"; ⌘E to focus the
+              chat panel.</li>
+          <li>Edits via the IDE — backend writes now route through
+              <code>WriteCommandAction</code> so Local History records
+              the change and editor undo works.</li>
+          <li>Indexed code search — paste handler uses PyCharm's
+              trigram index for near-instant lookups instead of the
+              <code>rg</code> subprocess.</li>
+          <li>IDE theme follows the chat panel (and vice-versa).</li>
+        </ul>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Ember Code"
+            anchor="right"
+            icon="/icons/emberToolWindow.svg"
+            factoryClass="sh.igniteember.embercode.EmberToolWindowFactory"/>
+        <notificationGroup
+            id="EmberCode"
+            displayType="BALLOON"
+            isLogByDefault="true"/>
+    </extensions>
+
+    <actions>
+        <!-- Editor → chat: send the current selection to the
+             composer. Visible in the editor context menu and bound
+             to a default shortcut. -->
+        <action id="EmberCode.AddSelectionToChat"
+                class="sh.igniteember.embercode.actions.AddSelectionToChatAction"
+                text="Add Selection to Ember Chat"
+                description="Send the current editor selection to the Ember chat composer">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="meta E"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="control E"/>
+        </action>
+
+        <!-- Project view → chat: add a file (or selected files) as
+             an attachment. -->
+        <action id="EmberCode.AddFileToChat"
+                class="sh.igniteember.embercode.actions.AddFileToChatAction"
+                text="Add to Ember Chat"
+                description="Attach this file (or selected files) to the Ember chat composer">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="first"/>
+        </action>
+
+        <!-- Top-level menu entries under Tools → Ember Code. -->
+        <group id="EmberCode.ToolsMenu" text="Ember Code" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="EmberCode.OpenChat"
+                    class="sh.igniteember.embercode.actions.OpenChatAction"
+                    text="Open Chat"
+                    description="Show the Ember Code tool window"/>
+            <action id="EmberCode.RestartBackend"
+                    class="sh.igniteember.embercode.actions.RestartBackendAction"
+                    text="Restart Backend"
+                    description="Stop the Ember Python backend and start a fresh one"/>
+            <action id="EmberCode.ReinstallBackend"
+                    class="sh.igniteember.embercode.actions.ReinstallBackendAction"
+                    text="Reinstall Backend (Clean)"
+                    description="Wipe the managed Python cache and bootstrap from scratch"/>
+        </group>
+    </actions>
+</idea-plugin>

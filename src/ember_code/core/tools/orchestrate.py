@@ -6,6 +6,7 @@ import copy
 import logging
 import threading
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from agno.tools import Toolkit
@@ -40,6 +41,38 @@ def _preview(result: Any, limit: int = 60) -> str:
     return s[:limit] + "..." if len(s) > limit else s
 
 
+# How many non-empty lines of streamed agent content to keep in the
+# rolling "thinking" preview shown under each agent header. Matches the
+# FE constant ``PREVIEW_WINDOW`` in clients/web/src/chat/model.ts — the
+# BE is the source of truth for the window, the FE just renders it.
+PREVIEW_WINDOW = 5
+PREVIEW_LINE_MAX = 120
+
+
+def _build_preview(buf: str) -> str:
+    """Turn an agent's accumulated streaming text into the multi-line
+    preview payload — the last PREVIEW_WINDOW non-empty lines, each
+    truncated to PREVIEW_LINE_MAX chars, joined by ``\\n``.
+
+    Returning a multi-line ``text`` is the protocol: the FE splits on
+    ``\\n`` and *replaces* its preview window. That keeps the BE as the
+    source of truth — Agno deltas are token-sized, so the FE used to
+    fill its window with token-per-line garbage when it appended each
+    delta as its own preview entry.
+    """
+    if not buf:
+        return ""
+    cleaned = buf.replace("<think>", "").replace("</think>", "")
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    tail = lines[-PREVIEW_WINDOW:]
+    truncated = [
+        (ln[: PREVIEW_LINE_MAX - 1] + "…") if len(ln) > PREVIEW_LINE_MAX else ln for ln in tail
+    ]
+    return "\n".join(truncated)
+
+
 _stream_log = __import__("logging").getLogger("ember_code.llm_calls")
 
 
@@ -49,6 +82,7 @@ async def _run_agent_streaming(
     on_progress: Any = None,
     hitl_coordinator: Any = None,
     agent_path: list[str] | None = None,
+    card_id: str = "",
 ) -> tuple[str, list[str]]:
     """Stream an agent run, collecting activity log. Returns (response, log).
 
@@ -70,6 +104,12 @@ async def _run_agent_streaming(
     current_tool: str | None = None
     last_update: float = 0.0
     last_preview: str = ""
+    # Accumulates streamed text deltas so we can extract proper *lines*
+    # for the FE preview window. Agno's RunContentEvent.content is a
+    # delta — often a single token — so taking ``splitlines()[-1]`` of
+    # the delta alone yields token-per-line junk; we have to buffer
+    # the stream and slice the tail.
+    content_buf: str = ""
     current_run_id: str | None = None
     # Captured from RunStartedEvent. ``acontinue_run`` requires this —
     # without it Agno errors with "No runs found for run ID …" because
@@ -81,12 +121,29 @@ async def _run_agent_streaming(
     # stream ends — and the architect's last RunCompletedEvent already
     # carries the full content we need. Belt and suspenders.
     completed_content: str = ""
+    # Dot-path used as the agent's stable identifier on the FE tree.
+    agent_path_id: str = ".".join(path) if path else "root"
 
     def _log(line: str) -> None:
+        """Activity-log line — included in the parent's tool return so
+        the model can recap what the sub-agent did. NOT sent to the FE."""
         log.append(line)
+
+    def _emit(event: dict) -> None:
+        """Structured event delivered to the FE so it can render a real
+        tree UI instead of ASCII art. ``on_progress`` is the FE callback
+        wired by server.py — it receives the dict verbatim and forwards
+        it as a ``PushNotification(channel="orchestrate_event")``.
+
+        Stamps the caller's ``card_id`` onto every event so the FE can
+        route this run's events to the same team-progress card across
+        info-item interleaves, page refreshes, and concurrent spawns.
+        """
         if on_progress:
+            if card_id:
+                event["card_id"] = card_id
             with contextlib.suppress(Exception):
-                on_progress(line)
+                on_progress(event)
 
     async def _handle(event: Any) -> Any:
         """Drive progress reporting and HITL bridging.
@@ -100,7 +157,7 @@ async def _run_agent_streaming(
         Returns a follow-up async iterator when we resumed the run after
         a pause; otherwise None.
         """
-        nonlocal current_tool, last_update, last_preview
+        nonlocal current_tool, last_update, last_preview, content_buf
         nonlocal current_run_id, current_session_id, completed_content
 
         # Capture ``run_id`` / ``session_id`` from *any* event that
@@ -128,6 +185,13 @@ async def _run_agent_streaming(
             reqs = getattr(event, "active_requirements", None) or []
             if hitl_coordinator is None or not reqs:
                 _log("  │  ⚠ paused: no HITL bridge available")
+                _emit(
+                    {
+                        "type": "run_error",
+                        "agent_path": agent_path_id,
+                        "error": "paused: no HITL bridge available",
+                    }
+                )
                 return None
             run_id = getattr(event, "run_id", "") or current_run_id or ""
             session_id = getattr(event, "session_id", None) or current_session_id
@@ -145,6 +209,13 @@ async def _run_agent_streaming(
                 f"  │  ⏸ awaiting approval ({len(req_ids)} tools)"
                 if len(req_ids) > 1
                 else "  │  ⏸ awaiting approval"
+            )
+            _emit(
+                {
+                    "type": "agent_paused",
+                    "agent_path": agent_path_id,
+                    "count": len(req_ids),
+                }
             )
             try:
                 for req_id in req_ids:
@@ -167,21 +238,66 @@ async def _run_agent_streaming(
             te = event.tool
             tn = (te.tool_name or "tool") if te else "tool"
             ta = te.tool_args if te else {}
+            args_preview = _format_args(ta)
+            tc_id = getattr(te, "tool_call_id", None) if te else None
             current_tool = tn
-            _log(f"  │  ├─ {tn}({_format_args(ta)})")
+            _log(f"  │  ├─ {tn}({args_preview})")
+            _emit(
+                {
+                    "type": "tool_started",
+                    "agent_path": agent_path_id,
+                    "tool": tn,
+                    "tool_call_id": tc_id,
+                    "args": args_preview,
+                }
+            )
         elif isinstance(event, agent_events.ToolCallCompletedEvent):
             te = event.tool
             r = getattr(te, "result", None) if te else None
-            if current_tool:
-                _log(f"  │  │  └─ {_preview(r)}")
+            tn = (te.tool_name if te else None) or current_tool or "tool"
+            tc_id = getattr(te, "tool_call_id", None) if te else None
+            result_preview = _preview(r)
+            _log(f"  │  │  └─ {result_preview}")
+            _emit(
+                {
+                    "type": "tool_completed",
+                    "agent_path": agent_path_id,
+                    "tool": tn,
+                    "tool_call_id": tc_id,
+                    "result": result_preview,
+                    "is_error": False,
+                }
+            )
+            if current_tool == tn:
                 current_tool = None
         elif isinstance(event, agent_events.ToolCallErrorEvent):
+            te = getattr(event, "tool", None)
+            tn = (te.tool_name if te else None) or current_tool or "tool"
+            tc_id = getattr(te, "tool_call_id", None) if te else None
             err = str(getattr(event, "error", "?"))
             _log(f"  │  │  └─ ERROR: {err[:60]}")
-            current_tool = None
+            _emit(
+                {
+                    "type": "tool_completed",
+                    "agent_path": agent_path_id,
+                    "tool": tn,
+                    "tool_call_id": tc_id,
+                    "result": err[:200],
+                    "is_error": True,
+                }
+            )
+            if current_tool == tn:
+                current_tool = None
         elif isinstance(event, agent_events.RunErrorEvent):
             err = str(getattr(event, "content", "") or getattr(event, "error", "?"))
             _log(f"  │  ⚠ RUN ERROR: {err[:200]}")
+            _emit(
+                {
+                    "type": "run_error",
+                    "agent_path": agent_path_id,
+                    "error": err[:400],
+                }
+            )
             _stream_log.info("subagent_stream: RunErrorEvent path=%s err=%s", path, err[:300])
         elif isinstance(event, agent_events.RunCompletedEvent):
             # Last RunCompletedEvent of the run carries the full final
@@ -190,21 +306,40 @@ async def _run_agent_streaming(
             c = getattr(event, "content", None)
             if c:
                 completed_content = str(c)
+            # Emit ``agent_completed`` with the run's metrics so the FE
+            # can surface per-agent token totals. Agno's
+            # ``event.metrics`` is a ``Metrics`` object with the same
+            # fields the top-level RunCompleted carries.
+            mt = getattr(event, "metrics", None)
+            _emit(
+                {
+                    "type": "agent_completed",
+                    "agent_path": agent_path_id,
+                    "is_error": False,
+                    "input_tokens": int(getattr(mt, "input_tokens", 0) or 0) if mt else 0,
+                    "output_tokens": int(getattr(mt, "output_tokens", 0) or 0) if mt else 0,
+                    "reasoning_tokens": int(getattr(mt, "reasoning_tokens", 0) or 0) if mt else 0,
+                }
+            )
         elif isinstance(event, agent_events.RunContentEvent):
             # Live progress preview only — final content comes from
             # ``agent.run_response.content`` after the stream ends.
             c = event.content or ""
-            if c and on_progress:
+            if c:
+                content_buf += str(c)
                 now = time.monotonic()
                 if now - last_update > 0.5:
                     last_update = now
-                    line = c.replace("<think>", "").replace("</think>", "").splitlines()
-                    line = line[-1].strip() if line else ""
-                    if line and line != last_preview:
-                        last_preview = line
-                        preview = line[:120] + "..." if len(line) > 120 else line
-                        with contextlib.suppress(Exception):
-                            on_progress(f"  │  ✎ {preview}")
+                    preview = _build_preview(content_buf)
+                    if preview and preview != last_preview:
+                        last_preview = preview
+                        _emit(
+                            {
+                                "type": "content_preview",
+                                "agent_path": agent_path_id,
+                                "text": preview,
+                            }
+                        )
         return None
 
     # Outer loop drives the active stream. When _handle returns a follow-up
@@ -277,6 +412,7 @@ async def _run_team_streaming(
     on_progress: Any = None,
     hitl_coordinator: Any = None,
     agent_path: list[str] | None = None,
+    card_id: str = "",
 ) -> tuple[str, list[str]]:
     """Stream a team run, collecting activity log. Returns (response, log).
 
@@ -297,24 +433,62 @@ async def _run_team_streaming(
     log: list[str] = []
     current_tool: str | None = None
     current_agent: str = ""
-    last_update: float = 0.0
-    last_preview: str = ""
+    # Per-agent throttle and dedup state — keyed by agent_path_id.
+    # In broadcast/coordinate mode multiple sub-agents emit content
+    # deltas interleaved, so a shared ``last_preview``/``last_update``
+    # would let one chatty agent suppress another's updates.
+    last_update_by_agent: dict[str, float] = {}
+    last_preview_by_agent: dict[str, str] = {}
+    # Per-agent accumulator for streaming text — see ``content_buf`` in
+    # ``_run_agent_streaming`` for why we buffer instead of looking at
+    # the delta alone.
+    content_buf_by_agent: dict[str, str] = {}
     current_run_id: str | None = None
     # See _run_agent_streaming for why this is required.
     current_session_id: str | None = None
     # Fallback capture — see _run_agent_streaming.
     completed_content: str = ""
+    team_path_id: str = ".".join(base_path) if base_path else "team"
 
     def _log(line: str) -> None:
+        """Activity-log line for the parent agent's tool return."""
         log.append(line)
+
+    def _emit(event: dict) -> None:
+        """Structured event for the FE; see ``_run_agent_streaming``."""
         if on_progress:
+            if card_id:
+                event["card_id"] = card_id
             with contextlib.suppress(Exception):
-                on_progress(line)
+                on_progress(event)
+
+    def _agent_path_for(name: str | None) -> str:
+        """Build the agent-path id for a team member by appending its
+        name to the team's base path."""
+        if not name:
+            return team_path_id
+        return ".".join(base_path + [name]) if base_path else name
+
+    def _event_agent_path(event: Any) -> tuple[str, str]:
+        """Pull the agent identity off ANY Agno event and return
+        ``(path, display_name)``. Reading from the event itself —
+        not a shared ``current_agent`` — is critical for broadcast
+        runs where multiple sub-agents emit interleaved tool events:
+        every tool call carries its owning ``agent_name`` (or
+        ``team_name`` for nested teams), and using that prevents the
+        "all tools land on the last started agent" bug."""
+        name = (
+            getattr(event, "agent_name", None)
+            or getattr(event, "team_name", None)
+            or current_agent
+            or ""
+        )
+        return _agent_path_for(name), name
 
     async def _handle(event: Any) -> Any:
         """Returns a follow-up async iterator if we resumed the run after
         a HITL pause; None otherwise."""
-        nonlocal current_tool, current_agent, last_update, last_preview
+        nonlocal current_tool, current_agent
         nonlocal current_run_id, current_session_id, completed_content
 
         # See ``_run_agent_streaming`` for why we latch onto run_id /
@@ -328,11 +502,53 @@ async def _run_team_streaming(
             if ev_session_id:
                 current_session_id = ev_session_id
 
-        if isinstance(event, (agent_events.RunStartedEvent, team_events.RunStartedEvent)):
+        # Hide the team coordinator's own lifecycle/content/tool events.
+        # Agno's Team has its own model that does routing/planning in
+        # coordinate/route/tasks modes and emits ``team_events.*``
+        # alongside the workers' ``agent_events.*``. Surfacing the
+        # coordinator as a 4th row alongside three real workers
+        # confuses users — the team-progress card itself already
+        # represents the team. ``TaskCreated``/``TaskUpdated`` are
+        # team_events too, but attributed to a member assignee, so
+        # they stay (handled below).
+        if isinstance(
+            event,
+            (
+                team_events.RunStartedEvent,
+                team_events.RunCompletedEvent,
+                team_events.RunContentEvent,
+                team_events.RunErrorEvent,
+                team_events.ToolCallStartedEvent,
+                team_events.ToolCallCompletedEvent,
+                team_events.ToolCallErrorEvent,
+            ),
+        ):
+            return None
+
+        if isinstance(event, agent_events.RunStartedEvent):
             name = getattr(event, "agent_name", None) or getattr(event, "team_name", None)
             if name and name != current_agent:
                 current_agent = name
                 _log(f"  ├─ [{name}]")
+                _emit(
+                    {
+                        "type": "agent_started",
+                        "agent_path": _agent_path_for(name),
+                        "agent": name,
+                        "parent": team_path_id,
+                        # Emit the run_id so the FE can target this
+                        # specific sub-agent for cancellation —
+                        # ``cancel_agent_run(run_id)`` flags this run
+                        # for cooperative stop while siblings keep
+                        # going.
+                        "run_id": str(getattr(event, "run_id", "") or ""),
+                        # The team's task is what the parent agent asked
+                        # the broadcast to do. Each member receives the
+                        # same prompt — the FE Retry UI pre-fills it so
+                        # the user can tweak before respawning.
+                        "task": task,
+                    }
+                )
             return None
 
         if isinstance(event, agent_events.RunPausedEvent):
@@ -358,6 +574,13 @@ async def _run_team_streaming(
                 if len(req_ids) > 1
                 else "  │  ⏸ awaiting approval"
             )
+            _emit(
+                {
+                    "type": "agent_paused",
+                    "agent_path": _agent_path_for(current_agent),
+                    "count": len(req_ids),
+                }
+            )
             try:
                 for req_id in req_ids:
                     await hitl_coordinator.wait_resolved(req_id)
@@ -377,54 +600,137 @@ async def _run_team_streaming(
             _log(f"  ┌─ TASK: {title}")
             if assignee:
                 _log(f"  │  assigned to: {assignee}")
+            _emit(
+                {
+                    "type": "task_created",
+                    "agent_path": _agent_path_for(assignee or current_agent),
+                    "title": title,
+                    "assignee": assignee,
+                }
+            )
         elif isinstance(event, team_events.TaskUpdatedEvent):
             status = getattr(event, "status", "")
             icon = {"completed": "✓", "failed": "✗", "running": "…"}.get(status, "·")
             _log(f"  │  {icon} {status}")
+            _emit(
+                {
+                    "type": "task_updated",
+                    "agent_path": _agent_path_for(current_agent),
+                    "status": status,
+                }
+            )
         elif isinstance(event, team_events.TaskIterationStartedEvent):
             _log(f"  ╞═ Iteration {getattr(event, 'iteration', 0)}")
-        elif isinstance(
-            event, (agent_events.ToolCallStartedEvent, team_events.ToolCallStartedEvent)
-        ):
+        elif isinstance(event, agent_events.ToolCallStartedEvent):
+            ev_path, _ev_name = _event_agent_path(event)
             te = event.tool
             tn = (te.tool_name or "tool") if te else "tool"
             ta = te.tool_args if te else {}
+            args_preview = _format_args(ta)
             current_tool = tn
-            _log(f"  │  ├─ {tn}({_format_args(ta)})")
-        elif isinstance(
-            event, (agent_events.ToolCallCompletedEvent, team_events.ToolCallCompletedEvent)
-        ):
+            _log(f"  │  ├─ {tn}({args_preview})")
+            # ``tool_call_id`` lets the FE close out the right card on
+            # completion when many tool calls overlap. Agno stamps a
+            # unique id on every tool execution.
+            tc_id = getattr(te, "tool_call_id", None) if te else None
+            _emit(
+                {
+                    "type": "tool_started",
+                    "agent_path": ev_path,
+                    "tool": tn,
+                    "tool_call_id": tc_id,
+                    "args": args_preview,
+                }
+            )
+        elif isinstance(event, agent_events.ToolCallCompletedEvent):
+            ev_path, _ev_name = _event_agent_path(event)
             te = event.tool
             r = getattr(te, "result", None) if te else None
-            if current_tool:
-                _log(f"  │  │  └─ {_preview(r)}")
+            tn = (te.tool_name or current_tool or "tool") if te else (current_tool or "tool")
+            tc_id = getattr(te, "tool_call_id", None) if te else None
+            result_preview = _preview(r)
+            _log(f"  │  │  └─ {result_preview}")
+            _emit(
+                {
+                    "type": "tool_completed",
+                    "agent_path": ev_path,
+                    "tool": tn,
+                    "tool_call_id": tc_id,
+                    "result": result_preview,
+                    "is_error": False,
+                }
+            )
+            if current_tool == tn:
                 current_tool = None
-        elif isinstance(event, (agent_events.ToolCallErrorEvent, team_events.ToolCallErrorEvent)):
+        elif isinstance(event, agent_events.ToolCallErrorEvent):
+            ev_path, _ev_name = _event_agent_path(event)
+            te = getattr(event, "tool", None)
+            tn = (te.tool_name if te else None) or current_tool or "tool"
+            tc_id = getattr(te, "tool_call_id", None) if te else None
             err = str(getattr(event, "error", "?"))
             _log(f"  │  │  └─ ERROR: {err[:60]}")
-            current_tool = None
-        elif isinstance(event, (agent_events.RunErrorEvent, team_events.RunErrorEvent)):
+            _emit(
+                {
+                    "type": "tool_completed",
+                    "agent_path": ev_path,
+                    "tool": tn,
+                    "tool_call_id": tc_id,
+                    "result": err[:200],
+                    "is_error": True,
+                }
+            )
+            if current_tool == tn:
+                current_tool = None
+        elif isinstance(event, agent_events.RunErrorEvent):
+            ev_path, _ev_name = _event_agent_path(event)
             err = str(getattr(event, "content", "?"))
             _log(f"  │  └─ ERROR: {err[:60]}")
-        elif isinstance(event, (agent_events.RunCompletedEvent, team_events.RunCompletedEvent)):
+            _emit(
+                {
+                    "type": "run_error",
+                    "agent_path": ev_path,
+                    "error": err[:400],
+                }
+            )
+        elif isinstance(event, agent_events.RunCompletedEvent):
+            ev_path, _ev_name = _event_agent_path(event)
             c = getattr(event, "content", None)
             if c:
                 completed_content = str(c)
-        elif isinstance(event, (agent_events.RunContentEvent, team_events.RunContentEvent)):
+            # Pull per-agent token totals off ``event.metrics`` so the
+            # team-progress card can show "N tokens" per agent and
+            # sum them in the header.
+            mt = getattr(event, "metrics", None)
+            _emit(
+                {
+                    "type": "agent_completed",
+                    "agent_path": ev_path,
+                    "is_error": False,
+                    "input_tokens": int(getattr(mt, "input_tokens", 0) or 0) if mt else 0,
+                    "output_tokens": int(getattr(mt, "output_tokens", 0) or 0) if mt else 0,
+                    "reasoning_tokens": int(getattr(mt, "reasoning_tokens", 0) or 0) if mt else 0,
+                }
+            )
+        elif isinstance(event, agent_events.RunContentEvent):
             # Live progress preview only — final content comes from
             # ``team.run_response.content`` after the stream ends.
+            ev_path, _ev_name = _event_agent_path(event)
             c = event.content or ""
-            if c and on_progress:
+            if c:
+                content_buf_by_agent[ev_path] = content_buf_by_agent.get(ev_path, "") + str(c)
                 now = time.monotonic()
-                if now - last_update > 0.5:
-                    last_update = now
-                    line = c.replace("<think>", "").replace("</think>", "").splitlines()
-                    line = line[-1].strip() if line else ""
-                    if line and line != last_preview:
-                        last_preview = line
-                        preview = line[:120] + "..." if len(line) > 120 else line
-                        with contextlib.suppress(Exception):
-                            on_progress(f"  │  ✎ {preview}")
+                if now - last_update_by_agent.get(ev_path, 0.0) > 0.5:
+                    last_update_by_agent[ev_path] = now
+                    preview = _build_preview(content_buf_by_agent[ev_path])
+                    if preview and preview != last_preview_by_agent.get(ev_path):
+                        last_preview_by_agent[ev_path] = preview
+                        _emit(
+                            {
+                                "type": "content_preview",
+                                "agent_path": ev_path,
+                                "text": preview,
+                            }
+                        )
         return None
 
     stream = team.arun(task, stream=True)
@@ -551,9 +857,23 @@ class OrchestrateTools(Toolkit):
 
         await self._fire_hook("SubagentStart", {"agent_name": agent_name, "task": task[:500]})
 
+        # One stable id per spawn — stamped on every orchestrate event
+        # for this run so the FE routes them all into the same
+        # team-progress card. See ``_emit`` in ``_run_agent_streaming``.
+        card_id = uuid.uuid4().hex[:8]
         if self._on_progress:
             with contextlib.suppress(Exception):
-                self._on_progress(f"  ├─ [{agent_name}]")
+                self._on_progress(
+                    {
+                        "type": "agent_started",
+                        "agent_path": agent_name,
+                        "agent": agent_name,
+                        "parent": None,
+                        # FE Retry UI pre-fills its textarea with this.
+                        "task": task,
+                        "card_id": card_id,
+                    }
+                )
 
         # Spawn deadline — without this a hung specialist (model
         # provider stalls, network partition) ties up the parent
@@ -568,6 +888,7 @@ class OrchestrateTools(Toolkit):
                     on_progress=self._on_progress,
                     hitl_coordinator=self._hitl_coordinator,
                     agent_path=[agent_name],
+                    card_id=card_id,
                 ),
                 timeout=spawn_timeout,
             )
@@ -691,6 +1012,11 @@ class OrchestrateTools(Toolkit):
             spawn_timeout = self.settings.orchestration.sub_team_timeout
             start = time.monotonic()
             team_label = f"team({mode}:{','.join(names)})"
+            # One card_id per team spawn — see ``spawn_agent`` for the
+            # rationale. ``_run_team_streaming`` stamps it onto every
+            # emitted event so the FE can attach them all to a single
+            # team-progress card no matter what interleaves on the wire.
+            card_id = uuid.uuid4().hex[:8]
             result, activity = await asyncio.wait_for(
                 _run_team_streaming(
                     team,
@@ -698,6 +1024,7 @@ class OrchestrateTools(Toolkit):
                     on_progress=self._on_progress,
                     hitl_coordinator=self._hitl_coordinator,
                     agent_path=[team_label],
+                    card_id=card_id,
                 ),
                 timeout=spawn_timeout,
             )

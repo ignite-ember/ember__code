@@ -27,12 +27,15 @@ table on next launch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ember_code.core.session._sqlite_utils import connect_kv
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +81,11 @@ class PendingMessageStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         # Create the table eagerly so the first write doesn't race
         # multiple call sites trying to create it simultaneously.
-        with self._connect() as conn:
+        with contextlib.closing(self._connect()) as conn, conn:
             conn.executescript(_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
-        # ``isolation_level=None`` plus explicit commits keeps the
-        # auto-commit behaviour predictable across concurrent runs.
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+        return connect_kv(self._db_path)
 
     def record_received(self, session_id: str, text: str) -> str:
         """Persist a freshly-received user message; return its id.
@@ -98,14 +97,13 @@ class PendingMessageStore:
         """
         msg_id = str(uuid.uuid4())
         ts = int(datetime.now(timezone.utc).timestamp())
-        with self._connect() as conn:
+        with contextlib.closing(self._connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO ember_received_messages "
                 "(message_id, session_id, text, received_at, status) "
                 "VALUES (?, ?, ?, ?, 'pending')",
                 (msg_id, session_id, text, ts),
             )
-            conn.commit()
         return msg_id
 
     def mark_completed(self, message_id: str) -> None:
@@ -119,14 +117,13 @@ class PendingMessageStore:
         """
         ts = int(datetime.now(timezone.utc).timestamp())
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn, conn:
                 conn.execute(
                     "UPDATE ember_received_messages "
                     "SET status='completed', completed_at=? "
                     "WHERE message_id=?",
                     (ts, message_id),
                 )
-                conn.commit()
         except Exception as exc:
             logger.debug("mark_completed failed for %s: %s", message_id, exc)
 
@@ -138,7 +135,7 @@ class PendingMessageStore:
         process crashed multiple times in succession we don't want
         to flood the next agent invocation with stale prompts.
         """
-        with self._connect() as conn:
+        with contextlib.closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT message_id, session_id, text, received_at "
                 "FROM ember_received_messages "
@@ -165,12 +162,11 @@ class PendingMessageStore:
         again on the next boot too.
         """
         try:
-            with self._connect() as conn:
+            with contextlib.closing(self._connect()) as conn, conn:
                 conn.execute(
                     "DELETE FROM ember_received_messages WHERE message_id=?",
                     (message_id,),
                 )
-                conn.commit()
         except Exception as exc:
             logger.debug("discard failed for %s: %s", message_id, exc)
 

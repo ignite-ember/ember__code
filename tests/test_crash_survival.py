@@ -40,6 +40,22 @@ def db_path(tmp_path: Path) -> Path:
     return tmp_path / "state.db"
 
 
+def _backdate_pending_rows(db: Path) -> None:
+    """Force every pending row's ``received_at`` to 0.
+
+    ``BackendServer.get_pending_messages`` filters out rows newer
+    than 60s to suppress the "interrupted message" banner during
+    Agno's post-stream tail (`server.py:1681`). Tests that record
+    rows and immediately read them back via ``get_pending_messages``
+    would otherwise see an empty list. Backdating after the insert
+    keeps the test's intent (shape, ordering, end-to-end plumbing)
+    decoupled from that freshness window.
+    """
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("UPDATE ember_received_messages SET received_at = 0")
+        conn.commit()
+
+
 class TestPendingMessageStoreUnit:
     """Synchronous unit tests — no SQLite trickery, just the API."""
 
@@ -243,6 +259,12 @@ class TestGetPendingMessagesRPC:
         server._pending_store.record_received("sess-x", "first interrupted")
         time.sleep(0.01)
         server._pending_store.record_received("sess-x", "second interrupted")
+        # ``get_pending_messages`` filters out rows newer than 60s
+        # (suppresses the "interrupted message" banner during Agno's
+        # post-stream tail). Backdate the freshly-inserted rows so
+        # the filter doesn't hide them — the shape assertion below
+        # cares about field layout, not the freshness window.
+        _backdate_pending_rows(tmp_path / "state.db")
 
         rows = await server.get_pending_messages("sess-x")
         assert [r["content"] for r in rows] == ["first interrupted", "second interrupted"]
@@ -290,7 +312,10 @@ class TestPendingNotDiscardedUntilConsumed:
         # Summary built — agent will know about the interruption.
         assert server._interrupted_run_summary is not None
         # AND the pending row is still in the store so the FE can
-        # fetch it for the conversation pane.
+        # fetch it for the conversation pane. Backdate first so the
+        # 60s freshness filter in ``get_pending_messages`` doesn't
+        # hide the just-inserted row.
+        _backdate_pending_rows(tmp_path / "state.db")
         rows = await server.get_pending_messages("sess")
         assert len(rows) == 1
         assert rows[0]["content"] == "lost question"

@@ -41,6 +41,19 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
+      # Belt-and-suspenders: ``pyproject.toml`` is the SoT, but
+      # ``src/ember_code/__init__.py``'s ``__version__`` lives outside
+      # the build backend's reach. If a release goes out without the
+      # author having run ``scripts/sync-version.mjs`` locally, this
+      # step makes sure the published wheel exposes the right
+      # ``__version__`` at import time.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Sync version across all clients
+        run: node scripts/sync-version.mjs
+
       - name: Build package
         run: uv build
 
@@ -49,8 +62,213 @@ jobs:
         with:
           skip-existing: true
 
-  github-release:
+  # Build the JetBrains plugin zip against the freshly-published
+  # ignite-ember version. The plugin bundles a generated
+  # ``ember-version.properties`` whose value comes from pyproject.toml
+  # via the ``generateEmberVersion`` gradle task — so the just-tagged
+  # release version flows automatically into the plugin without a
+  # separate bump.
+  build-jetbrains-plugin:
     needs: publish-pypi
+    runs-on: ubuntu-latest
+    outputs:
+      plugin-zip: ${{ steps.locate.outputs.path }}
+      plugin-name: ${{ steps.locate.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: clients/web/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "21"
+
+      - name: Build shared web UI and stage into plugin tree
+        run: ./scripts/build-clients.sh
+
+      - name: Build JetBrains plugin
+        run: |
+          cd clients/jetbrains
+          ./gradlew buildPlugin --no-daemon
+
+      - name: Locate built zip
+        id: locate
+        run: |
+          ZIP=$(ls clients/jetbrains/build/distributions/*.zip | head -1)
+          echo "path=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ZIP")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetbrains-plugin
+          path: clients/jetbrains/build/distributions/*.zip
+          retention-days: 30
+
+      # Push to the JetBrains Marketplace. ``publishPlugin`` reads
+      # the already-built zip from ``build/distributions/`` — same
+      # bytes that get uploaded as the GitHub-Release artifact, so
+      # users get an identical bundle through either channel.
+      #
+      # ``JETBRAINS_MARKETPLACE_TOKEN`` is an upload token created
+      # at https://plugins.jetbrains.com/author/me/tokens with the
+      # "Upload Plugin" scope for the ``Ember Code`` plugin.
+      # First-time publish triggers JetBrains' moderation review
+      # (1-10 business days); subsequent updates clear in minutes.
+      - name: Publish to JetBrains Marketplace
+        env:
+          ORG_GRADLE_PROJECT_jbToken: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+        run: |
+          cd clients/jetbrains
+          ./gradlew publishPlugin --no-daemon
+
+  # VSCode extension — built against the just-published
+  # ignite-ember version. Same SoT trick as the JetBrains plugin:
+  # ``scripts/sync-version.mjs`` reads pyproject.toml and writes
+  # ``src/version.generated.ts``, which the extension's runtime
+  # imports for the ``uv pip install`` pin.
+  build-vscode-plugin:
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Build shared web UI
+        run: |
+          cd clients/web
+          npm ci
+          npm run build
+
+      - name: Build + package VSCode extension
+        run: |
+          cd clients/vscode
+          npm install --no-audit --no-fund
+          npm run package
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: clients/vscode/*.vsix
+          retention-days: 30
+
+      # Push to the VS Code Marketplace. ``vsce publish --packagePath``
+      # uploads the already-built .vsix instead of rebuilding — keeps
+      # the marketplace artifact byte-identical to the GitHub-Release
+      # artifact, so users get exactly the same bundle whether they
+      # install from the marketplace or download the VSIX directly.
+      #
+      # ``VSCE_PAT`` is a Personal Access Token from
+      # https://dev.azure.com/<org>/_usersSettings/tokens with the
+      # ``Marketplace > Manage`` scope. The publisher ``ignite-ember``
+      # (per ``package.json``) must already exist on
+      # https://marketplace.visualstudio.com/manage.
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          cd clients/vscode
+          VSIX=$(ls *.vsix | head -1)
+          npx --yes @vscode/vsce publish --packagePath "$VSIX" --pat "$VSCE_PAT"
+
+  # Tauri desktop installers — mac (arm + intel), windows, linux.
+  # Tauri Action handles the per-platform bundle (.dmg/.msi/.AppImage),
+  # generates the updater signatures, and uploads everything to the
+  # GitHub Release. ``tagName`` matches the tag we're already on so
+  # all artifacts land on one release page.
+  #
+  # Secrets required (configure in repo → Settings → Secrets):
+  #   TAURI_SIGNING_PRIVATE_KEY          base64 of the updater priv key
+  #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD passphrase for the priv key
+  # Optional (Apple notarization):
+  #   APPLE_CERTIFICATE                  .p12 base64
+  #   APPLE_CERTIFICATE_PASSWORD
+  #   APPLE_SIGNING_IDENTITY             "Developer ID Application: …"
+  #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+  build-tauri:
+    needs: publish-pypi
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            args: --target aarch64-apple-darwin
+          - platform: macos-14
+            args: --target x86_64-apple-darwin
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: clients/web/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/tauri/src-tauri
+
+      - name: Install Linux build deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+
+      - name: Build shared web UI
+        run: |
+          cd clients/web
+          npm ci
+          npm run build
+
+      - name: Build + sign + upload Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: clients/tauri
+          tagName: ${{ github.ref_name }}
+          releaseId: ${{ github.event.release.id }}
+          args: ${{ matrix.args }}
+          # ``includeUpdaterJson`` makes the action emit ``latest.json``
+          # alongside the artifacts; our endpoint in tauri.conf.json
+          # points at the ``latest`` release alias so newly-published
+          # binaries are picked up the next time the app checks.
+          includeUpdaterJson: true
+
+  github-release:
+    needs: [publish-pypi, build-jetbrains-plugin, build-vscode-plugin, build-tauri]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -58,6 +276,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download JetBrains plugin
+        uses: actions/download-artifact@v4
+        with:
+          name: jetbrains-plugin
+          path: artifacts/
+
+      - name: Download VSCode extension
+        uses: actions/download-artifact@v4
+        with:
+          name: vscode-extension
+          path: artifacts/
 
       - name: Generate release notes
         id: notes
@@ -81,14 +311,33 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: |
+            artifacts/*.zip
+            artifacts/*.vsix
           body: |
             ${{ steps.notes.outputs.body }}
 
             ## Install
 
+            **Python (CLI / library):**
             ```bash
             pip install ignite-ember==${{ github.ref_name }}
+            # or
+            uv pip install ignite-ember==${{ github.ref_name }}
             ```
+
+            **JetBrains plugin:** download the ``ember-code-jetbrains-*.zip``
+            asset below and install via Settings → Plugins → ⚙ →
+            Install Plugin from Disk…
+
+            **VSCode extension:** download the ``ember-code-vscode-*.vsix``
+            asset below and install with:
+            ```bash
+            code --install-extension ember-code-vscode-*.vsix
+            ```
+
+            Both IDE plugins bootstrap uv + Python + ignite-ember on
+            first launch — no manual setup required.
 
   update-homebrew:
     needs: publish-pypi

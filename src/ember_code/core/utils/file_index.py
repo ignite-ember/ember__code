@@ -137,21 +137,26 @@ class FileIndex:
 
     def match(self, query: str, limit: int = 100) -> list[str]:
         """Return files matching query via fuzzy subsequence match."""
+        matches, _ = self.match_with_total(query, limit=limit)
+        return matches
+
+    def match_with_total(self, query: str, limit: int = 100) -> tuple[list[str], int]:
+        """Same as :meth:`match`, but also returns how many matches
+        existed before truncation. The FE uses ``total`` to tell the
+        user when the visible list is a slice of a larger result and
+        they should type more to narrow it down.
+        """
         if not self._files:
-            return []
-
+            return [], 0
         if not query:
-            # Empty query: return first N files (most common/short paths)
-            return self._files[:limit]
-
+            return self._files[:limit], len(self._files)
         scored: list[tuple[int, str]] = []
         for path in self._files:
             s = _score_match(query, path)
             if s is not None:
                 scored.append((s, path))
-
         scored.sort(key=lambda x: -x[0])
-        return [path for _, path in scored[:limit]]
+        return [p for _, p in scored[:limit]], len(scored)
 
     @property
     def is_loaded(self) -> bool:

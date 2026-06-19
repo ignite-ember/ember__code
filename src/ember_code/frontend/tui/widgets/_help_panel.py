@@ -87,9 +87,9 @@ HELP_SECTIONS = [
         + "\n".join(
             [
                 _row("/schedule", "open task panel"),
-                _row("/schedule add <desc> at <time>", "one-shot task"),
-                _row("/schedule add <desc> in <dur>", "relative time"),
-                _row("/schedule add <desc> every <n>", "recurring task"),
+                _row("/schedule <desc> at <time>", "one-shot task"),
+                _row("/schedule <desc> in <dur>", "relative time"),
+                _row("/schedule <desc> every <n>", "recurring task"),
                 _row("/schedule show <id>", "task details"),
                 _row("/schedule cancel <id>", "cancel a task"),
             ]

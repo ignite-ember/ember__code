@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ember Code</title>
+<style>
+  /*
+    First-launch loading view shown while the Tauri shell does the
+    one-time uv + Python + ignite-ember bootstrap. Rust emits
+    ``ember-bootstrap-progress`` Tauri events with short status
+    strings; we render the latest one. When the BE is ready the
+    Rust side navigates this window to the real app URL, so this
+    page only ever lives during the first ~2-3 min of first launch
+    (sub-100ms thereafter on cached installs).
+  */
+  :root {
+    color-scheme: light dark;
+    --bg: #faf9f5;
+    --fg: #1f1e1c;
+    --fg-muted: #6b6a64;
+    --accent: #f0883e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #262624;
+      --fg: #f0efea;
+      --fg-muted: #87857d;
+    }
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .ember-loading-shell {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 22px;
+  }
+  .ember-loading-flame {
+    width: 64px;
+    height: 64px;
+    animation: flicker 2.4s ease-in-out infinite;
+  }
+  @keyframes flicker {
+    0%, 100% { transform: translateY(0) scale(1);    opacity: 1;   }
+    50%      { transform: translateY(-2px) scale(1.04); opacity: 0.85; }
+  }
+  .ember-loading-title {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .ember-loading-status {
+    font-size: 14px;
+    color: var(--fg-muted);
+    min-height: 1.4em;
+    /* Slight delay before the spinner-style fade so quick
+       state transitions don't visually flicker.        */
+    transition: opacity 0.18s ease;
+  }
+  .ember-loading-hint {
+    font-size: 12px;
+    color: var(--fg-muted);
+    max-width: 480px;
+    text-align: center;
+    line-height: 1.5;
+    margin-top: 12px;
+    opacity: 0.7;
+  }
+  .ember-loading-error {
+    color: #d04a4a;
+    font-size: 13px;
+    max-width: 600px;
+    padding: 16px;
+    white-space: pre-wrap;
+    text-align: left;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+</style>
+</head>
+<body>
+<div class="ember-loading-shell">
+  <svg class="ember-loading-flame" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M7.998 14.5c-3.312 0-6-2.246-6-5.014 0-3.047 2.262-5.674 3.625-7.018.27-.266.717-.058.717.318 0 1.335.877 2.562 1.753 2.562.645 0 .972-.379 1.096-.65.258-.564.2-1.363.027-2.043-.098-.387.3-.726.65-.498C10.87 3.534 14 6.186 14 9.486c0 2.768-2.688 5.014-6.002 5.014z" fill="#f85149"/>
+    <path d="M8.7 13.563c-1.822 0-3.3-1.235-3.3-2.758 0-1.677 1.244-3.122 1.994-3.862.149-.146.394-.032.394.175 0 .734.482 1.41.964 1.41.355 0 .534-.209.603-.358.142-.31.11-.75.015-1.124-.054-.213.165-.4.357-.274 1.266.894 2.987 2.354 2.987 4.033 0 1.523-1.479 2.758-3.014 2.758z" fill="#f0883e"/>
+  </svg>
+  <div class="ember-loading-title">Ember Code</div>
+  <div class="ember-loading-status" id="status">Starting up…</div>
+  <div class="ember-loading-hint" id="hint">
+    First launch downloads uv, Python, and ignite-ember (~250 MB total). Subsequent launches start instantly.
+  </div>
+</div>
+<script>
+(function () {
+  // ``?msg=…`` honours an initial status set by the Rust side
+  // (used by Reinstall Backend so the user doesn't see a stale
+  // "Starting up…" while the wipe runs).
+  const params = new URLSearchParams(location.search);
+  const status = document.getElementById("status");
+  const hint = document.getElementById("hint");
+  if (params.get("msg")) status.textContent = params.get("msg");
+
+  function applyStatus(text) {
+    status.textContent = text;
+    // Hide the long-form hint once we're past the visible
+    // bootstrap stages — keeps the screen quiet during the
+    // ~3 s "Starting Ember backend…" tail.
+    if (/Starting Ember backend/i.test(text)) hint.style.opacity = "0";
+  }
+
+  // The Tauri global is injected by the shell. Subscribe to the
+  // progress channel as soon as it's available. If the page is
+  // loaded directly in a non-Tauri context (web preview), the
+  // listener never fires — the page just shows "Starting up…".
+  function attach() {
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen("ember-bootstrap-progress", e => {
+        if (typeof e.payload === "string") applyStatus(e.payload);
+      });
+      window.__TAURI__.event.listen("ember-bootstrap-error", e => {
+        if (typeof e.payload === "string") {
+          status.textContent = "";
+          const node = document.createElement("div");
+          node.className = "ember-loading-error";
+          node.textContent = "Bootstrap failed:\n\n" + e.payload;
+          document.querySelector(".ember-loading-shell").appendChild(node);
+        }
+      });
+      return true;
+    }
+    return false;
+  }
+  if (!attach()) {
+    // Tauri injects the global slightly after page parse; poll
+    // briefly so we don't miss the first events.
+    const t = setInterval(() => { if (attach()) clearInterval(t); }, 50);
+    setTimeout(() => clearInterval(t), 5000);
+  }
+})();
+</script>
+</body>
+</html>
