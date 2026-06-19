@@ -267,12 +267,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Apple Developer signing is deferred until enrollment
+          # completes (see the local secrets README). When these
+          # secrets are unset, GH Actions interpolates them as
+          # empty strings — tauri-action passes those to ``security
+          # import ""`` which fails. Adding the env vars back is
+          # safe once the secrets are populated.
+          #
+          # APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD
+          # APPLE_SIGNING_IDENTITY / APPLE_ID
+          # APPLE_PASSWORD / APPLE_TEAM_ID
         with:
           projectPath: clients/tauri
           tagName: ${{ github.ref_name }}

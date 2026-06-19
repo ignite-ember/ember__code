@@ -588,8 +588,15 @@ async def _run(
         shutdown_event.set()
 
     loop = asyncio.get_event_loop()
+    # ``loop.add_signal_handler`` raises ``NotImplementedError`` on
+    # Windows — asyncio's ProactorEventLoop / SelectorEventLoop don't
+    # implement POSIX signals. On Windows we fall back to the default
+    # behaviour: Ctrl-C raises KeyboardInterrupt which propagates out
+    # of ``asyncio.run``, and the parent-PID watchdog still terminates
+    # the BE when its parent (Tauri / VSCode / JetBrains) exits.
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _signal_handler)
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, _signal_handler)
 
     # SIGUSR1 → diagnostic "release as much memory as you can now":
     # forces a ``gc.collect()`` AND schedules an immediate
