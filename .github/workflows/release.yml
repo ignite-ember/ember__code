@@ -88,6 +88,15 @@ jobs:
           distribution: "zulu"
           java-version: "21"
 
+      # ``scripts/build-clients.sh`` invokes ``npm run build`` in
+      # ``clients/web/`` but does NOT ``npm ci`` first — it's
+      # designed for local-dev where ``node_modules`` is already on
+      # disk. CI starts clean, so we install deps explicitly here.
+      - name: Install web deps
+        run: |
+          cd clients/web
+          npm ci
+
       - name: Build shared web UI and stage into plugin tree
         run: ./scripts/build-clients.sh
 
@@ -142,6 +151,14 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
+          # The npm cache key for both the web bundle and the
+          # extension itself derives from their respective lock
+          # files. Without an explicit path, setup-node hunts for
+          # a lockfile at the repo root (none exists) and fails
+          # the job before any build step runs.
+          cache-dependency-path: |
+            clients/web/package-lock.json
+            clients/vscode/package-lock.json
 
       - name: Build shared web UI
         run: |
@@ -259,7 +276,17 @@ jobs:
         with:
           projectPath: clients/tauri
           tagName: ${{ github.ref_name }}
-          releaseId: ${{ github.event.release.id }}
+          # ``releaseId`` was previously sourced from
+          # ``github.event.release.id``, which is empty under a
+          # ``push`` tag event (we trigger via ``git push origin v*``,
+          # not via the GitHub-UI "create release" flow). With an
+          # empty id the action errored "Release not found or
+          # created". Omitting ``releaseId`` lets tauri-action
+          # find-or-create a release by ``tagName`` instead — the
+          # first matrix leg creates a draft release, the others
+          # append their bundles, and the ``github-release`` job
+          # below uses ``softprops/action-gh-release`` with the same
+          # tag to add the VSIX + JetBrains zip + publish it.
           args: ${{ matrix.args }}
           # ``includeUpdaterJson`` makes the action emit ``latest.json``
           # alongside the artifacts; our endpoint in tauri.conf.json
@@ -292,6 +319,14 @@ jobs:
       - name: Generate release notes
         id: notes
         run: |
+          # Tag is ``v0.6.0`` / ``v0.6.0-rc.1`` etc. ``pip_version``
+          # is the PyPI-installable form (no leading ``v``); previous
+          # body used ``${{ github.ref_name }}`` directly, which gave
+          # the broken ``pip install ignite-ember==v0.6.0-rc.1`` snippet
+          # (pip rejects the ``v`` prefix).
+          PIP_VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "pip_version=$PIP_VERSION" >> "$GITHUB_OUTPUT"
+
           # Get previous tag
           PREV_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
           TAG=${GITHUB_REF#refs/tags/}
@@ -311,6 +346,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # Tag conventions: ``v1.2.3`` is final, anything with a
+          # hyphen (``v1.2.3-rc.1`` / ``-alpha.2`` / ``-beta.1``) is
+          # a pre-release. Auto-marking surfaces the right "Latest"
+          # badge on the releases page.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/*.zip
             artifacts/*.vsix
@@ -321,9 +361,9 @@ jobs:
 
             **Python (CLI / library):**
             ```bash
-            pip install ignite-ember==${{ github.ref_name }}
+            pip install 'ignite-ember==${{ steps.notes.outputs.pip_version }}'
             # or
-            uv pip install ignite-ember==${{ github.ref_name }}
+            uv pip install 'ignite-ember==${{ steps.notes.outputs.pip_version }}'
             ```
 
             **JetBrains plugin:** download the ``ember-code-jetbrains-*.zip``
@@ -348,12 +388,33 @@ jobs:
 
       - name: Get tag version
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        # ``version``  is the raw tag (used for the Brew formula's
+        # ``ignite-ember==X`` pin — pip normalises during install so
+        # both forms work). ``pypi_version`` is the PEP-440-normalised
+        # form used in the PyPI sdist URL: ``files.pythonhosted.org``
+        # serves files under the normalised name, so ``0.6.0-rc.1``
+        # has to become ``0.6.0rc1`` to resolve.
+        run: |
+          RAW="${GITHUB_REF#refs/tags/v}"
+          NORM=$(python3 -c "
+          import re, sys
+          v = sys.argv[1]
+          # PEP 440 pre/post/dev: collapse the separator + lowercase the kind.
+          v = re.sub(r'[-_.]?(alpha|a)[-_.]?(\d+)', r'a\2', v, flags=re.I)
+          v = re.sub(r'[-_.]?(beta|b)[-_.]?(\d+)', r'b\2', v, flags=re.I)
+          v = re.sub(r'[-_.]?(rc|c|pre|preview)[-_.]?(\d+)', r'rc\2', v, flags=re.I)
+          v = re.sub(r'[-_.]?(post|rev|r)[-_.]?(\d+)', r'.post\2', v, flags=re.I)
+          v = re.sub(r'[-_.]?dev[-_.]?(\d+)', r'.dev\1', v, flags=re.I)
+          print(v)
+          " "$RAW")
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+          echo "pypi_version=$NORM" >> "$GITHUB_OUTPUT"
+          echo "raw=$RAW pypi=$NORM"
 
       - name: Download sdist and compute SHA
         id: sha
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ steps.version.outputs.pypi_version }}"
           URL="https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz"
           for i in 1 2 3 4 5; do
             if curl -fsSL -o sdist.tar.gz "$URL" 2>/dev/null; then
@@ -413,7 +474,8 @@ jobs:
 
           # Fix heredoc indentation and replace placeholders
           sed -i 's/^          //' Formula/ignite-ember.rb
-          sed -i "s|PLACEHOLDER_URL|https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${VERSION}.tar.gz|" Formula/ignite-ember.rb
+          PYPI_VERSION="${{ steps.version.outputs.pypi_version }}"
+          sed -i "s|PLACEHOLDER_URL|https://files.pythonhosted.org/packages/source/i/ignite-ember/ignite_ember-${PYPI_VERSION}.tar.gz|" Formula/ignite-ember.rb
           sed -i "s|PLACEHOLDER_SHA|${SHA}|" Formula/ignite-ember.rb
           sed -i "s|PLACEHOLDER_VERSION|${VERSION}|" Formula/ignite-ember.rb
 
