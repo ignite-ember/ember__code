@@ -95,20 +95,36 @@ pub fn ensure_backend_python(progress: ProgressFn) -> Result<BackendInstall, Str
     let venv_dir = cache.join("venv");
     let venv_python = venv_dir.join(venv_python_rel_path());
 
-    let want_marker = format!(
-        "uv={UV_VERSION};python={PYTHON_VERSION};ignite={IGNITE_EMBER_VERSION}"
-    );
-    let have_marker = fs::read_to_string(&marker_path).ok();
-    let marker_matches = have_marker.as_deref() == Some(want_marker.as_str());
+    // Per-component versioning: parse the marker into a key→value
+    // map and decide what to (re-)do at each step independently.
+    // Pre-v0.6.4 builds wrote the same ``uv=X;python=Y;ignite=Z``
+    // string but compared it as a single fingerprint, so any one
+    // version bump (typically just ``ignite``) wiped the venv and
+    // re-downloaded uv + Python + the 90 MB embedding model. That
+    // turned every auto-update into a 2–3 min reinstall instead of
+    // the few seconds it takes to ``pip install --upgrade``
+    // ignite-ember inside the existing venv.
+    let want = ComponentVersions {
+        uv: UV_VERSION,
+        python: PYTHON_VERSION,
+        ignite: IGNITE_EMBER_VERSION,
+    };
+    let have = read_marker(&marker_path);
 
     // ── 1. uv binary ──
-    if !is_executable(&uv_path) || !marker_matches {
+    let uv_changed = have.uv.as_deref() != Some(want.uv);
+    if !is_executable(&uv_path) || uv_changed {
         progress("Downloading uv (one-time, ~25 MB)…");
         download_uv(&uv_path).map_err(|e| format!("download uv: {e}"))?;
     }
 
-    // ── 2-5. Python + venv + ignite-ember + prefetch ──
-    if !is_executable(&venv_python) || !marker_matches {
+    // ── 2-3. Python + venv ──
+    // The venv is tied to a specific Python version, so a Python
+    // bump means we wipe + recreate. Same for "venv missing"
+    // (first install, or a partial bootstrap that crashed mid-way).
+    let python_changed = have.python.as_deref() != Some(want.python);
+    let venv_missing = !is_executable(&venv_python);
+    if python_changed || venv_missing {
         if venv_dir.exists() {
             progress("Refreshing managed venv…");
             fs::remove_dir_all(&venv_dir).map_err(|e| format!("clean venv: {e}"))?;
@@ -119,8 +135,20 @@ pub fn ensure_backend_python(progress: ProgressFn) -> Result<BackendInstall, Str
         progress("Creating backend venv…");
         run_uv(&uv_path, &["venv", "--python", PYTHON_VERSION,
             venv_dir.to_string_lossy().as_ref()])?;
+    }
 
-        progress("Installing ignite-ember (one-time)…");
+    // ── 4. ignite-ember ──
+    // Reinstall whenever ignite version changed OR we just (re-)
+    // built the venv. ``uv pip install ignite-ember==X`` handles
+    // the upgrade in-place — no need to wipe anything else.
+    let ignite_changed = have.ignite.as_deref() != Some(want.ignite);
+    if ignite_changed || python_changed || venv_missing {
+        let action = if python_changed || venv_missing {
+            "Installing ignite-ember (one-time)…"
+        } else {
+            "Updating ignite-ember…"
+        };
+        progress(action);
         run_uv(
             &uv_path,
             &[
@@ -132,10 +160,12 @@ pub fn ensure_backend_python(progress: ProgressFn) -> Result<BackendInstall, Str
             ],
         )?;
 
-        // Pre-warm the sentence-transformer cache so the user's
-        // first agent run doesn't stall mid-chat on a silent
-        // 90 MB HuggingFace download.
-        progress("Downloading embedding model (one-time, ~90 MB)…");
+        // Pre-warm the sentence-transformer cache. ``prefetch_models``
+        // is idempotent: HuggingFace's local hash cache makes the
+        // re-run a no-op when the model is already there, so this is
+        // fast on upgrades and only actually downloads on first
+        // install (or when the model identifier itself changes).
+        progress("Checking embedding model cache…");
         let mut cmd = Command::new(&venv_python);
         cmd.args(["-m", "ember_code.prefetch_models"]);
         cmd.env("HF_HOME", &hf_home);
@@ -147,15 +177,66 @@ pub fn ensure_backend_python(progress: ProgressFn) -> Result<BackendInstall, Str
                 "prefetch_models exited with status {status}"
             ));
         }
-
-        fs::write(&marker_path, &want_marker)
-            .map_err(|e| format!("write install marker: {e}"))?;
     }
+
+    // Always rewrite the marker — even when no component changed,
+    // this fixes the file mtime so a half-finished bootstrap from
+    // a prior crash is detectable.
+    write_marker(&marker_path, &want)
+        .map_err(|e| format!("write install marker: {e}"))?;
 
     Ok(BackendInstall {
         python: venv_python,
         env: vec![("HF_HOME".to_string(), hf_home.to_string_lossy().into_owned())],
     })
+}
+
+/// Per-component versions stored in the install marker file.
+/// Parsed loosely so old single-fingerprint markers from pre-v0.6.4
+/// builds still hydrate fields (the on-disk format is identical:
+/// ``uv=X;python=Y;ignite=Z``). A missing or unparseable marker
+/// yields all-``None``, which forces the relevant step to (re-)run.
+struct ComponentVersions<'a> {
+    uv: &'a str,
+    python: &'a str,
+    ignite: &'a str,
+}
+
+#[derive(Default)]
+struct MarkerState {
+    uv: Option<String>,
+    python: Option<String>,
+    ignite: Option<String>,
+}
+
+fn read_marker(path: &Path) -> MarkerState {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return MarkerState::default();
+    };
+    let mut state = MarkerState::default();
+    for part in contents.trim().split(';') {
+        let (k, v) = match part.split_once('=') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        match k {
+            "uv" => state.uv = Some(v.to_string()),
+            "python" => state.python = Some(v.to_string()),
+            "ignite" => state.ignite = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    state
+}
+
+fn write_marker(path: &Path, want: &ComponentVersions<'_>) -> std::io::Result<()> {
+    fs::write(
+        path,
+        format!(
+            "uv={};python={};ignite={}",
+            want.uv, want.python, want.ignite
+        ),
+    )
 }
 
 /// Wipe the managed cache so the next ``ensure_backend_python``
