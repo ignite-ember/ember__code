@@ -15,15 +15,14 @@ name: Test updater signing (manual)
 # the original .sig at all; the runner has the key.
 
 on:
-  workflow_dispatch:
-    inputs:
-      target:
-        description: "Rust target to build"
-        type: choice
-        default: aarch64-apple-darwin
-        options:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
+  # ``workflow_dispatch`` only works for workflows already on the
+  # default branch; this file isn't merged yet so we use ``push``
+  # gated to this fix branch. Each commit on the branch triggers
+  # a fresh run, and only this branch — main and feature branches
+  # stay unaffected.
+  push:
+    branches:
+      - fix/updater-resign
 
 jobs:
   build-and-resign:
@@ -40,7 +39,7 @@ jobs:
       - name: Install Rust target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ inputs.target }}
+          targets: aarch64-apple-darwin
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -66,9 +65,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           cd clients/tauri
-          npx --yes @tauri-apps/cli@latest build --target ${{ inputs.target }} --bundles app updater
+          npx --yes @tauri-apps/cli@latest build --target aarch64-apple-darwin --bundles app updater
           echo "=== bundle/macos contents ==="
-          ls -la src-tauri/target/${{ inputs.target }}/release/bundle/macos/
+          ls -la src-tauri/target/aarch64-apple-darwin/release/bundle/macos/
 
       # Independent verification — even if tauri-bundler's own .sig
       # is still on disk here, we re-sign with minisign CLI and
@@ -130,7 +129,7 @@ jobs:
       - name: Upload signature artifact
         uses: actions/upload-artifact@v4
         with:
-          name: updater-sig-${{ inputs.target }}
+          name: updater-sig-aarch64-apple-darwin
           path: /tmp/updater-sig/updater.sig
           if-no-files-found: error
           retention-days: 1
