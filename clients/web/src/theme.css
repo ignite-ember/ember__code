@@ -1202,11 +1202,14 @@ button {
   font-size: 15px;
 }
 
-.msg-assistant > :first-child {
+/* Markdown sits inside ``.msg-assistant-body`` (sibling of the copy
+   action row) so these zero-margin rules target the actual first/last
+   rendered markdown element, not the action row. */
+.msg-assistant-body > :first-child {
   margin-top: 0;
 }
 
-.msg-assistant > :last-child {
+.msg-assistant-body > :last-child {
   margin-bottom: 0;
 }
 
@@ -1215,6 +1218,144 @@ button {
 .msg-assistant h3 {
   letter-spacing: -0.01em;
   line-height: 1.3;
+}
+
+/* Inline copy-response button sits to the right of the stats line
+   (``.agent-dispatch`` for ``kind: "stats"``). Hover-revealed so the
+   row stays calm by default; keeps the same faint mono look as the
+   stats text itself until you reach for it. */
+.agent-dispatch--with-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.msg-stats-copy {
+  /* Always-visible — matches the stats line's faint mono so it reads
+     as part of the same row, not a separate UI element. Brightens
+     only when you actually reach for it. Hover-reveal was too
+     jumpy on a narrow row. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.msg-stats-copy:hover,
+.msg-stats-copy:focus-visible {
+  color: var(--fg);
+  background: var(--bg-raised);
+}
+
+/* Each fenced code block gets a hover-revealed copy button via
+   ``MarkdownPre`` (react-markdown ``components.pre`` override). The
+   wrapper is a positioning context; the inner <pre> keeps all the
+   existing pre styling. */
+.code-block-wrap {
+  position: relative;
+  margin: 12px 0;
+}
+
+.code-block-wrap pre {
+  margin: 0;
+}
+
+/* Reserve a strip at the top so the absolute-positioned copy +
+   toggle chips (top: 8px, ~22px tall) don't sit on top of the
+   first code line. 38px = 8 + 22 + 8 buffer. Specificity is bumped
+   above ``.msg-assistant pre`` (which uses ``padding: 14px``
+   shorthand and declares later in the file). */
+.msg-assistant .code-block-wrap pre {
+  padding-top: 38px;
+}
+
+/* Long code blocks start collapsed: clip the <pre> at a fixed
+   height, fade the bottom into the surface so the cut looks
+   intentional, and reveal a "Show more" pill under it. The
+   ``COLLAPSED_MAX_PX`` constant in ChatItems.tsx must stay in sync
+   with the px height set here so the JS overflow check and the
+   visual clip agree.
+
+   The fade overlay lives on the <pre> itself (not the wrapper) so
+   the pre's ``overflow: hidden`` + ``border-radius`` clip it
+   cleanly to the rounded bottom corners — when it lived on the
+   wrapper it floated outside the pre's actual edge and never
+   reached the corners. */
+.code-block-wrap--collapsed pre {
+  max-height: 220px;
+  overflow: hidden;
+  position: relative;
+  /* Anywhere on the clipped block expands it — invite that with the
+     pointer cursor. The chevron stays as the explicit affordance for
+     keyboard / screen-reader users. */
+  cursor: pointer;
+}
+
+.code-block-wrap--collapsed pre::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 90px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--bg-inset));
+}
+
+/* Collapse/expand chevron sits in the top-left of the code block,
+   mirroring the copy button in the top-right. Shares the code
+   block's background — only the border separates it from the
+   surrounding ``<pre>`` surface. */
+.code-block-toggle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  cursor: pointer;
+  z-index: 1;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.code-block-toggle:hover,
+.code-block-toggle:focus-visible {
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.code-block-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  cursor: pointer;
+  z-index: 1;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.code-block-copy:hover,
+.code-block-copy:focus-visible {
+  color: var(--fg);
+  border-color: var(--border);
 }
 
 .msg-assistant pre {
@@ -1239,6 +1380,195 @@ button {
 .msg-assistant pre code {
   background: none;
   padding: 0;
+}
+
+/* highlight.js GitHub-Dark-Dimmed (imported in ChatItems.tsx) paints
+   tokens in pastel reds/blues/purples tuned for a #22272e bg. On the
+   light surface (`--bg-inset` = #f1efe9) those same hues read as
+   washed-out neon and tokens lose contrast. Remap to GitHub Light's
+   palette whenever a light theme is active. Selectors use attribute
+   specificity (0,2,0) so they win over hljs's class-only rules
+   regardless of import order. Light-theme scoping mirrors the
+   variable block at the top of this file. */
+:root[data-theme="light"] .hljs,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs {
+  color: #24292e;
+  background: transparent;
+}
+:root[data-theme="light"] .hljs-doctag,
+:root[data-theme="light"] .hljs-keyword,
+:root[data-theme="light"] .hljs-meta .hljs-keyword,
+:root[data-theme="light"] .hljs-template-tag,
+:root[data-theme="light"] .hljs-template-variable,
+:root[data-theme="light"] .hljs-type,
+:root[data-theme="light"] .hljs-variable.language_,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-doctag,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-keyword,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-meta .hljs-keyword,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-template-tag,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-template-variable,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-type,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-variable.language_ {
+  color: #d73a49;
+}
+:root[data-theme="light"] .hljs-title,
+:root[data-theme="light"] .hljs-title.class_,
+:root[data-theme="light"] .hljs-title.class_.inherited__,
+:root[data-theme="light"] .hljs-title.function_,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-title,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-title.class_,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-title.class_.inherited__,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-title.function_ {
+  color: #6f42c1;
+}
+:root[data-theme="light"] .hljs-attr,
+:root[data-theme="light"] .hljs-attribute,
+:root[data-theme="light"] .hljs-literal,
+:root[data-theme="light"] .hljs-meta,
+:root[data-theme="light"] .hljs-number,
+:root[data-theme="light"] .hljs-operator,
+:root[data-theme="light"] .hljs-variable,
+:root[data-theme="light"] .hljs-selector-attr,
+:root[data-theme="light"] .hljs-selector-class,
+:root[data-theme="light"] .hljs-selector-id,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-attr,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-attribute,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-literal,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-meta,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-number,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-operator,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-variable,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-selector-attr,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-selector-class,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-selector-id {
+  color: #005cc5;
+}
+:root[data-theme="light"] .hljs-regexp,
+:root[data-theme="light"] .hljs-string,
+:root[data-theme="light"] .hljs-meta .hljs-string,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-regexp,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-string,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-meta .hljs-string {
+  color: #032f62;
+}
+:root[data-theme="light"] .hljs-built_in,
+:root[data-theme="light"] .hljs-symbol,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-built_in,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-symbol {
+  color: #e36209;
+}
+:root[data-theme="light"] .hljs-comment,
+:root[data-theme="light"] .hljs-code,
+:root[data-theme="light"] .hljs-formula,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-comment,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-code,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-formula {
+  color: #6a737d;
+}
+:root[data-theme="light"] .hljs-name,
+:root[data-theme="light"] .hljs-quote,
+:root[data-theme="light"] .hljs-selector-tag,
+:root[data-theme="light"] .hljs-selector-pseudo,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-name,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-quote,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-selector-tag,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-selector-pseudo {
+  color: #22863a;
+}
+:root[data-theme="light"] .hljs-subst,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-subst {
+  color: #24292e;
+}
+:root[data-theme="light"] .hljs-section,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-section {
+  color: #005cc5;
+}
+:root[data-theme="light"] .hljs-bullet,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-bullet {
+  color: #735c0f;
+}
+:root[data-theme="light"] .hljs-addition,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-addition {
+  color: #22863a;
+  background-color: #f0fff4;
+}
+:root[data-theme="light"] .hljs-deletion,
+:root[data-theme="auto"][data-os-prefers-light="1"] .hljs-deletion {
+  color: #b31d28;
+  background-color: #ffeef0;
+}
+
+/* First-paint fallback for OS-prefers-light before JS has set
+   data-theme — mirrors the @media block at the top of this file. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .hljs {
+    color: #24292e;
+    background: transparent;
+  }
+  :root:not([data-theme="dark"]) .hljs-doctag,
+  :root:not([data-theme="dark"]) .hljs-keyword,
+  :root:not([data-theme="dark"]) .hljs-meta .hljs-keyword,
+  :root:not([data-theme="dark"]) .hljs-template-tag,
+  :root:not([data-theme="dark"]) .hljs-template-variable,
+  :root:not([data-theme="dark"]) .hljs-type,
+  :root:not([data-theme="dark"]) .hljs-variable.language_ {
+    color: #d73a49;
+  }
+  :root:not([data-theme="dark"]) .hljs-title,
+  :root:not([data-theme="dark"]) .hljs-title.class_,
+  :root:not([data-theme="dark"]) .hljs-title.class_.inherited__,
+  :root:not([data-theme="dark"]) .hljs-title.function_ {
+    color: #6f42c1;
+  }
+  :root:not([data-theme="dark"]) .hljs-attr,
+  :root:not([data-theme="dark"]) .hljs-attribute,
+  :root:not([data-theme="dark"]) .hljs-literal,
+  :root:not([data-theme="dark"]) .hljs-meta,
+  :root:not([data-theme="dark"]) .hljs-number,
+  :root:not([data-theme="dark"]) .hljs-operator,
+  :root:not([data-theme="dark"]) .hljs-variable,
+  :root:not([data-theme="dark"]) .hljs-selector-attr,
+  :root:not([data-theme="dark"]) .hljs-selector-class,
+  :root:not([data-theme="dark"]) .hljs-selector-id {
+    color: #005cc5;
+  }
+  :root:not([data-theme="dark"]) .hljs-regexp,
+  :root:not([data-theme="dark"]) .hljs-string,
+  :root:not([data-theme="dark"]) .hljs-meta .hljs-string {
+    color: #032f62;
+  }
+  :root:not([data-theme="dark"]) .hljs-built_in,
+  :root:not([data-theme="dark"]) .hljs-symbol {
+    color: #e36209;
+  }
+  :root:not([data-theme="dark"]) .hljs-comment,
+  :root:not([data-theme="dark"]) .hljs-code,
+  :root:not([data-theme="dark"]) .hljs-formula {
+    color: #6a737d;
+  }
+  :root:not([data-theme="dark"]) .hljs-name,
+  :root:not([data-theme="dark"]) .hljs-quote,
+  :root:not([data-theme="dark"]) .hljs-selector-tag,
+  :root:not([data-theme="dark"]) .hljs-selector-pseudo {
+    color: #22863a;
+  }
+  :root:not([data-theme="dark"]) .hljs-subst {
+    color: #24292e;
+  }
+  :root:not([data-theme="dark"]) .hljs-section {
+    color: #005cc5;
+  }
+  :root:not([data-theme="dark"]) .hljs-bullet {
+    color: #735c0f;
+  }
+  :root:not([data-theme="dark"]) .hljs-addition {
+    color: #22863a;
+    background-color: #f0fff4;
+  }
+  :root:not([data-theme="dark"]) .hljs-deletion {
+    color: #b31d28;
+    background-color: #ffeef0;
+  }
 }
 
 .msg-assistant table {

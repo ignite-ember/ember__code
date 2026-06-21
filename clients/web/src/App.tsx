@@ -6,6 +6,7 @@ import {
   compactItem,
   correctStatsCtx,
   restoredItem,
+  restoredStatsItem,
   errorItem,
   infoItem,
   isOrchestrateActive,
@@ -90,6 +91,21 @@ const TOOLS_MENU: { label: string; command: string; desc: string }[] = [
   { label: "Context breakdown", command: "/ctx", desc: "system vs runs token split" },
   { label: "Help", command: "/help", desc: "all commands" },
 ];
+
+/** Walk back from a ``stats`` item's index to find the assistant
+ *  text that closes the same run. The inline copy-response button on
+ *  the stats line copies this text. We stop at the previous user
+ *  message because every stats item belongs to exactly one turn. */
+function findAssistantTextForStats(items: ChatItem[], idx: number): string | undefined {
+  const stats = items[idx];
+  if (!stats || stats.kind !== "stats") return undefined;
+  for (let i = idx - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user") return undefined;
+    if (it.kind === "assistant") return it.text;
+  }
+  return undefined;
+}
 
 /** Pretty label for ``Tier`` values from ember-server
  *  (lite / pro / max / codeindex). The DB stores lowercase, the UI
@@ -587,15 +603,27 @@ export default function App() {
           "get_chat_history",
           { session_id: id },
         );
+        // Accumulate visible assistant text per run_id so the stats
+        // turn can estimate ``visibleOutTokens`` from the same string
+        // the user sees — matching the live path's behavior.
+        const assistantTextByRun = new Map<string, string>();
         for (const turn of history || []) {
           const role = String(turn.role ?? "");
-          const content = String(turn.content ?? "");
           const runId = typeof turn.run_id === "string" ? turn.run_id : "";
+          if (role === "stats") {
+            loaded.push(restoredStatsItem(turn, assistantTextByRun.get(runId) ?? ""));
+            continue;
+          }
+          const content = String(turn.content ?? "");
           const item = restoredItem(role, content);
           if (item) {
             // Attach the BE-side run_id to user items so they're
             // edit/delete-targetable after a session restore.
             if (item.kind === "user" && runId) item.runId = runId;
+            if (item.kind === "assistant" && runId) {
+              const prev = assistantTextByRun.get(runId) ?? "";
+              assistantTextByRun.set(runId, prev ? `${prev} ${item.text}` : item.text);
+            }
             loaded.push(item);
           }
         }
@@ -1644,10 +1672,15 @@ export default function App() {
                 </p>
               </div>
             )}
-            {items.map((item) => (
+            {items.map((item, idx) => (
               <ChatItemView
                 key={item.id}
                 item={item}
+                copyResponseText={
+                  item.kind === "stats"
+                    ? findAssistantTextForStats(items, idx)
+                    : undefined
+                }
                 onEditUser={onEditUser}
                 onDeleteUser={onDeleteUser}
                 onStopTeam={() => client.cancel()}

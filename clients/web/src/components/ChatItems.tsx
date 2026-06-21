@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark-dimmed.css";
@@ -8,6 +8,163 @@ import type { DiffRow } from "../protocol/messages";
 import { ChevronIcon } from "./Icons";
 import { FilePill } from "./FilePill";
 import { host } from "../lib/host";
+
+function CopyIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="4" y="4" width="8.5" height="9.5" rx="1.5" />
+      <path d="M3 11.5V3a1 1 0 0 1 1-1h7.5" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3.5 8.5l3 3 6-7" />
+    </svg>
+  );
+}
+
+function useCopiedFlag(): [boolean, (text: string) => void] {
+  const [copied, setCopied] = useState(false);
+  const trigger = (text: string) => {
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1300);
+      } catch {
+        /* clipboard blocked — silent */
+      }
+    })();
+  };
+  return [copied, trigger];
+}
+
+/** ReactMarkdown ``components.pre`` override: wraps each fenced
+ *  code block with a hover-revealed copy button. We read the text
+ *  off the rendered DOM (via a ref) at click time so the copy
+ *  payload matches exactly what the user sees, including any
+ *  hljs-injected whitespace. */
+/** Above this rendered height a code block starts collapsed and
+ *  shows a "Show more" toggle. ~10 lines at 13px / 1.65 line-height
+ *  + padding lands a touch over this — short blocks stay expanded. */
+const COLLAPSED_MAX_PX = 220;
+
+function MarkdownPre({ children }: { children?: ReactNode }) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const [copied, copy] = useCopiedFlag();
+  const [collapsed, setCollapsed] = useState(true);
+  const [overflowing, setOverflowing] = useState(false);
+  // After first render, measure: if the natural pre is taller than
+  // the collapsed cap, we keep it collapsed and reveal the toggle.
+  // If it fits, drop the collapsed state so nothing changes visually.
+  useEffect(() => {
+    const el = preRef.current;
+    if (!el) return;
+    const overflows = el.scrollHeight > COLLAPSED_MAX_PX + 4;
+    setOverflowing(overflows);
+    if (!overflows) setCollapsed(false);
+  }, [children]);
+  const isCollapsed = overflowing && collapsed;
+  return (
+    <div
+      className={`code-block-wrap${isCollapsed ? " code-block-wrap--collapsed" : ""}`}
+    >
+      <button
+        type="button"
+        className="code-block-copy"
+        title={copied ? "Copied!" : "Copy code"}
+        aria-label={copied ? "Copied" : "Copy code"}
+        onClick={() => copy(preRef.current?.textContent ?? "")}
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </button>
+      <pre
+        ref={preRef}
+        onClick={isCollapsed ? () => setCollapsed(false) : undefined}
+      >
+        {children}
+      </pre>
+      {overflowing ? (
+        <button
+          type="button"
+          className="code-block-toggle"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-expanded={!isCollapsed}
+          aria-label={isCollapsed ? "Expand code" : "Collapse code"}
+          title={isCollapsed ? "Expand" : "Collapse"}
+        >
+          <ChevronIcon size={12} down={!isCollapsed} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+const ASSISTANT_MD_COMPONENTS: Components = {
+  pre: MarkdownPre,
+};
+
+/** Assistant chat bubble with a hover-revealed copy-response
+ *  button. Copies the raw markdown source (``item.text``) — that's
+ *  what the user is actually looking at conceptually; copying the
+ *  rendered HTML would lose code fences and structure. */
+function AssistantMessage({ text }: { text: string }) {
+  return (
+    <div className="msg-assistant">
+      <div className="msg-assistant-body">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight]}
+          components={ASSISTANT_MD_COMPONENTS}
+        >
+          {normalizeAssistantMarkdown(text)}
+        </ReactMarkdown>
+      </div>
+    </div>
+  );
+}
+
+/** Inline copy-response button rendered to the right of the stats
+ *  line. The stats item carries no assistant text itself, so the
+ *  ChatItemView caller passes in the text of the most recent
+ *  assistant turn that owns this run. */
+function StatsCopyButton({ text }: { text: string }) {
+  const [copied, copy] = useCopiedFlag();
+  return (
+    <button
+      type="button"
+      className="msg-stats-copy"
+      title={copied ? "Copied!" : "Copy response"}
+      aria-label={copied ? "Copied" : "Copy response"}
+      onClick={() => copy(text)}
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  );
+}
 
 const AT_PATH_INLINE_RE = /(?:^|\s)@(\S+)/g;
 
@@ -1004,6 +1161,7 @@ function ShellBlock({ item }: { item: Extract<ChatItem, { kind: "shell" }> }) {
 
 export function ChatItemView({
   item,
+  copyResponseText,
   onEditUser,
   onDeleteUser,
   onStopTeam,
@@ -1011,6 +1169,11 @@ export function ChatItemView({
   onRetryAgent,
 }: {
   item: ChatItem;
+  /** Raw markdown text of the assistant turn this stats item closes.
+   *  Only used by the ``stats`` case to render an inline copy-response
+   *  button. Caller (App.tsx) walks back through the items to find the
+   *  preceding assistant message for the same ``runId``. */
+  copyResponseText?: string;
   /** Callback when the user submits an edit on a previous message.
    *  The handler truncates session history from this item forward and
    *  re-sends the new text as a fresh user turn. */
@@ -1041,16 +1204,7 @@ export function ChatItemView({
         />
       );
     case "assistant":
-      return (
-        <div className="msg-assistant">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-          >
-            {normalizeAssistantMarkdown(item.text)}
-          </ReactMarkdown>
-        </div>
-      );
+      return <AssistantMessage text={item.text} />;
     case "thinking":
       return <ThinkingBlock text={item.text} />;
     case "tool":
@@ -1079,8 +1233,12 @@ export function ChatItemView({
         ? "in: real session context (count_context_tokens)"
         : "in: still being corrected — RPC in flight";
       return (
-        <div className="agent-dispatch" title={`${inCtx}\n${billed}`}>
-          {formatStats(item)}
+        <div
+          className={`agent-dispatch${copyResponseText ? " agent-dispatch--with-copy" : ""}`}
+          title={`${inCtx}\n${billed}`}
+        >
+          <span>{formatStats(item)}</span>
+          {copyResponseText ? <StatsCopyButton text={copyResponseText} /> : null}
         </div>
       );
     }

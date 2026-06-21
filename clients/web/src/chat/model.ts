@@ -704,6 +704,35 @@ const REFS_LINE_RE = /\[Referenced files:\s*([^\]]+?)\s+—\s+read before respon
 // can persist mid-thought).
 const THINK_BLOCK_RE = /<think>[\s\S]*?(<\/think>\s*|$)/g;
 
+/** Build a stats ChatItem from a persisted-history ``stats`` turn.
+ *  Backend ``get_chat_history`` emits one synthetic ``stats`` turn
+ *  per completed top-level run (input_tokens, output_tokens,
+ *  reasoning_tokens, duration). ``visibleOutText`` is the
+ *  concatenated assistant content this run produced — used to
+ *  estimate the ``out`` chars→tokens number the live path computes
+ *  from the rendered DOM. Thinking content is stripped on restore
+ *  so ``visibleThinkTokens`` is always 0 here. */
+export function restoredStatsItem(
+  turn: Record<string, unknown>,
+  visibleOutText: string,
+): ChatItem {
+  const num = (k: string) => Number(turn[k] ?? 0) || 0;
+  return {
+    kind: "stats",
+    id: nid(),
+    runId: String(turn.run_id ?? ""),
+    inputTokens: num("input_tokens"),
+    outputTokens: num("output_tokens"),
+    reasoningTokens: num("reasoning_tokens"),
+    visibleThinkTokens: 0,
+    visibleOutTokens: estimateTokens(visibleOutText),
+    duration: num("duration"),
+    // Historical stats land already-corrected — there's no in-flight
+    // count_context_tokens RPC to overwrite them.
+    corrected: true,
+  };
+}
+
 /** Persisted-history turn → renderable item (TUI parity: strip the
  * injected system-context from user turns and think blocks from
  * assistant turns). Returns null for empty or non-chat turns. */

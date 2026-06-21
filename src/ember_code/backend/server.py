@@ -1749,12 +1749,20 @@ class BackendServer:
         return {"path": str(dest), "size": len(data)}
 
     async def get_chat_history(self, session_id: str) -> list[dict]:
-        """Get chat history for a session. Returns list of
-        ``{role, content, run_id}`` dicts. ``run_id`` lets the FE map
-        a user message back to its owning run — needed for the edit/
-        delete operations which truncate the session at a run boundary.
-        Skips sub-agent runs (parent_run_id set) and the per-message
-        roles the FE doesn't render (tool, system)."""
+        """Get chat history for a session. Returns a list of turn dicts.
+
+        Most turns are ``{role: "user"|"assistant", content, run_id}``.
+        After each completed top-level run we ALSO emit a synthetic
+        ``{role: "stats", run_id, input_tokens, output_tokens,
+        reasoning_tokens, duration}`` turn so the FE can render the
+        same per-turn token badge it shows live — without this, stats
+        only appeared on runs from the current session.
+
+        ``run_id`` lets the FE map a user message back to its owning
+        run — needed for the edit/delete operations which truncate the
+        session at a run boundary. Skips sub-agent runs (parent_run_id
+        set) and the per-message roles the FE doesn't render (tool,
+        system)."""
         agent = self._session.main_team
         agno_session = await agent.aget_session(
             session_id=session_id,
@@ -1764,19 +1772,85 @@ class BackendServer:
             return []
         runs = getattr(agno_session, "runs", None) or []
         out: list[dict] = []
+        # Running char count across the FULL prompt the model sees on
+        # each turn: system prompt + tool defs + conversation history
+        # (user / assistant / tool results) + this turn's user
+        # message. chars/4 is the same coarse estimator the FE uses
+        # for ``visibleOutTokens``. Per-turn input is monotonic — it
+        # grows as the chat grows, matching the user's intuition.
+        history_chars = 0  # accumulated user/assistant/tool content so far
+        system_chars = 0   # the constant system + tool-defs overhead, captured once
         for run in runs:
             if getattr(run, "parent_run_id", None):
                 continue
             run_id = str(getattr(run, "run_id", "") or "")
             messages = getattr(run, "messages", None) or []
+            # Snapshot BEFORE walking this run's messages — that's the
+            # context the model saw on its way into this turn (not yet
+            # including this turn's user message).
+            input_chars = history_chars
+            assistant_chars = 0
             for m in messages:
                 if getattr(m, "from_history", False):
                     continue
                 role = getattr(m, "role", "")
-                if role in ("system", "tool"):
-                    continue
                 content = m.content if isinstance(m.content, str) else str(m.content or "")
+                # System messages are the system-prompt + tool-defs
+                # overhead the model receives on every API call.
+                # Same content on every run — capture once and add as
+                # a constant to every input estimate.
+                if role == "system":
+                    if not system_chars:
+                        system_chars = len(content)
+                    continue
+                # Tool messages aren't displayed as chat turns but they
+                # ARE part of the model's history on subsequent calls,
+                # so they DO count toward the input estimate.
+                if role == "tool":
+                    history_chars += len(content)
+                    continue
+                # User / assistant — display AND count.
                 out.append({"role": role, "content": content, "run_id": run_id})
+                history_chars += len(content)
+                if role == "assistant":
+                    assistant_chars += len(content)
+                elif role == "user":
+                    # The user message of this run lands in the model's
+                    # input but not in the pre-run snapshot.
+                    input_chars += len(content)
+            metrics = getattr(run, "metrics", None)
+            # Input / output are ALWAYS chars/4 estimates of the model's
+            # actual prompt — NOT Agno's billed numbers. Reason: Agno's
+            # ``run.metrics.input_tokens`` sums across model iterations
+            # within a turn (agent reasoning loops, tool re-prompts),
+            # so the same conversation reads as non-monotonic. The live
+            # path corrects this via ``count_context_tokens`` after each
+            # run, but historical runs have no corrected number to
+            # restore. Estimate = system + history + this-turn user
+            # message, all chars/4.
+            full_input_chars = system_chars + input_chars
+            input_tokens = max(1, full_input_chars // 4) if full_input_chars else 0
+            output_tokens = max(1, assistant_chars // 4) if assistant_chars else 0
+            # After estimation, an all-zero stats line means the run
+            # had no visible content at all (degenerate / empty run);
+            # nothing to display.
+            if input_tokens or output_tokens:
+                out.append(
+                    {
+                        "role": "stats",
+                        "run_id": run_id,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "reasoning_tokens": int(
+                            getattr(metrics, "reasoning_tokens", 0) or 0
+                        )
+                        if metrics
+                        else 0,
+                        "duration": float(getattr(metrics, "duration", 0) or 0)
+                        if metrics
+                        else 0.0,
+                    }
+                )
         return out
 
     async def truncate_history(self, session_id: str, run_id: str) -> dict:
