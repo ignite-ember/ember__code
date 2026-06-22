@@ -401,12 +401,15 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # 75 min ceiling: covers a worst-case first-time Apple queue
-        # depth (typically 2-8 min, observed up to 30 min for new
-        # Developer IDs). If we hit this, the credential is fine
-        # (preflight passed) but something is genuinely wrong on
-        # Apple's side — drop the job loudly rather than spin.
-        timeout-minutes: 75
+        # 120 min ceiling: the v0.7.0-rc.3 dry run observed Apple
+        # taking 69m 59s for one Dev-ID's first-ever submission and
+        # >70m for a sibling submitted in the same batch. After a
+        # handful of Accepted submissions, Apple's reputation system
+        # warms up and typical review drops to 2-8 min — but we have
+        # to survive the cold-start tax. If a single leg takes more
+        # than 2h Apple has a real problem (or anti-malware AI flag);
+        # better to fail loudly than spin indefinitely.
+        timeout-minutes: 120
         run: |
           set -euo pipefail
           APP=$(find clients/tauri/src-tauri/target -maxdepth 8 -path '*release/bundle/macos*' -name 'Ember Code.app' -print -quit)
@@ -440,7 +443,7 @@ jobs:
           # log grows visibly even if Apple is slow. 30s matches
           # Apple's documented notarization status cadence.
           INTERVAL=30
-          DEADLINE=$((SECONDS + 70 * 60))   # 70 min, under step timeout
+          DEADLINE=$((SECONDS + 110 * 60))  # 110 min, under 120 min step timeout
           STATUS=
           while [ "$SECONDS" -lt "$DEADLINE" ]; do
             INFO_JSON=$(xcrun notarytool info "$SUBMISSION_ID" \
