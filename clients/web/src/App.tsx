@@ -372,7 +372,7 @@ export default function App() {
       current_version: "0.6.0",
       latest_version: "0.7.0",
       download_url:
-        "https://github.com/ignite-ember/ember__code/releases/latest",
+        "https://github.com/ignite-ember/igni/releases/latest",
     });
   }, [announceUpdate]);
   // Per-client UI state — hydrated from the BE on connect. Lives in

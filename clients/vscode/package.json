@@ -9,10 +9,10 @@
   "homepage": "https://ignite-ember.sh",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ignite-ember/ember__code"
+    "url": "https://github.com/ignite-ember/igni"
   },
   "bugs": {
-    "url": "https://github.com/ignite-ember/ember__code/issues"
+    "url": "https://github.com/ignite-ember/igni/issues"
   },
   "engines": {
     "vscode": "^1.90.0"

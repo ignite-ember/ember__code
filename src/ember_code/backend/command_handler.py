@@ -1601,7 +1601,7 @@ class CommandHandler:
     async def _cmd_bug(self, _args: str) -> "CommandResult":
         import webbrowser
 
-        url = "https://github.com/vector-bridge/ember__code/issues"
+        url = "https://github.com/ignite-ember/igni/issues"
         webbrowser.open(url)
         return CommandResult.info(f"Opened {url}")
 

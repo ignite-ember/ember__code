@@ -68,9 +68,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://ignite-ember.sh"
-Repository = "https://github.com/ignite-ember/ember__code"
-Issues = "https://github.com/ignite-ember/ember__code/issues"
-Changelog = "https://github.com/ignite-ember/ember__code/releases"
+Repository = "https://github.com/ignite-ember/igni"
+Issues = "https://github.com/ignite-ember/igni/issues"
+Changelog = "https://github.com/ignite-ember/igni/releases"
 
 [project.optional-dependencies]
 dev = [
