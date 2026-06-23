@@ -502,33 +502,39 @@ jobs:
           # and re-uploads via gh release upload --clobber.
 
           # Replace the .app.tar.gz that tauri-action uploaded with
-          # the stapled version. Two important details:
+          # the stapled version. tauri-bundler emits the tarball
+          # locally as ``<productName>.app.tar.gz`` (no arch suffix),
+          # but tauri-action RENAMES it to
+          # ``<productName>_<arch>.app.tar.gz`` (``_aarch64`` / ``_x64``)
+          # when uploading to the release — and ``latest.json`` URLs
+          # point at the arch-suffixed names. So if we upload the
+          # bare basename we publish a new ``igni.app.tar.gz`` asset
+          # and leave the OLD pre-staple ``igni_<arch>.app.tar.gz``
+          # asset untouched. The updater fetches the arch-suffixed
+          # (pre-staple) bytes and verification against our
+          # post-staple signature fails. Use ``file#displayName`` to
+          # clobber the right asset.
           #
-          # 1. tauri-bundler emits the tarball locally as
-          #    ``<productName>.app.tar.gz`` (no arch suffix), but
-          #    tauri-action RENAMES it to ``<productName>_<arch>.app.tar.gz``
-          #    when uploading to the GitHub release (``_aarch64`` /
-          #    ``_x64``). Our ``latest.json`` URLs point at the
-          #    arch-suffixed names, so if we just uploaded the bare
-          #    basename we'd publish a new ``<productName>.app.tar.gz``
-          #    asset and leave the OLD pre-staple arch-suffixed asset
-          #    untouched — exactly what bit v0.7.0, where the updater
-          #    fetched the arch-suffixed (pre-staple) bytes but
-          #    verified against the post-staple signature, failing.
-          #    Use ``file#displayName`` to upload under the right name.
-          #
-          # 2. ``-not -path '*.app/*'`` skips matches inside the .app
-          #    bundle itself (where a nested .app.tar.gz could
-          #    theoretically appear from updater artifacts) and only
-          #    finds the top-level tarball.
-          NEW_TARBALL=$(find clients/tauri/src-tauri/target -name '*.app.tar.gz' -not -path '*.app/*' -print -quit || true)
-          if [ -n "$NEW_TARBALL" ]; then
+          # IMPORTANT: reuse ``$OLD_TARBALL`` here instead of doing
+          # a second ``find`` — the v0.7.2 dry run hit a case where
+          # the post-tar find returned empty (race / FS state
+          # between the two find calls), the if-block silently
+          # skipped, the release kept the pre-staple bytes, and the
+          # updater broke. Same variable means same file means no
+          # divergence path.
+          if [ -n "$OLD_TARBALL" ]; then
             if [[ "${{ matrix.args }}" == *aarch64* ]]; then
               REMOTE_NAME="igni_aarch64.app.tar.gz"
             else
               REMOTE_NAME="igni_x64.app.tar.gz"
             fi
-            gh release upload "${{ github.ref_name }}" "${NEW_TARBALL}#${REMOTE_NAME}" --clobber --repo "$GITHUB_REPOSITORY"
+            echo "Re-uploading stapled tarball to release: ${OLD_TARBALL} -> ${REMOTE_NAME}"
+            ls -la "$OLD_TARBALL"
+            gh release upload "${{ github.ref_name }}" "${OLD_TARBALL}#${REMOTE_NAME}" --clobber --repo "$GITHUB_REPOSITORY"
+            echo "  ✓ uploaded as ${REMOTE_NAME}"
+          else
+            echo "::error::OLD_TARBALL is empty — regen step didn't find a tarball; updater payload will be stale"
+            exit 1
           fi
 
       # Stash IMMEDIATELY after tauri-action — before any other step
