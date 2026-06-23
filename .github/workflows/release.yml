@@ -528,9 +528,25 @@ jobs:
             else
               REMOTE_NAME="igni_x64.app.tar.gz"
             fi
-            echo "Re-uploading stapled tarball to release: ${OLD_TARBALL} -> ${REMOTE_NAME}"
-            ls -la "$OLD_TARBALL"
-            gh release upload "${{ github.ref_name }}" "${OLD_TARBALL}#${REMOTE_NAME}" --clobber --repo "$GITHUB_REPOSITORY"
+            # ``gh release upload "file#displayName"`` only sets the
+            # label in the UI — the asset's actual filename / URL
+            # uses the local basename. So we have to RENAME the file
+            # on disk first, then upload. v0.7.3 hit this exact bug:
+            # the upload created a brand-new ``igni.app.tar.gz``
+            # asset with the stapled bytes while
+            # ``igni_<arch>.app.tar.gz`` (which ``latest.json``
+            # points at) stayed as tauri-action's pre-staple upload.
+            STAGED="$RUNNER_TEMP/${REMOTE_NAME}"
+            cp "$OLD_TARBALL" "$STAGED"
+            echo "Re-uploading stapled tarball: $STAGED (renamed from $OLD_TARBALL)"
+            ls -la "$STAGED"
+            gh release upload "${{ github.ref_name }}" "$STAGED" --clobber --repo "$GITHUB_REPOSITORY"
+            # Drop the stale bare-basename asset that v0.7.0..v0.7.3
+            # created — ``latest.json`` points at the arch-suffixed
+            # name; the bare one is just confusing noise on the
+            # release page. ``|| true`` so we don't fail if it
+            # wasn't there in the first place (later runs).
+            gh release delete-asset "${{ github.ref_name }}" "igni.app.tar.gz" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
             echo "  ✓ uploaded as ${REMOTE_NAME}"
           else
             echo "::error::OLD_TARBALL is empty — regen step didn't find a tarball; updater payload will be stale"
