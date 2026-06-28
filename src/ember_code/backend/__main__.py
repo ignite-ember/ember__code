@@ -361,6 +361,11 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         # ── Session / status ──────────────────────────────────────
         RpcMethod.SHUTDOWN: lambda args: backend.shutdown(),
         RpcMethod.GET_CHAT_HISTORY: lambda args: backend.get_chat_history(args["session_id"]),
+        RpcMethod.SEARCH_CHAT: lambda args: backend.search_chat(
+            args["session_id"],
+            args["query"],
+            int(args.get("limit", 50)),
+        ),
         RpcMethod.UPLOAD_ATTACHMENT: lambda args: backend.upload_attachment(
             args["filename"], args["content_base64"]
         ),
@@ -447,6 +452,14 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.RELOAD_HOOKS: lambda args: backend.reload_hooks_rpc(),
         # ── Skills ────────────────────────────────────────────────
         RpcMethod.GET_SKILL_DETAILS: lambda args: backend.get_skill_details(),
+        # ── Slash commands (SDK enumeration) ─────────────────────
+        RpcMethod.GET_SLASH_COMMANDS: lambda args: backend.get_slash_commands(),
+        # ── Todo list (CC TodoWrite parity) ──────────────────────
+        RpcMethod.GET_TODOS: lambda args: backend.get_todos(),
+        # ── Latest plan (CC plan mode, row 50) ───────────────────
+        RpcMethod.GET_LATEST_PLAN: lambda args: backend.get_latest_plan(),
+        # ── Output styles (CC row 52) ────────────────────────────
+        RpcMethod.GET_OUTPUT_STYLES: lambda args: backend.get_output_styles(),
         # ── Knowledge ─────────────────────────────────────────────
         RpcMethod.GET_KNOWLEDGE_STATUS: lambda args: backend.get_knowledge_status(),
         RpcMethod.KNOWLEDGE_SEARCH: lambda args: backend.knowledge_search(args["query"]),
@@ -725,6 +738,28 @@ async def _run(
         )
 
     backend.wire_orchestrate_progress(_on_progress)
+
+    # Plan-mode broadcasts — `set_permission_mode` and
+    # `exit_plan_mode` fire via `Session.broadcast(channel,
+    # payload)`. We hop onto the running event loop because
+    # ``broadcast`` is sync and may be called from a tool-call
+    # context that isn't itself awaiting. Channels:
+    # ``permission_mode_changed`` (badge update) and
+    # ``plan_submitted`` (inline plan card).
+    _plan_loop = asyncio.get_running_loop()
+
+    def _on_plan_event(channel: str, payload: dict) -> None:
+        def _send() -> None:
+            asyncio.ensure_future(
+                transport.send(msg.PushNotification(channel=channel, payload=payload))
+            )
+
+        # Event loop closed during shutdown — drop the push.
+        with contextlib.suppress(RuntimeError):
+            _plan_loop.call_soon_threadsafe(_send)
+
+    if hasattr(backend, "_session") and hasattr(backend._session, "register_broadcast_callback"):
+        backend._session.register_broadcast_callback(_on_plan_event)
 
     # ── File-edit push notifications ─────────────────────────────
     # Edit tools call ``set_file_edit_listener`` from any thread the

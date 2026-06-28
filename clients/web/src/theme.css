@@ -770,6 +770,19 @@ button {
 
 /* ── Conversation column ────────────────────────────────────────── */
 
+/* Positioned wrapper: holds the Virtuoso scroller (or welcome) and
+   serves as the anchor for the absolute-positioned scroll-to-latest
+   button. Takes all available height between the header and the
+   composer so the button's ``bottom: 16px`` lands just above the
+   composer, never under it. */
+.conversation-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
 .conversation {
   flex: 1;
   overflow-y: auto;
@@ -899,14 +912,19 @@ button {
   mask-image: linear-gradient(to bottom, #000 0%, #000 20%, transparent 40%);
 }
 
-/* Floating jump-to-latest button. Lives inside .col so its horizontal
-   center matches the composer / message column. Sticky to bottom of
-   the viewport, ``align-self: center`` puts it on the column's
-   centerline regardless of how wide .col is at this breakpoint. */
+/* Floating jump-to-latest button. Absolute-positioned inside the
+   ``.main`` column (anchored above the composer) so it OVERLAYS the
+   bottom of the conversation instead of sitting in flow.
+   Earlier this used ``position: sticky`` inside ``.col`` — that
+   worked while every message was rendered inside one big column
+   wrapper, but virtualisation made the button a sibling of the
+   Virtuoso scroller, where ``sticky`` falls back to ``relative``
+   and an opaque button started pushing the message column up. */
 .scroll-to-bottom {
-  position: sticky;
+  position: absolute;
   bottom: 16px;
-  align-self: center;
+  left: 50%;
+  transform: translateX(-50%);
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -919,16 +937,17 @@ button {
   justify-content: center;
   padding: 0;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
-  transition: color 0.12s, border-color 0.12s, transform 0.12s;
+  transition:
+    color 0.12s,
+    border-color 0.12s,
+    transform 0.12s;
   z-index: 5;
-  /* Don't add to the column's vertical spacing (.col has gap: 18px). */
-  margin-top: 0;
 }
 
 .scroll-to-bottom:hover {
   color: var(--ember-orange);
   border-color: var(--ember-orange);
-  transform: translateY(calc(-1px));
+  transform: translateX(-50%) translateY(-1px);
 }
 
 .col {
@@ -958,11 +977,312 @@ button {
 }
 
 /* Blinking caret on the last assistant block while streaming. */
-.col.streaming > .msg-assistant:last-child::after {
+.col.streaming > .msg-assistant:last-child::after,
+.chat-row.streaming > .msg-assistant::after {
   content: "▍";
   color: var(--ember-orange);
   animation: caret-blink 1s steps(2) infinite;
   margin-left: 2px;
+}
+
+/* ── Virtualized chat row ──────────────────────────────────────────
+   Wrapper around each individual ChatItemView inside the Virtuoso
+   list. Mirrors ``.col``'s horizontal centering + max-width so the
+   layout reads identical to the pre-virtualization version. Each
+   row's ``padding-bottom`` reproduces the 18 px gap that the old
+   single ``.col`` got from ``gap: 18px`` — sibling-margin selectors
+   wouldn't work because Virtuoso wraps each row in its own
+   positioning div so ``.chat-row`` elements aren't adjacent
+   siblings. */
+.chat-row {
+  max-width: var(--col);
+  margin: 0 auto;
+  padding: 0 20px 18px;
+  display: flex;
+  flex-direction: column;
+}
+/* New-item ease-in animation, ported from the ``.col > *`` rule. */
+.chat-row > * {
+  animation: item-in 0.18s ease;
+}
+
+/* Visualization applied to the chat row a user lands on from the
+   ChatSearchBar. The class is removed after ~2.4 s in App.tsx so
+   re-targeting the same row re-triggers the animation cleanly.
+   The pulse + ring are applied to the DIRECT CHILD (the actual
+   message bubble) rather than the wider ``.chat-row`` wrapper so
+   ``box-shadow`` traces the bubble's existing border-radius
+   instead of drawing a too-wide rectangle around the padded row.
+   A short accent bar lives on ``.chat-row::before`` as a side
+   indicator — separate from the bubble glow.
+*/
+.chat-row.search-target {
+  position: relative;
+}
+/* Ring + pulse glow is reserved for bubble-shaped children
+   (currently ``.msg-user``). Assistant text and other full-width
+   markdown flows just get the left accent bar — a box-shadow ring
+   around full-width content reads as an oversized rectangle, not a
+   highlight of the actual message. */
+.chat-row.search-target > .msg-user {
+  animation: search-target-pulse 2.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.chat-row.search-target::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  bottom: 22px;
+  width: 4px;
+  border-radius: 3px;
+  background: var(--ember-orange);
+  box-shadow: 0 0 12px 1px color-mix(in srgb, var(--ember-orange) 60%, transparent);
+  animation: search-target-bar 2.4s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center;
+  pointer-events: none;
+}
+@keyframes search-target-pulse {
+  0% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--ember-orange) 75%, transparent),
+      0 0 36px 6px color-mix(in srgb, var(--ember-orange) 30%, transparent);
+    transform: scale(1.012);
+  }
+  18% {
+    box-shadow:
+      0 0 0 1.5px color-mix(in srgb, var(--ember-orange) 45%, transparent),
+      0 0 24px 2px color-mix(in srgb, var(--ember-orange) 18%, transparent);
+    transform: scale(1);
+  }
+  45% {
+    box-shadow:
+      0 0 0 1.5px color-mix(in srgb, var(--ember-orange) 55%, transparent),
+      0 0 24px 4px color-mix(in srgb, var(--ember-orange) 22%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    transform: scale(1);
+  }
+}
+@keyframes search-target-bar {
+  0% {
+    transform: scaleY(0);
+    opacity: 0;
+  }
+  12% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+  85% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleY(1);
+    opacity: 0;
+  }
+}
+
+/* Compact icon-only chip used for the find-in-conversation toggle —
+   sits in the header next to the project chip. ``.chip-search.active``
+   is applied while the search bar is open so the icon reads as a
+   toggle button instead of just a tap target. */
+.chip-search {
+  padding: 6px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+.chip-search.active {
+  background: color-mix(in srgb, var(--ember-orange) 18%, transparent);
+  border-color: color-mix(in srgb, var(--ember-orange) 55%, transparent);
+  color: var(--ember-orange);
+  box-shadow: 0 0 12px 0 color-mix(in srgb, var(--ember-orange) 35%, transparent);
+}
+
+/* ── Find-in-conversation bar ──────────────────────────────────────
+   Docked above the chat list while open. The input has the same
+   visual language as the composer chip controls; results live in a
+   short scrollable list with the matched substring highlighted in
+   the ember accent. */
+.chat-search-bar {
+  position: absolute;
+  top: 58px;
+  left: 50%;
+  width: min(680px, 92%);
+  background: var(--bg-elevated, var(--bg));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 14px;
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.42),
+    0 4px 8px rgba(0, 0, 0, 0.22),
+    0 0 0 1px color-mix(in srgb, var(--ember-orange) 22%, transparent);
+  z-index: 25;
+  overflow: hidden;
+  /* Centering transform: at rest, the element is anchored by its
+     centerline. Every keyframe of ``search-bar-in`` re-includes
+     this -50% so the element stays centered throughout the
+     animation; without it, the bar snaps to ``left: 50%`` (its
+     LEFT edge at center, not centered) the instant the keyframes
+     finish — looks like a sideways jump after the slide-in. */
+  transform: translateX(-50%);
+  transform-origin: 50% -8px;
+  animation: search-bar-in 0.32s cubic-bezier(0.22, 1.18, 0.36, 1);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+@keyframes search-bar-in {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -14px) scale(0.94);
+    filter: blur(3px);
+    box-shadow:
+      0 0 0 1px transparent,
+      0 0 0 transparent;
+  }
+  55% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+    filter: blur(0);
+    box-shadow:
+      0 16px 40px rgba(0, 0, 0, 0.42),
+      0 4px 8px rgba(0, 0, 0, 0.22),
+      0 0 0 1px color-mix(in srgb, var(--ember-orange) 22%, transparent);
+  }
+}
+/* Subtle ember glow that pulses once on open to draw the eye. */
+.chat-search-bar::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 32px 4px color-mix(in srgb, var(--ember-orange) 28%, transparent);
+  opacity: 0;
+  animation: search-bar-glow 0.9s ease-out 0.05s;
+}
+@keyframes search-bar-glow {
+  0%, 100% { opacity: 0; }
+  40% { opacity: 1; }
+}
+.chat-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+.chat-search-icon {
+  display: flex;
+  align-items: center;
+  color: var(--fg-faint);
+  padding: 0 2px;
+}
+.chat-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-size: 13.5px;
+  font-family: inherit;
+  padding: 4px 0;
+}
+.chat-search-input::placeholder {
+  color: var(--fg-faint);
+}
+.chat-search-status {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+.chat-search-nav,
+.chat-search-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--fg-faint);
+  cursor: pointer;
+  padding: 0;
+}
+.chat-search-nav:hover:not(:disabled),
+.chat-search-close:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+.chat-search-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.chat-search-results {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.chat-search-result {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.chat-search-result:hover {
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.chat-search-result.active {
+  background: color-mix(in srgb, var(--ember-orange) 14%, transparent);
+}
+.chat-search-result.unreachable {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chat-search-role {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  min-width: 38px;
+}
+.chat-search-role-user {
+  color: color-mix(in srgb, var(--ember-orange) 75%, var(--fg-faint));
+}
+.chat-search-snippet {
+  flex: 1;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-search-snippet mark {
+  background: color-mix(in srgb, var(--ember-orange) 45%, transparent);
+  color: var(--fg);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+.chat-search-time {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-left: 8px;
 }
 
 @keyframes caret-blink {
@@ -1255,6 +1575,26 @@ button {
 .msg-assistant h3 {
   letter-spacing: -0.01em;
   line-height: 1.3;
+}
+
+/* Links inside rendered markdown (assistant bubble, plan cards, compact
+   summaries, loop iterations). Without this, anchors fall back to the
+   user-agent default blue (#0000EE) which is unreadable on the dark
+   surface. ``--accent-blue`` is theme-aware (#6aa3f7 dark / #0969da
+   light) so the same rule works in both modes. */
+.msg-assistant-body a,
+.plan-card-body a,
+.compact-card-body a {
+  color: var(--accent-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.msg-assistant-body a:hover,
+.plan-card-body a:hover,
+.compact-card-body a:hover {
+  text-decoration-thickness: 2px;
 }
 
 /* Inline copy-response button sits to the right of the stats line
@@ -2693,6 +3033,390 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Plan-mode demo (``?demo=plan``) — each scenario gets a thin
+   surround so the components are visually distinct from the
+   explanatory copy. Not used by the real app. */
+.demo-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent-blue) 3%, transparent);
+}
+
+.demo-section-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.demo-section-blurb {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+
+.demo-section-blurb code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+/* ── Plan-mode UI (row 50) ────────────────────────────────────
+   The badge sits in the status line and only renders when
+   ``status.permission_mode === "plan"``; the card renders inline
+   in the chat when the agent calls ``exit_plan_mode``. */
+
+.plan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-orange, #f59e0b) 18%, transparent);
+  color: var(--accent-orange, #b45309);
+  border: 1px solid color-mix(in srgb, var(--accent-orange, #f59e0b) 40%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.plan-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent-orange, #f59e0b);
+  /* Subtle pulse so the user notices the chip on first paint —
+     plan mode is a state change that affects every subsequent
+     tool call, worth a moment of attention. */
+  animation: plan-badge-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes plan-badge-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Mode-badge variants (row 51 + future). Each tints both the
+   chip background AND the inner dot so the mode reads at a
+   glance: orange = read-only sandbox (plan), green = loosened
+   (acceptEdits), red = bypass / strict. Same pulse animation
+   across all so they share visual rhythm. */
+.mode-badge--accept {
+  background: color-mix(in srgb, var(--accent-green, #10b981) 18%, transparent);
+  color: var(--accent-green, #047857);
+  border-color: color-mix(in srgb, var(--accent-green, #10b981) 40%, transparent);
+}
+
+.mode-badge--accept .plan-badge-dot {
+  background: var(--accent-green, #10b981);
+}
+
+.mode-badge--bypass {
+  background: color-mix(in srgb, var(--accent-red, #ef4444) 18%, transparent);
+  color: var(--accent-red, #b91c1c);
+  border-color: color-mix(in srgb, var(--accent-red, #ef4444) 40%, transparent);
+}
+
+.mode-badge--bypass .plan-badge-dot {
+  background: var(--accent-red, #ef4444);
+}
+
+.mode-badge--dontask {
+  background: color-mix(in srgb, var(--accent-red, #ef4444) 14%, transparent);
+  color: var(--accent-red, #991b1b);
+  border-color: color-mix(in srgb, var(--accent-red, #ef4444) 36%, transparent);
+}
+
+.mode-badge--dontask .plan-badge-dot {
+  background: var(--accent-red, #ef4444);
+}
+
+/* Auto-approve switch — footer one-click toggle into
+   bypassPermissions mode. OFF state is calm (neutral pill, matches
+   the chip rhythm of its neighbours). ON state goes loud red so
+   the user can't forget the agent is running without prompts. */
+.auto-approve-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  padding: 0 10px 0 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.auto-approve-switch:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 50%, var(--border));
+}
+
+.auto-approve-switch:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.auto-approve-track {
+  position: relative;
+  display: inline-block;
+  width: 22px;
+  height: 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-faint) 35%, transparent);
+  transition: background 0.18s;
+}
+
+.auto-approve-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--fg);
+  transition: transform 0.18s, background 0.18s;
+}
+
+.auto-approve-switch.is-on {
+  background: color-mix(in srgb, var(--accent-red, #ef4444) 18%, transparent);
+  color: var(--accent-red, #b91c1c);
+  border-color: color-mix(in srgb, var(--accent-red, #ef4444) 45%, transparent);
+}
+
+.auto-approve-switch.is-on .auto-approve-track {
+  background: color-mix(in srgb, var(--accent-red, #ef4444) 60%, transparent);
+}
+
+.auto-approve-switch.is-on .auto-approve-thumb {
+  transform: translateX(10px);
+  background: #fff;
+}
+
+.auto-approve-label {
+  white-space: nowrap;
+}
+
+.plan-card {
+  align-self: stretch;
+  border: 1px solid color-mix(in srgb, var(--accent-orange, #f59e0b) 35%, var(--border-soft));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent-orange, #f59e0b) 6%, transparent);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plan-card--approved {
+  border-color: color-mix(in srgb, var(--accent-green, #10b981) 35%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent-green, #10b981) 5%, transparent);
+}
+
+.plan-card--dismissed {
+  opacity: 0.7;
+}
+
+.plan-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plan-card-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-orange, #f59e0b) 22%, transparent);
+  color: var(--accent-orange, #b45309);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.plan-card-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--accent-orange, #b45309);
+}
+
+.plan-card--approved .plan-card-badge {
+  background: color-mix(in srgb, var(--accent-green, #10b981) 22%, transparent);
+  color: var(--accent-green, #047857);
+}
+
+.plan-card--approved .plan-card-title {
+  color: var(--accent-green, #047857);
+}
+
+.plan-card-body {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+
+.plan-card-body > :first-child {
+  margin-top: 0;
+}
+
+.plan-card-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* Structured checklist that rides below the markdown plan when
+   the agent passed ``tasks=[...]`` to ``exit_plan_mode``. The
+   same DOM updates in place as ``todos_updated`` pushes mutate
+   item statuses during execution, so the user watches the plan
+   tick off live. */
+.plan-card-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px dashed color-mix(in srgb, var(--accent-orange, #f59e0b) 30%, var(--border-soft));
+}
+
+.plan-card--approved .plan-card-tasks {
+  border-top-color: color-mix(in srgb, var(--accent-green, #10b981) 30%, var(--border-soft));
+}
+
+.plan-card-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.plan-card-task-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.plan-card-task--pending .plan-card-task-marker {
+  border: 1px solid var(--border-soft);
+  color: var(--fg-faint);
+}
+
+.plan-card-task--in_progress .plan-card-task-marker {
+  background: color-mix(in srgb, var(--accent-orange, #f59e0b) 22%, transparent);
+  color: var(--accent-orange, #b45309);
+  /* Same pulse cadence as the PlanBadge dot so the two
+     in-progress signals visually rhyme — the eye picks up
+     a single rhythm across the screen. */
+  animation: plan-badge-pulse 2.4s ease-in-out infinite;
+}
+
+.plan-card-task--completed .plan-card-task-marker {
+  background: color-mix(in srgb, var(--accent-green, #10b981) 22%, transparent);
+  color: var(--accent-green, #047857);
+}
+
+.plan-card-task--completed .plan-card-task-text {
+  text-decoration: line-through;
+  color: var(--fg-faint);
+}
+
+.plan-card-task--in_progress .plan-card-task-text {
+  font-weight: 600;
+}
+
+.plan-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.plan-card-btn {
+  font-family: var(--font-ui, inherit);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+
+.plan-card-btn:hover {
+  filter: brightness(1.08);
+}
+
+.plan-card-btn:active {
+  filter: brightness(0.92);
+}
+
+.plan-card-btn--approve {
+  background: var(--accent-green, #10b981);
+  color: white;
+}
+
+.plan-card-btn--reject {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border-soft);
+}
+
+.plan-card-footer {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.plan-card-footer--approved {
+  color: var(--accent-green, #047857);
+}
+
+.plan-card-footer--dismissed {
+  color: var(--fg-faint);
+}
+
+.plan-card-hint {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  line-height: 1.5;
 }
 
 .compact-card-head {

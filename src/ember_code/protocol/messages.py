@@ -57,6 +57,7 @@ class CommandAction(StrEnum):
     NONE = ""  # default — no action, just render content
     QUIT = "quit"
     CLEAR = "clear"
+    FORK = "fork"  # session was duplicated; ``content`` carries new id
     SESSIONS = "sessions"
     MODEL = "model"  # show picker
     MODEL_SWITCHED = "model_switched"  # direct switch happened — refresh bar
@@ -291,6 +292,13 @@ class StatusUpdate(Message):
     model: str = ""
     cloud_connected: bool = False
     cloud_org: str = ""
+    # Active ``PermissionEvaluator`` mode (``default`` / ``plan`` /
+    # ``acceptEdits`` / ``bypassPermissions`` / ``dontAsk``). The
+    # FE renders a badge when this is ``plan`` (row 50 — plan-mode
+    # UI). Pushed on every status update + via the
+    # ``permission_mode_changed`` push when the slash command
+    # toggles it mid-session.
+    permission_mode: str = "default"
 
 
 class SessionListResult(Message):

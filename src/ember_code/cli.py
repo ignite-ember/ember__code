@@ -99,22 +99,53 @@ def cli(
                 "show_routing": False,
             }
         )
-    if read_only:
-        cli_overrides.setdefault("permissions", {}).update(
-            {
-                "file_write": "deny",
-                "shell_execute": "deny",
-            }
-        )
-    if accept_edits:
-        cli_overrides.setdefault("permissions", {})["file_write"] = "allow"
+    # Map permission-shaping flags to BOTH:
+    # 1. ``permissions.mode`` — the CC-compatible 5-mode enum the
+    #    ``PermissionEvaluator`` reads (file_path / shell tool calls
+    #    actually route through it).
+    # 2. The legacy per-category fields — kept populated for any
+    #    third-party code still reading ``permissions.file_write``
+    #    etc. (the project's own ``PermissionGuard.check_*`` methods
+    #    are dead code today, but external plugins may not be).
+    #
+    # Order is "permissive → strict" so the strictest passed flag
+    # wins via standard dict update — if a user passes
+    # ``--auto-approve --strict``, they get ``strict``. Matches the
+    # principle "safety beats convenience" used in the executor's
+    # multi-hook merge.
     if auto_approve:
         cli_overrides.setdefault("permissions", {}).update(
             {
+                "mode": "bypassPermissions",
                 "file_write": "allow",
                 "shell_execute": "allow",
                 "git_push": "allow",
                 "git_destructive": "allow",
+            }
+        )
+    if accept_edits:
+        cli_overrides.setdefault("permissions", {}).update(
+            {
+                "mode": "acceptEdits",
+                "file_write": "allow",
+            }
+        )
+    if read_only:
+        cli_overrides.setdefault("permissions", {}).update(
+            {
+                "mode": "plan",
+                "file_write": "deny",
+                "shell_execute": "deny",
+            }
+        )
+    if strict:
+        cli_overrides.setdefault("permissions", {}).update(
+            {
+                "mode": "dontAsk",
+                "file_write": "deny",
+                "shell_execute": "deny",
+                "git_push": "deny",
+                "git_destructive": "deny",
             }
         )
     if no_web:
@@ -122,15 +153,6 @@ def cli(
             {
                 "web_search": "deny",
                 "web_fetch": "deny",
-            }
-        )
-    if strict:
-        cli_overrides.setdefault("permissions", {}).update(
-            {
-                "file_write": "deny",
-                "shell_execute": "deny",
-                "git_push": "deny",
-                "git_destructive": "deny",
             }
         )
 

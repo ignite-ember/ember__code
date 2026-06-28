@@ -1,5 +1,7 @@
 """Tests for config/settings.py."""
 
+import pytest
+
 from ember_code.core.config.settings import (
     ModelsConfig,
     PermissionsConfig,
@@ -8,6 +10,25 @@ from ember_code.core.config.settings import (
     _load_yaml,
     load_settings,
 )
+from ember_code.core.config.settings import (
+    _platform_managed_settings_path as _REAL_PLATFORM_PATH,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_managed_settings(monkeypatch):
+    """Default every settings test to "no managed policy deployed."
+
+    Tests that care about the managed tier explicitly override this
+    via their own monkeypatch — the autouse just makes sure stray
+    OS-level files don't bleed into hermetic tests. The real platform
+    function is captured at module load time as
+    ``_REAL_PLATFORM_PATH`` so platform-detail tests can still reach
+    it past this stub."""
+    monkeypatch.setattr(
+        "ember_code.core.config.settings._platform_managed_settings_path",
+        lambda: None,
+    )
 
 
 class TestDeepMerge:
@@ -138,3 +159,141 @@ class TestLoadSettings:
 
         s = load_settings(project_dir=tmp_path)
         assert s.models.default == "local"
+
+
+class TestPlatformManagedSettingsPath:
+    """The autouse fixture neutralises the live module attribute;
+    these tests reach the real function via ``_REAL_PLATFORM_PATH``
+    captured at module import time."""
+
+    def test_darwin_path(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        p = _REAL_PLATFORM_PATH()
+        assert p is not None
+        assert str(p) == "/Library/Application Support/Ember/managed-settings.yaml"
+
+    def test_linux_path(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+        p = _REAL_PLATFORM_PATH()
+        assert p is not None
+        assert str(p) == "/etc/ember/managed-settings.yaml"
+
+    def test_win32_uses_programdata(self, monkeypatch):
+        monkeypatch.setenv("PROGRAMDATA", r"C:\TestProgramData")
+        monkeypatch.setattr("sys.platform", "win32")
+        p = _REAL_PLATFORM_PATH()
+        assert p is not None
+        assert "Ember" in str(p)
+        assert "managed-settings.yaml" in str(p)
+
+    def test_unknown_platform_returns_none(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "freebsd")
+        assert _REAL_PLATFORM_PATH() is None
+
+
+class TestManagedSettings:
+    """The managed-policy tier is the 5th precedence level — it wins
+    over CLI flags. Used by sysadmins/MDM to enforce org policy that
+    a user can't override locally."""
+
+    def test_managed_overrides_user_global(self, tmp_path, monkeypatch):
+        managed = tmp_path / "managed.yaml"
+        managed.write_text("models:\n  default: org-pinned\n")
+        monkeypatch.setattr(
+            "ember_code.core.config.settings._platform_managed_settings_path",
+            lambda: managed,
+        )
+        s = load_settings(project_dir=tmp_path)
+        assert s.models.default == "org-pinned"
+
+    def test_managed_overrides_project(self, tmp_path, monkeypatch):
+        ember_dir = tmp_path / ".ember"
+        ember_dir.mkdir()
+        (ember_dir / "config.yaml").write_text("models:\n  default: project-model\n")
+        managed = tmp_path / "managed.yaml"
+        managed.write_text("models:\n  default: org-pinned\n")
+        monkeypatch.setattr(
+            "ember_code.core.config.settings._platform_managed_settings_path",
+            lambda: managed,
+        )
+        s = load_settings(project_dir=tmp_path)
+        assert s.models.default == "org-pinned"
+
+    def test_managed_overrides_cli(self, tmp_path, monkeypatch):
+        """Headline invariant: managed beats CLI. A user can't
+        ``--auto-approve`` their way out of an org policy."""
+        managed = tmp_path / "managed.yaml"
+        managed.write_text("permissions:\n  mode: dontAsk\nmodels:\n  default: org-pinned\n")
+        monkeypatch.setattr(
+            "ember_code.core.config.settings._platform_managed_settings_path",
+            lambda: managed,
+        )
+        s = load_settings(
+            cli_overrides={
+                "models": {"default": "user-cli-choice"},
+                "permissions": {"mode": "bypassPermissions"},
+            },
+            project_dir=tmp_path,
+        )
+        # CLI lost both fights — managed wins.
+        assert s.models.default == "org-pinned"
+        assert s.permissions.mode == "dontAsk"
+
+    def test_managed_missing_file_is_no_op(self, tmp_path, monkeypatch):
+        # Point at a path that doesn't exist — loader should fall
+        # back to lower tiers without raising.
+        monkeypatch.setattr(
+            "ember_code.core.config.settings._platform_managed_settings_path",
+            lambda: tmp_path / "does-not-exist.yaml",
+        )
+        s = load_settings(
+            cli_overrides={"models": {"default": "user-cli-choice"}},
+            project_dir=tmp_path,
+        )
+        assert s.models.default == "user-cli-choice"
+
+    def test_managed_partial_keys_preserve_other_layers(self, tmp_path, monkeypatch):
+        """Managed only enforces what it sets — other fields fall
+        through normally. A policy that pins ``permissions.mode``
+        shouldn't wipe out the user's chosen model."""
+        managed = tmp_path / "managed.yaml"
+        managed.write_text("permissions:\n  mode: dontAsk\n")
+        monkeypatch.setattr(
+            "ember_code.core.config.settings._platform_managed_settings_path",
+            lambda: managed,
+        )
+        s = load_settings(
+            cli_overrides={"models": {"default": "user-cli-choice"}},
+            project_dir=tmp_path,
+        )
+        assert s.permissions.mode == "dontAsk"  # from managed
+        assert s.models.default == "user-cli-choice"  # from CLI, untouched
+
+    def test_managed_json_content_parses(self, tmp_path, monkeypatch):
+        """JSON is a strict subset of YAML — admins coming from
+        CC's ``managed-settings.json`` can paste their JSON content
+        into our ``managed-settings.yaml`` and it parses fine."""
+        managed = tmp_path / "managed.yaml"
+        managed.write_text(
+            '{"permissions": {"mode": "dontAsk"}, "models": {"default": "json-model"}}'
+        )
+        monkeypatch.setattr(
+            "ember_code.core.config.settings._platform_managed_settings_path",
+            lambda: managed,
+        )
+        s = load_settings(project_dir=tmp_path)
+        assert s.permissions.mode == "dontAsk"
+        assert s.models.default == "json-model"
+
+    def test_platform_returns_none_disables_managed(self, tmp_path, monkeypatch):
+        """Unknown platform (no managed location defined) → managed
+        tier is silently skipped without error."""
+        monkeypatch.setattr(
+            "ember_code.core.config.settings._platform_managed_settings_path",
+            lambda: None,
+        )
+        s = load_settings(
+            cli_overrides={"models": {"default": "cli-wins"}},
+            project_dir=tmp_path,
+        )
+        assert s.models.default == "cli-wins"

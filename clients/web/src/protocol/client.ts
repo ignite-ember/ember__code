@@ -69,6 +69,24 @@ export function resolveWsUrl(): string {
   return url;
 }
 
+export interface ChatSearchMatch {
+  /** Position in ``get_chat_history``'s output; caller maps to its
+   *  in-memory items index via the parallel mapping. */
+  history_index: number;
+  role: "user" | "assistant" | string;
+  run_id: string;
+  /** Snippet from the matched turn's content with ellipses on the
+   *  trimmed ends. UTF-16 / surrogate-safe by construction. */
+  snippet: string;
+  /** Match offset within ``snippet`` (not the full content). */
+  match_start: number;
+  match_end: number;
+  /** Epoch seconds (Agno-issued); 0 if the turn pre-dates the
+   *  ``created_at`` field. Formatted to a relative or locale-time
+   *  string per result row on the FE. */
+  created_at: number;
+}
+
 export type ConnectionState =
   | "connecting"
   | "connected"
@@ -312,6 +330,28 @@ export class EmberClient {
     limit = 50,
   ): Promise<{ matches: string[]; total: number }> {
     return this.rpc<{ matches: string[]; total: number }>("complete_files", {
+      query,
+      limit,
+    });
+  }
+
+  /**
+   * Case-insensitive substring search over the persisted history of
+   * ``sessionId`` (Agno SQLite session). Cheap for any reasonable
+   * conversation length — the BE walks pre-deserialized turn dicts.
+   *
+   * ``history_index`` aligns with ``get_chat_history``'s emission
+   * order; the caller maps it to its in-memory items list through
+   * the parallel ``historyIndex → itemIndex`` map it builds at
+   * session-load time.
+   */
+  searchChat(
+    sessionId: string,
+    query: string,
+    limit = 50,
+  ): Promise<ChatSearchMatch[]> {
+    return this.rpc<ChatSearchMatch[]>("search_chat", {
+      session_id: sessionId,
       query,
       limit,
     });

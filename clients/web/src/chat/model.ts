@@ -282,6 +282,78 @@ export function applyOrchestrateEvent(
   }
 }
 
+/** One structured task from the agent's ``exit_plan_mode``
+ *  ``tasks=[...]`` argument, plus the live status the
+ *  ``todos_updated`` push refreshes during execution.
+ *  ``activeForm`` is the verb-noun gerund the UI renders while
+ *  the task is ``in_progress`` (e.g. "Running tests" instead of
+ *  "Run tests"). */
+export type PlanTask = {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm: string;
+};
+
+/** Coerce one untrusted task object (from a ``plan_submitted`` or
+ *  ``todos_updated`` push) to a {@link PlanTask}. Returns ``null``
+ *  when the object lacks a non-empty ``content`` field — those are
+ *  unusable and the caller should drop them. ``status`` defaults to
+ *  ``"pending"`` if missing or not one of the three valid values
+ *  (the BE could send a future status we don't recognise yet —
+ *  fail safe rather than crash). */
+export function normalizePlanTask(raw: unknown): PlanTask | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const content = String(r.content ?? "").trim();
+  if (!content) return null;
+  const status =
+    r.status === "in_progress" || r.status === "completed" ? r.status : "pending";
+  const activeForm = String(r.activeForm ?? "").trim();
+  return { content, status, activeForm };
+}
+
+/** Bulk version of {@link normalizePlanTask} that silently skips
+ *  any element it can't normalize. Used by the ``plan_submitted``
+ *  channel and ``todos_updated`` channel — both arrive as a list. */
+export function normalizePlanTasks(raw: unknown): PlanTask[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PlanTask[] = [];
+  for (const t of raw) {
+    const n = normalizePlanTask(t);
+    if (n) out.push(n);
+  }
+  return out;
+}
+
+/** Merge a fresh ``todos_updated`` snapshot into an existing
+ *  PlanCard's task list, matching by ``content``.
+ *
+ *  - Existing tasks not present in ``todos`` keep their last-known
+ *    status (the agent may have dropped a step mid-flight; blanking
+ *    would surprise the user worse than a stale tick).
+ *  - New tasks in ``todos`` that aren't in the original plan are
+ *    NOT added — the PlanCard reflects the plan the user
+ *    approved, not the live todo set. (CC behavior; the bare
+ *    ``/todos`` view shows the latter.)
+ *  - ``activeForm`` only updates if the new value is non-empty,
+ *    so a partial update can't erase a previously-set gerund. */
+export function mergePlanTasks(existing: PlanTask[], todos: unknown): PlanTask[] {
+  if (existing.length === 0) return existing;
+  const fresh = normalizePlanTasks(todos);
+  if (fresh.length === 0) return existing;
+  const byContent = new Map<string, PlanTask>();
+  for (const t of fresh) byContent.set(t.content, t);
+  return existing.map((task) => {
+    const match = byContent.get(task.content);
+    if (!match) return task;
+    return {
+      ...task,
+      status: match.status,
+      activeForm: match.activeForm || task.activeForm,
+    };
+  });
+}
+
 export type ChatItem =
   | {
       kind: "user";
@@ -359,6 +431,30 @@ export type ChatItem =
       summary: string;
     }
   | {
+      /** Plan submitted by the agent via ``exit_plan_mode`` (row 50).
+       *  Renders the plan markdown + Approve / Reject buttons.
+       *
+       *  ``state`` transitions: ``pending`` → ``approved`` (user
+       *  clicked Approve, which flips ``/plan off``) or
+       *  ``dismissed`` (user clicked Reject — buttons hide; the
+       *  plan body stays visible so the agent can still reference
+       *  it in the conversation transcript). The card never
+       *  disappears entirely — the plan is part of the
+       *  conversation history.
+       *
+       *  ``tasks`` is the optional structured checklist the
+       *  agent passed with ``exit_plan_mode(plan, tasks=[...])``.
+       *  Seeded from the ``plan_submitted`` push; updated in
+       *  place as ``todos_updated`` pushes arrive during
+       *  execution (matched by ``content``). Empty when the
+       *  agent submitted a prose-only plan. */
+      kind: "plan";
+      id: number;
+      plan: string;
+      state: "pending" | "approved" | "dismissed";
+      tasks: PlanTask[];
+    }
+  | {
       /** Structured marker for one ``/loop`` iteration. The wrapped
        *  prompt sent to the model is verbose (autonomous-mode
        *  instructions + ``loop_set_total`` reminder); the chat just
@@ -414,6 +510,10 @@ const nid = () => ++itemId;
 
 export function shellItem(command: string): ChatItem {
   return { kind: "shell", id: nid(), command, output: "", exitCode: null };
+}
+
+export function planItem(plan: string, tasks: PlanTask[] = []): ChatItem {
+  return { kind: "plan", id: nid(), plan, state: "pending", tasks };
 }
 
 export function attachmentsItem(files: { name: string; path: string }[]): ChatItem {

@@ -191,6 +191,60 @@ def _search_code_cache_put(cache: dict, key: str, value: dict) -> None:
         cache.pop(next(iter(cache)))
 
 
+# Width on either side of a match for the snippet we ship to the FE.
+# Generous enough for the user to see context but tight enough to
+# keep the search-results dropdown skimmable.
+_SEARCH_CHAT_SNIPPET_HALF_WIDTH = 80
+
+
+def _search_history(history: list[dict], needle: str, limit: int) -> list[dict]:
+    """Substring scan over a get_chat_history result.
+
+    Extracted from BackendServer so it can be unit-tested without
+    spinning up an Agno session.
+    """
+    needle_lower = needle.lower()
+    needle_len = len(needle)
+    if needle_len == 0:
+        # Defense in depth — caller already strips, but ``find("")``
+        # returns 0 for every string and would emit a match for every
+        # turn. Empty query → no matches.
+        return []
+    matches: list[dict] = []
+    for idx, turn in enumerate(history):
+        content = turn.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        pos = content.lower().find(needle_lower)
+        if pos < 0:
+            continue
+        start = max(0, pos - _SEARCH_CHAT_SNIPPET_HALF_WIDTH)
+        end = min(len(content), pos + needle_len + _SEARCH_CHAT_SNIPPET_HALF_WIDTH)
+        snippet = content[start:end]
+        leading_ellipsis = "…" if start > 0 else ""
+        trailing_ellipsis = "…" if end < len(content) else ""
+        snippet = f"{leading_ellipsis}{snippet}{trailing_ellipsis}"
+        # Position of the match within the snippet string (not the
+        # original content) — keeps the FE highlight logic trivial.
+        match_start = (pos - start) + len(leading_ellipsis)
+        matches.append(
+            {
+                "history_index": idx,
+                "role": str(turn.get("role") or ""),
+                "run_id": str(turn.get("run_id") or ""),
+                "snippet": snippet,
+                "match_start": match_start,
+                "match_end": match_start + needle_len,
+                # Epoch seconds (Agno-issued) — the FE formats it into
+                # a relative "2h ago" / locale time string per row.
+                "created_at": int(turn.get("created_at") or 0),
+            }
+        )
+        if len(matches) >= limit:
+            break
+    return matches
+
+
 class BackendServer:
     """Wraps Session and handles all FE→BE protocol messages."""
 
@@ -1288,12 +1342,23 @@ class BackendServer:
         hung after a run while Agno's post-stream tail held session
         state.
         """
+        # Defensive ``isinstance`` guards: production code always
+        # gets a real ``PermissionEvaluator`` here, but test
+        # fixtures often pass a ``MagicMock`` session whose
+        # ``permission_evaluator.mode.value`` returns a MagicMock
+        # — pydantic then rejects the StatusUpdate. The check
+        # falls back to ``"default"`` for any non-string value so
+        # the wire shape stays valid.
+        evaluator = getattr(self._session, "permission_evaluator", None)
+        raw_mode = getattr(getattr(evaluator, "mode", None), "value", None)
+        mode = raw_mode if isinstance(raw_mode, str) else "default"
         return msg.StatusUpdate(
             model=self._settings.models.default,
             cloud_connected=self._session.cloud_connected,
             cloud_org=self._session.cloud_org_name or "",
             context_tokens=getattr(self._session, "_last_input_tokens", 0),
             max_context=self._settings.models.max_context_window,
+            permission_mode=mode,
         )
 
     # ── /loop continuation ────────────────────────────────────────
@@ -1809,8 +1874,18 @@ class BackendServer:
                 if role == "tool":
                     history_chars += len(content)
                     continue
-                # User / assistant — display AND count.
-                out.append({"role": role, "content": content, "run_id": run_id})
+                # User / assistant — display AND count. Carry the
+                # message's ``created_at`` (Agno-issued epoch seconds)
+                # so the FE can stamp each turn with a real time.
+                created_at = int(getattr(m, "created_at", 0) or 0)
+                out.append(
+                    {
+                        "role": role,
+                        "content": content,
+                        "run_id": run_id,
+                        "created_at": created_at,
+                    }
+                )
                 history_chars += len(content)
                 if role == "assistant":
                     assistant_chars += len(content)
@@ -1848,6 +1923,27 @@ class BackendServer:
                     }
                 )
         return out
+
+    async def search_chat(self, session_id: str, query: str, limit: int = 50) -> list[dict]:
+        """Case-insensitive substring search across the persisted
+        history of ``session_id``. Walks runs from the Agno SQLite
+        session and emits matches with a ``history_index`` that lines
+        up with ``get_chat_history``'s emission order — the FE keeps a
+        parallel ``historyIndex -> itemIndex`` map built at session
+        load so the result can be mapped straight to a chat item.
+
+        Returns at most ``limit`` matches in chronological order:
+          ``{history_index, role, run_id, snippet, match_start,
+             match_end}``
+        ``match_start``/``match_end`` are offsets within ``snippet``
+        (NOT the full content) so the FE can highlight without
+        bookkeeping the original string.
+        """
+        needle = (query or "").strip()
+        if not needle:
+            return []
+        history = await self.get_chat_history(session_id)
+        return _search_history(history, needle, limit)
 
     async def truncate_history(self, session_id: str, run_id: str) -> dict:
         """Drop the run with ``run_id`` and every later run from the
@@ -2791,6 +2887,164 @@ class BackendServer:
             for skill in self._session.skill_pool.list_skills()
         ]
 
+    # One-liner descriptions for the built-in commands. Used only
+    # by ``get_slash_commands`` to give SDK consumers a hint for
+    # completion UIs — the source of truth for the actual help
+    # text remains ``CommandHandler._HELP_TOPICS``.
+    _BUILTIN_DESCRIPTIONS: dict[str, str] = {
+        "help": "Show help and available commands",
+        "quit": "Exit the session",
+        "exit": "Exit the session",
+        "clear": "Clear the current conversation",
+        "compact": "Compact the conversation context",
+        "plan": "Toggle plan mode (read-only sandbox + plan-then-execute workflow)",
+        "accept": "Toggle acceptEdits mode (auto-approve file edits)",
+        "bypass": "Toggle bypassPermissions mode (auto-approve every tool — no HITL prompts)",
+        "output-style": "List or switch the active output style (tone / verbosity)",
+        "sessions": "List past sessions",
+        "rename": "Rename the current session",
+        "fork": "Fork the current session under a new id",
+        "model": "Switch the active model",
+        "config": "Show current settings",
+        "memory": "Inspect or optimise learned memories",
+        "knowledge": "Search or add to the knowledge base",
+        "codeindex": "Manage the semantic code index",
+        "agents": "List and manage agents",
+        "skills": "List installed skills",
+        "hooks": "List installed hooks",
+        "plugins": "Open the plugins panel",
+        "plugin": "Install / update / remove a plugin",
+        "mcp": "Open the MCP servers panel",
+        "login": "Sign in to Ember Cloud",
+        "logout": "Sign out of Ember Cloud",
+        "whoami": "Show the signed-in user",
+        "ctx": "Show context window usage",
+        "schedule": "Schedule one-shot or recurring tasks",
+        "loop": "Run a prompt in a loop",
+        "evals": "Run evaluation suites",
+        "bug": "Open a bug report",
+        "sync-knowledge": "Sync the knowledge base with git",
+    }
+
+    def get_output_styles(self) -> dict:
+        """Snapshot of discovered output styles + the active
+        one (row 52). FE renders a picker / chip from this.
+        ``styles`` is a list of ``{name, description}`` dicts;
+        ``active`` is the currently-applied style name (empty
+        when none configured)."""
+        styles = getattr(self._session, "output_styles", {}) or {}
+        active = getattr(self._session, "_active_output_style", "") or ""
+        return {
+            "active": active,
+            "styles": [
+                {"name": s.name, "description": s.description}
+                for s in sorted(styles.values(), key=lambda s: s.name)
+            ],
+        }
+
+    def get_latest_plan(self) -> dict:
+        """Snapshot of the session's plan store — the agent's
+        ``exit_plan_mode`` submissions (row 50). Returns
+        ``{latest: str, history: list[str]}``. Empty strings /
+        list when no plan has been submitted yet."""
+        store = getattr(self._session, "plan_store", None)
+        if store is None:
+            return {"latest": "", "history": []}
+        return store.snapshot()
+
+    def get_todos(self) -> list[dict]:
+        """Snapshot of the session's todo list as written by the
+        agent's ``todo_write`` tool. Each entry: ``{content,
+        status, activeForm}``. Returns ``[]`` when the agent
+        hasn't called the tool yet (no list exists).
+
+        Read-only — clients can't mutate the list directly. The
+        agent is the sole writer (CC parity: ``TodoWrite`` is the
+        only mutation path)."""
+        store = getattr(self._session, "todo_store", None)
+        if store is None:
+            return []
+        return store.snapshot()
+
+    def get_slash_commands(self) -> list[dict]:
+        """Snapshot of every available slash command for SDK
+        consumers (IDE plugins, completion UIs, the Claude Code
+        compatibility surface).
+
+        Three sources, in stable order:
+
+        1. ``builtin`` — shipped commands from
+           ``CommandHandler._COMMANDS`` (always available).
+        2. ``markdown`` — files discovered under the four
+           ``commands/`` roots (user-tier + project-tier ×
+           ember + claude namespaces, gated by
+           ``cross_tool_support``).
+        3. ``skill`` — user-invocable skills from
+           ``session.skill_pool``.
+
+        Each entry: ``{name, description, source, argument_hint}``.
+        ``name`` is the bare command (no leading slash) — callers
+        prepend the slash when displaying. Mirrors Claude Code's
+        SDK ``slash_commands`` field so a CC-compatible client can
+        consume both backends uniformly.
+        """
+        from ember_code.backend.command_handler import CommandHandler
+        from ember_code.core.utils.markdown_commands import discover_markdown_commands
+
+        out: list[dict] = []
+
+        # Built-ins.
+        for cmd_name in CommandHandler._COMMANDS:
+            bare = cmd_name.lstrip("/")
+            out.append(
+                {
+                    "name": bare,
+                    "description": self._BUILTIN_DESCRIPTIONS.get(bare, ""),
+                    "source": "builtin",
+                    "argument_hint": "",
+                }
+            )
+
+        # Markdown-authored commands.
+        try:
+            read_claude = self._session.settings.rules.cross_tool_support
+            md_commands = discover_markdown_commands(
+                self._session.project_dir,
+                read_claude=read_claude,
+            )
+        except Exception as exc:
+            logger.debug("get_slash_commands: markdown discovery failed: %s", exc)
+            md_commands = {}
+        for md in md_commands.values():
+            out.append(
+                {
+                    "name": md.name,
+                    "description": md.description,
+                    "source": "markdown",
+                    "argument_hint": md.argument_hint,
+                }
+            )
+
+        # User-invocable skills.
+        try:
+            skills = self._session.skill_pool.list_skills()
+        except Exception as exc:
+            logger.debug("get_slash_commands: skill enumeration failed: %s", exc)
+            skills = []
+        for skill in skills:
+            if not getattr(skill, "user_invocable", True):
+                continue
+            out.append(
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "source": "skill",
+                    "argument_hint": getattr(skill, "argument_hint", ""),
+                }
+            )
+
+        return out
+
     # ── Plugins ────────────────────────────────────────────────────
 
     def get_plugin_contents(self, name: str) -> dict:
@@ -2902,12 +3156,19 @@ class BackendServer:
                 description=p.manifest.description or "",
                 source_root=p.source.root,
                 path=str(p.root_path),
-                enabled=p.name not in disabled,
+                # Managed plugins ignore the persisted disable
+                # list (see ``Session._disabled_plugins``); reflect
+                # that here so the panel shows them enabled and
+                # locks the toggle.
+                enabled=p.is_managed or p.name not in disabled,
                 has_skills=p.has_skills,
                 has_agents=p.has_agents,
                 has_hooks=p.has_hooks,
                 has_mcp=p.has_mcp,
                 has_tools=p.has_tools,
+                has_lsp=p.has_lsp,
+                has_monitors=p.has_monitors,
+                managed=p.is_managed,
                 pin=state.pins.get(p.name, ""),
             )
             for p in loader.list_plugins()
@@ -2925,8 +3186,20 @@ class BackendServer:
 
         loader = self._session.plugin_loader
         state = self._session.plugin_state
-        if loader.get(name) is None:
+        plugin = loader.get(name)
+        if plugin is None:
             return msg.Info(text=f"No plugin named '{name}'.")
+        if plugin.is_managed and not enabled:
+            # Managed plugins are sysadmin-enforced; refuse the
+            # disable attempt explicitly so the user knows why
+            # rather than seeing a silent no-op.
+            return msg.Info(
+                text=(
+                    f"Plugin '{name}' is managed (sysadmin-enforced) and cannot be "
+                    "disabled. Remove it from the managed plugins directory to "
+                    "uninstall."
+                )
+            )
 
         disabled_set = set(state.disabled)
         if enabled:
@@ -3244,6 +3517,7 @@ class BackendServer:
         runner on the pool so reconnects (and the Web/TUI both calling
         this) don't spawn duplicate pollers competing for the same
         task store. Returns the runner for stop()."""
+        from ember_code.core.hooks.events import HookEvent
         from ember_code.core.scheduler.runner import SchedulerRunner
         from ember_code.core.scheduler.store import TaskStore
 
@@ -3253,11 +3527,50 @@ class BackendServer:
 
         sched_cfg = self._settings.scheduler
         store = TaskStore(project_dir=self._session.project_dir)
+
+        # Compose the caller's task callbacks with hook-event firings
+        # so plugins observe scheduler lifecycle without each call
+        # site re-implementing it. TaskCreated fires when the
+        # scheduler spawns a task (the moment the runtime first
+        # touches it); TaskCompleted fires regardless of outcome
+        # with the success/failure flag in ``status``.
+        hook_executor = self._session.hook_executor
+        session_id = self._session.session_id
+
+        def _on_started(task_id: str, description: str) -> None:
+            if on_task_started:
+                on_task_started(task_id, description)
+            asyncio.create_task(
+                hook_executor.execute(
+                    event=HookEvent.TASK_CREATED.value,
+                    payload={
+                        "session_id": session_id,
+                        "task_id": task_id,
+                        "description": description,
+                    },
+                )
+            )
+
+        def _on_completed(task_id: str, description: str, success: bool) -> None:
+            if on_task_completed:
+                on_task_completed(task_id, description, success)
+            asyncio.create_task(
+                hook_executor.execute(
+                    event=HookEvent.TASK_COMPLETED.value,
+                    payload={
+                        "session_id": session_id,
+                        "task_id": task_id,
+                        "description": description,
+                        "status": "completed" if success else "error",
+                    },
+                )
+            )
+
         runner = SchedulerRunner(
             store=store,
             execute_fn=self.execute_scheduled_task,
-            on_task_started=on_task_started,
-            on_task_completed=on_task_completed,
+            on_task_started=_on_started,
+            on_task_completed=_on_completed,
             poll_interval=sched_cfg.poll_interval,
             task_timeout=sched_cfg.task_timeout,
             max_concurrent=sched_cfg.max_concurrent,

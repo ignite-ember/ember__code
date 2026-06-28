@@ -252,3 +252,11 @@ clients/web/.playwright/
 # into ``clients/vscode/.vscode-test/`` on first ``npm test`` run.
 # Never check this in.
 clients/vscode/.vscode-test/
+
+# Claude Code per-user settings (allow rules carry absolute paths)
+clients/*/.claude/
+.claude/
+
+# pnpm artifacts (project uses npm; pnpm files only present when a contributor uses pnpm)
+clients/web/pnpm-lock.yaml
+clients/web/pnpm-workspace.yaml

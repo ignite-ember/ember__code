@@ -11,17 +11,27 @@ import {
   infoItem,
   isOrchestrateActive,
   loopItem,
+  mergePlanTasks,
   newStreamState,
+  normalizePlanTasks,
+  planItem,
   shellItem,
   userItem,
   type ChatItem,
   type OrchestrateEvent,
 } from "./chat/model";
 import { ClientStateStore, ensureClientId } from "./clientState";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChatItemView } from "./components/ChatItems";
+import { ChatSearchBar } from "./components/ChatSearchBar";
 import { Composer, BUILTIN_COMMANDS, type SlashCommand } from "./components/Composer";
 import { CodeIndexIndicator } from "./components/CodeIndexIndicator";
-import { CtxMeter, SessionChip } from "./components/StatusBits";
+import {
+  AutoApproveSwitch,
+  CtxMeter,
+  ModeBadge,
+  SessionChip,
+} from "./components/StatusBits";
 import { HitlDialog, type HitlDecision } from "./components/HitlDialog";
 import {
   ChevronIcon,
@@ -138,6 +148,12 @@ export default function App() {
   // "done" while the tokens line is still settling.
   const [finalizing, setFinalizing] = useState(false);
   const [status, setStatus] = useState<StatusUpdate | null>(null);
+  // Optimistic override for the auto-approve switch. The backend
+  // is the source of truth (``status.permission_mode``) but the
+  // ``permission_mode_changed`` broadcast can take a beat to land
+  // — without an optimistic flip the switch feels frozen for a
+  // second or two. ``null`` = use the backend value as-is.
+  const [bypassOptimistic, setBypassOptimistic] = useState<boolean | null>(null);
   const [hitl, setHitl] = useState<HITLRequest[] | null>(null);
   const [panel, setPanel] = useState<PanelState>({ kind: "none" });
   const [composerSeed, setComposerSeed] = useState<{ text: string; n: number } | null>(null);
@@ -208,6 +224,7 @@ export default function App() {
         if (id === "new_chat") {
           // Empty the chat — same effect as the ``/clear`` command.
           setItems([]);
+          setHistoryIndexToItemIndex([]);
         } else if (id === "check_update") {
           // App-menu "Check for Updates…" — fire the explicit check
           // with feedback (``silent=false`` surfaces an OS "Up to
@@ -595,9 +612,19 @@ export default function App() {
 
   // Persisted history + interrupted-message markers for a session,
   // as renderable items. Used on initial attach AND session picks.
+  // Parallel to ``items``: ``historyIndexToItemIndex[i]`` is the FE
+  // items position of the i-th turn in ``get_chat_history``'s output,
+  // or -1 if the turn was filtered out by ``restoredItem``. The chat
+  // search bar uses this to translate BE match indices into FE
+  // scroll-to positions without re-walking the items array.
+  const [historyIndexToItemIndex, setHistoryIndexToItemIndex] = useState<number[]>(
+    [],
+  );
+
   const fetchHistoryItems = useCallback(
-    async (id: string): Promise<ChatItem[]> => {
+    async (id: string): Promise<{ items: ChatItem[]; historyMap: number[] }> => {
       const loaded: ChatItem[] = [];
+      const historyMap: number[] = [];
       try {
         const history = await client.rpc<Record<string, unknown>[]>(
           "get_chat_history",
@@ -611,6 +638,7 @@ export default function App() {
           const role = String(turn.role ?? "");
           const runId = typeof turn.run_id === "string" ? turn.run_id : "";
           if (role === "stats") {
+            historyMap.push(loaded.length);
             loaded.push(restoredStatsItem(turn, assistantTextByRun.get(runId) ?? ""));
             continue;
           }
@@ -624,7 +652,14 @@ export default function App() {
               const prev = assistantTextByRun.get(runId) ?? "";
               assistantTextByRun.set(runId, prev ? `${prev} ${item.text}` : item.text);
             }
+            historyMap.push(loaded.length);
             loaded.push(item);
+          } else {
+            // ``restoredItem`` filtered this turn out (empty after
+            // stripping). Record -1 so the search-result mapping
+            // marks this match as unreachable rather than landing on
+            // the wrong item.
+            historyMap.push(-1);
           }
         }
       } catch {
@@ -653,7 +688,7 @@ export default function App() {
       } catch {
         /* crash recovery is best-effort */
       }
-      return loaded;
+      return { items: loaded, historyMap };
     },
     [client],
   );
@@ -734,7 +769,8 @@ export default function App() {
             // Resumed BE session (--resume-session / crash restart):
             // show its history instead of an empty welcome.
             const loaded = await fetchHistoryItems(client.sessionId);
-            if (loaded.length) setItems(loaded);
+            if (loaded.items.length) setItems(loaded.items);
+            setHistoryIndexToItemIndex(loaded.historyMap);
           } catch {
             /* ignore */
           }
@@ -985,6 +1021,61 @@ export default function App() {
           });
         } else if (m.channel === "session_named") {
           void refreshSessions();
+        } else if (m.channel === "permission_mode_changed") {
+          // BE flipped the live ``PermissionEvaluator.mode``. The
+          // status badge reads from ``status.permission_mode``;
+          // patch the cached status so the badge updates without
+          // waiting for the next ``status_update`` push (which
+          // only fires on token-counter changes).
+          const mode = String(
+            (m.payload as { mode?: unknown }).mode ?? "default",
+          );
+          setStatus((prev) =>
+            prev ? { ...prev, permission_mode: mode } : prev,
+          );
+          // Backend caught up to the user's click — drop the
+          // optimistic override so the switch tracks truth again.
+          setBypassOptimistic(null);
+          // When the AGENT entered plan mode (via the
+          // ``enter_plan_mode`` tool, not the user's /plan
+          // command) inject an inline info banner so the user
+          // sees what happened and why. The basic flip
+          // broadcast lacks ``source`` so we only paint the
+          // banner on the follow-up agent-attributed event.
+          const src = String((m.payload as { source?: unknown }).source ?? "");
+          if (src === "agent" && mode === "plan") {
+            const reason = String(
+              (m.payload as { reason?: unknown }).reason ?? "",
+            ).trim();
+            const text = reason
+              ? `Agent entered plan mode — ${reason}`
+              : "Agent entered plan mode.";
+            append(infoItem(text));
+          }
+        } else if (m.channel === "plan_submitted") {
+          // Agent called ``exit_plan_mode(plan, tasks=[...])``.
+          // Append a ``plan`` ChatItem so the user sees the
+          // plan card + Approve / Refine buttons inline in the
+          // conversation. ``tasks`` (optional) seeds the live
+          // checklist; ``todos_updated`` pushes refresh the
+          // statuses during execution.
+          const payload = m.payload as { plan?: unknown; tasks?: unknown };
+          const planText = String(payload.plan ?? "").trim();
+          if (planText) {
+            append(planItem(planText, normalizePlanTasks(payload.tasks)));
+          }
+        } else if (m.channel === "todos_updated") {
+          // ``todo_write`` mutated the TodoStore. Patch every open
+          // ``plan`` ChatItem's tasks — see ``mergePlanTasks`` for
+          // the matching/preserve semantics.
+          const todos = (m.payload as { todos?: unknown }).todos;
+          setItems((prev) =>
+            prev.map((it) =>
+              it.kind === "plan"
+                ? { ...it, tasks: mergePlanTasks(it.tasks, todos) }
+                : it,
+            ),
+          );
         }
       } else if (m.type === "streaming_done" || m.type === "stream_end") {
         // A run initiated by ANOTHER view finished its content.
@@ -1038,29 +1129,102 @@ export default function App() {
   // the user is already there (within a small slack zone), release
   // the lock the moment they scroll away. A floating "↓" button
   // appears in the gap so they can jump back.
+  // Virtuoso owns scroll. We just observe the "at bottom" state to
+  // toggle the scroll-to-bottom button. ``followOutput="auto"`` keeps
+  // the view glued to the tail whenever the user is already there;
+  // when they've scrolled up to read history it leaves the position
+  // alone (no jumping mid-read).
   const [stickToBottom, setStickToBottom] = useState(true);
-  const SLACK_PX = 80;
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
+  // Keep the legacy ``scrollRef`` populated so anything still reaching
+  // for it (debug, tests) sees the real scroller.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setStickToBottom(distance <= SLACK_PX);
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-  useEffect(() => {
-    if (!stickToBottom) return;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [items, processing, stickToBottom]);
+    scrollRef.current = scrollEl as HTMLDivElement | null;
+  }, [scrollEl]);
   const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
     setStickToBottom(true);
   }, []);
+  // Find-in-conversation. Cmd/Ctrl+F opens the bar; a small icon
+  // button near the chat header opens it too. ``highlightedItemId``
+  // applies a pulse class to the jumped-to message via the new
+  // ChatItemView prop so the user's eye lands on it after the scroll.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [highlightedItemId, setHighlightedItemId] = useState<number | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const cmdLike = e.metaKey || e.ctrlKey;
+      if (cmdLike && e.key.toLowerCase() === "f") {
+        // Only intercept when there's something to search.
+        if (items.length === 0) return;
+        e.preventDefault();
+        setSearchOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [items.length]);
+  const onSearchJump = useCallback(
+    (itemIndex: number) => {
+      virtuosoRef.current?.scrollToIndex({
+        index: itemIndex,
+        align: "center",
+        behavior: "auto",
+      });
+      const target = items[itemIndex];
+      if (target) {
+        setHighlightedItemId(target.id);
+        if (highlightTimerRef.current !== null)
+          window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = window.setTimeout(
+          () => setHighlightedItemId(null),
+          2400,
+        );
+      }
+    },
+    [items],
+  );
+  useEffect(
+    () => () => {
+      if (highlightTimerRef.current !== null)
+        window.clearTimeout(highlightTimerRef.current);
+    },
+    [],
+  );
+
+  // Memoize the Virtuoso ``components`` map so its identity is
+  // stable across App re-renders that don't change the footer
+  // state — without this, every state update (token streamed, status
+  // ticked) would hand Virtuoso a fresh Footer component and force
+  // it to remount the indicator.
+  const virtuosoComponents = useMemo(
+    () => ({
+      // 78 px spacer so the first message's edit/delete chip clears
+      // the OS-level drag region of the frosted header. Matches the
+      // original ``.conversation > .col { padding-top: 78px }`` rule
+      // that lived on the single column wrapper before virtualization.
+      Header: () => <div aria-hidden="true" style={{ height: 78 }} />,
+      Footer: () =>
+        processing || finalizing ? (
+          <div className="chat-row">
+            <div className="typing-indicator" aria-live="polite">
+              <span className="typing-dots">
+                <span />
+                <span />
+                <span />
+              </span>
+              <span className="typing-label">
+                {processing ? "Ember is replying…" : "Finalizing…"}
+              </span>
+              {processing && <span className="typing-hint">Esc to cancel</span>}
+            </div>
+          </div>
+        ) : null,
+    }),
+    [processing, finalizing],
+  );
 
   // ── Loop continuation (TUI parity: refire after each run) ────────
   const continueLoopIfPending = useCallback(async () => {
@@ -1158,6 +1322,63 @@ export default function App() {
     [append, runUserMessage, truncateAndTrim],
   );
 
+  // Stable per-item callbacks. The `items.map` below passes these to
+  // every ChatItemView; if they were inline arrows, React.memo's
+  // shallow compare would always miss and every item would re-render
+  // on every App state change (status, processing, stream events).
+  const onStopTeam = useCallback(() => client.cancel(), [client]);
+  const onStopAgent = useCallback(
+    (runId: string) =>
+      void client
+        .rpc("cancel_agent_run", { run_id: runId })
+        .catch((err) => console.warn("cancel_agent_run failed", err)),
+    [client],
+  );
+  const onRetryAgent = useCallback(
+    (agentName: string, newTask: string) => {
+      // Send a follow-up user message asking the main agent to
+      // respawn the specialist with the (possibly tweaked) task —
+      // free-form text so the model can pick the right mode.
+      const msg =
+        `Please retry the ${agentName} sub-agent with this task:` +
+        `\n\n${newTask}`;
+      void runUserMessage(msg);
+    },
+    [runUserMessage],
+  );
+
+  // ── Plan-card actions (row 50) ──────────────────────────────────
+  // Approve = send ``/plan off`` so the live PermissionEvaluator
+  // flips back to default, then mark the card as approved. The
+  // command goes through the existing user-message pipeline so it
+  // shows up in the transcript like any other slash command. We
+  // DON'T auto-send a "now execute the plan" follow-up — the user
+  // owns when the agent runs, matching CC's two-step approve →
+  // user-asks workflow. Refine = just dismiss the buttons; the
+  // user types their feedback in the composer.
+  const onApprovePlan = useCallback(
+    (id: number) => {
+      setItems((prev) =>
+        prev.map((it) =>
+          it.kind === "plan" && it.id === id
+            ? { ...it, state: "approved" as const }
+            : it,
+        ),
+      );
+      void runUserMessage("/plan off");
+    },
+    [runUserMessage],
+  );
+  const onRejectPlan = useCallback((id: number) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.kind === "plan" && it.id === id
+          ? { ...it, state: "dismissed" as const }
+          : it,
+      ),
+    );
+  }, []);
+
   // ── Slash command routing ─────────────────────────────────────────
   // `echo=false` is the UI-affordance path (menu/button clicks): the
   // command runs silently instead of appearing as a fake typed
@@ -1176,6 +1397,7 @@ export default function App() {
           case "clear": {
             viewGenRef.current++;
             setItems([]);
+            setHistoryIndexToItemIndex([]);
             // The session id rotated and the new conversation has 0
             // context; pull a fresh StatusUpdate so the footer
             // doesn't keep showing the prior session's count.
@@ -1198,6 +1420,33 @@ export default function App() {
             setSidebarOpen(true);
             void refreshSessions();
             return;
+          case "fork": {
+            const newId = content.trim();
+            if (!newId) {
+              append(errorItem("Fork failed: backend returned no session id"));
+              return;
+            }
+            // Same dance as ``/clear`` but we also rehydrate the
+            // cloned history so the fork opens with the same context
+            // the user just left in the source session.
+            viewGenRef.current++;
+            setItems([]);
+            setHistoryIndexToItemIndex([]);
+            client.sessionId = newId;
+            clientState.set(SESSION_KEY, newId);
+            setSessionId(newId);
+            try {
+              const loaded = await fetchHistoryItems(newId);
+              setItems(loaded.items);
+              setHistoryIndexToItemIndex(loaded.historyMap);
+            } catch (e) {
+              append(errorItem(`Loaded fork id but history fetch failed: ${e}`));
+            }
+            append(infoItem("Forked to a new session — continuing the dialogue."));
+            void refreshStatus();
+            void refreshSessions();
+            return;
+          }
           case "model":
             // One picker UI: the composer's model menu (next to Send).
             setModelMenuSignal({ n: Date.now() });
@@ -1370,6 +1619,7 @@ export default function App() {
         setSessionId(res.session_id);
         setProjectDir(res.project_dir);
         setItems([]);
+        setHistoryIndexToItemIndex([]);
         append(infoItem(`Session locked to ${res.project_dir}`));
         void refreshSessions();
         void refreshStatus();
@@ -1393,9 +1643,14 @@ export default function App() {
         clientState.set(SESSION_KEY, id);
         setSessionId(id);
         setItems([]);
-        append(infoItem(`Loading session ${id}…`));
+        // Show the first 8 hex chars only — full UUIDs are noisy in
+        // an info bubble and the short prefix is uniquely identifying
+        // in practice across the sidebar listing.
+        const short = id.slice(0, 8);
+        append(infoItem(`Loading session ${short}…`));
         const loaded = await fetchHistoryItems(id);
-        setItems([...loaded, infoItem(`Resumed session ${id}.`)]);
+        setItems([...loaded.items, infoItem(`Resumed session ${short}.`)]);
+        setHistoryIndexToItemIndex(loaded.historyMap);
         void refreshStatus();
       } catch (e) {
         append(errorItem(String(e)));
@@ -1493,6 +1748,30 @@ export default function App() {
             />
           </div>
           <div className="header-spacer" />
+          {items.length > 0 && (
+            <button
+              className={`chip chip-search${searchOpen ? " active" : ""}`}
+              title="Find in conversation (⌘F)"
+              aria-label="Find in conversation"
+              onClick={() => setSearchOpen((v) => !v)}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                style={{ display: "block" }}
+              >
+                <circle cx="7" cy="7" r="4.5" />
+                <path d="M10.5 10.5L13.5 13.5" />
+              </svg>
+            </button>
+          )}
           {/* Project chip — hidden when running inside an IDE (VSCode /
               JetBrains): the IDE's workspace folder IS the project root,
               and the FE shouldn't offer a switcher that would force the
@@ -1634,10 +1913,21 @@ export default function App() {
             sibling of ``.conversation`` (not a child) so it doesn't
             scroll with the content; positioned absolutely against the
             ``.main`` column at z:30, above the header blur. */}
-        <ScrollIndicator scrollRef={scrollRef} />
-        <div className="conversation" ref={scrollRef}>
-          <div className={`col${processing ? " streaming" : ""}`}>
-            {items.length === 0 && (
+        <ScrollIndicator element={scrollEl} />
+        {searchOpen && sessionId && items.length > 0 && (
+          <ChatSearchBar
+            client={client}
+            sessionId={sessionId}
+            historyIndexToItemIndex={historyIndexToItemIndex}
+            liveItemCount={items.length}
+            onJumpTo={onSearchJump}
+            onClose={() => setSearchOpen(false)}
+          />
+        )}
+        <div className="conversation-frame">
+        {items.length === 0 ? (
+          <div className="conversation">
+            <div className="col">
               <div className="welcome">
                 <div style={{ display: "flex", justifyContent: "center" }}>
                   <FlameIcon size={56} />
@@ -1671,74 +1961,78 @@ export default function App() {
                   Enter to send · Shift+Enter newline · / commands · @ files · $ shell
                 </p>
               </div>
-            )}
-            {items.map((item, idx) => (
-              <ChatItemView
-                key={item.id}
-                item={item}
-                copyResponseText={
-                  item.kind === "stats"
-                    ? findAssistantTextForStats(items, idx)
-                    : undefined
-                }
-                onEditUser={onEditUser}
-                onDeleteUser={onDeleteUser}
-                onStopTeam={() => client.cancel()}
-                onStopAgent={(runId) =>
-                  void client
-                    .rpc("cancel_agent_run", { run_id: runId })
-                    .catch((err) => console.warn("cancel_agent_run failed", err))
-                }
-                onRetryAgent={(agentName, newTask) => {
-                  // Send a follow-up user message asking the main
-                  // agent to respawn the specialist with the
-                  // (possibly tweaked) task. Free-form text — the
-                  // model can interpret context, decide which mode
-                  // to use, etc.
-                  const msg =
-                    `Please retry the ${agentName} sub-agent with this task:` +
-                    `\n\n${newTask}`;
-                  void runUserMessage(msg);
-                }}
-              />
-            ))}
-            {(processing || finalizing) && (
-              <div className="typing-indicator" aria-live="polite">
-                <span className="typing-dots">
-                  <span />
-                  <span />
-                  <span />
-                </span>
-                <span className="typing-label">
-                  {processing ? "Ember is replying…" : "Finalizing…"}
-                </span>
-                {processing && <span className="typing-hint">Esc to cancel</span>}
-              </div>
-            )}
-            {!stickToBottom && (
-              <button
-                type="button"
-                className="scroll-to-bottom"
-                title="Scroll to latest"
-                aria-label="Scroll to latest"
-                onClick={scrollToBottom}
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M8 3v9.5M3.8 8.3L8 12.5l4.2-4.2" />
-                </svg>
-              </button>
-            )}
+            </div>
           </div>
+        ) : (
+          <Virtuoso
+            ref={virtuosoRef}
+            className="conversation"
+            data={items}
+            // Keys items by id so React reuses DOM across reorders /
+            // edits. Falling back to index would defeat the memo on
+            // ChatItemView.
+            computeItemKey={(_idx, item) => item.id}
+            // Auto-follow the tail only while the user is already
+            // there; ``smooth`` is intentionally not used so streaming
+            // doesn't visibly chase tokens.
+            followOutput="auto"
+            atBottomStateChange={setStickToBottom}
+            scrollerRef={(el) => setScrollEl(el as HTMLElement | null)}
+            increaseViewportBy={{ top: 400, bottom: 800 }}
+            itemContent={(idx, item) => {
+              // ``streaming`` lights the blinking caret CSS on the
+              // live tail assistant row only.
+              const isStreamingTail =
+                processing && idx === items.length - 1 && item.kind === "assistant";
+              const isSearchTarget = item.id === highlightedItemId;
+              return (
+                <div
+                  className={`chat-row${isStreamingTail ? " streaming" : ""}${isSearchTarget ? " search-target" : ""}`}
+                >
+                  <ChatItemView
+                    item={item}
+                    copyResponseText={
+                      item.kind === "stats"
+                        ? findAssistantTextForStats(items, idx)
+                        : undefined
+                    }
+                    onEditUser={onEditUser}
+                    onDeleteUser={onDeleteUser}
+                    onStopTeam={onStopTeam}
+                    onStopAgent={onStopAgent}
+                    onRetryAgent={onRetryAgent}
+                    onApprovePlan={onApprovePlan}
+                    onRejectPlan={onRejectPlan}
+                  />
+                </div>
+              );
+            }}
+            components={virtuosoComponents}
+          />
+        )}
+        {items.length > 0 && !stickToBottom && (
+          <button
+            type="button"
+            className="scroll-to-bottom"
+            title="Scroll to latest"
+            aria-label="Scroll to latest"
+            onClick={scrollToBottom}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8 3v9.5M3.8 8.3L8 12.5l4.2-4.2" />
+            </svg>
+          </button>
+        )}
         </div>
 
         <Composer
@@ -1766,6 +2060,56 @@ export default function App() {
           {status && (
             <>
               <SessionChip sessionId={sessionId} />
+              {/* Auto-approve switch owns the bypassPermissions
+                  state so the badge skips that mode to avoid a
+                  duplicate chip; the badge still renders for plan
+                  / acceptEdits / dontAsk. */}
+              <ModeBadge
+                mode={
+                  status.permission_mode === "bypassPermissions"
+                    ? ""
+                    : status.permission_mode
+                }
+              />
+              <AutoApproveSwitch
+                mode={
+                  bypassOptimistic === null
+                    ? status.permission_mode
+                    : bypassOptimistic
+                      ? "bypassPermissions"
+                      : "default"
+                }
+                onToggle={(next) => {
+                  // Optimistic flip: paint the new state immediately
+                  // so the click feels instant. The
+                  // ``permission_mode_changed`` broadcast clears the
+                  // override once the backend confirms; on error we
+                  // revert here. Backend errors (e.g. an old backend
+                  // without ``/bypass``) come back as a
+                  // ``command_result`` with ``kind: "error"``.
+                  setBypassOptimistic(next);
+                  void (async () => {
+                    try {
+                      const r = await client.handleCommand(
+                        next ? "/bypass on" : "/bypass off",
+                      );
+                      if (r.type === "command_result" && r.kind === "error") {
+                        setBypassOptimistic(null);
+                        append(
+                          errorItem(`Auto-approve toggle failed: ${r.content}`),
+                        );
+                      }
+                    } catch (e) {
+                      setBypassOptimistic(null);
+                      append(
+                        errorItem(
+                          `Auto-approve toggle failed: ${e instanceof Error ? e.message : String(e)}`,
+                        ),
+                      );
+                    }
+                  })();
+                }}
+              />
               <CtxMeter
                 tokens={status.context_tokens}
                 max={status.max_context}

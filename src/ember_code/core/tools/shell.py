@@ -37,50 +37,6 @@ _MAX_BUFFER = 1_048_576
 _MAX_RESULT_CHARS = 30_000
 
 
-def _normalize_shell_args(args: list[str] | str) -> tuple[list[str], str]:
-    """Accept any of the shapes the model tends to emit and return ``(argv, cmd_str)``.
-
-    Models routinely send one of three shapes when asked to run a shell
-    command. We normalize all three to a proper argv list (suitable for
-    ``asyncio.create_subprocess_exec(*argv)``) plus a printable
-    command string.
-
-    Shapes handled:
-      1. ``["ls", "-la"]`` — proper argv. Pass through.
-      2. ``"ls -la"`` — single shell-style string. ``shlex.split`` it.
-      3. ``["ls -la"]`` — single-element list whose only element is a
-         whole shell command. Same as (2) — split it.
-      4. ``["ls -la", "cat foo"]`` — list of shell commands to run in
-         sequence. We join them with ``&&`` and run via ``sh -c``.
-    """
-    import shlex
-
-    # String form
-    if isinstance(args, str):
-        argv = shlex.split(args)
-        return argv, args
-
-    # List form — at this point ``args`` is a list[str].
-    if not args:
-        return [], ""
-
-    # Detect shape (3): ["ls -la"] — single element with whitespace.
-    if len(args) == 1 and any(ch.isspace() for ch in args[0]):
-        argv = shlex.split(args[0])
-        return argv, args[0]
-
-    # Detect shape (4): list of multiple commands, each containing
-    # whitespace (means each element is its own shell command, not a
-    # single argv token). Fall back to sh -c chained with ``&&``.
-    multi_cmd = len(args) > 1 and all(any(ch.isspace() for ch in a) for a in args)
-    if multi_cmd:
-        joined = " && ".join(args)
-        return ["sh", "-c", joined], joined
-
-    # Default: treat as proper argv. ``["ls", "-la"]`` lands here.
-    return list(args), " ".join(args)
-
-
 def _truncate(text: str, limit: int = _MAX_RESULT_CHARS) -> str:
     """Truncate output to avoid sending huge tool results to the LLM."""
     if len(text) <= limit:
@@ -389,12 +345,24 @@ class EmberShellTools(Toolkit):
 
     async def run_shell_command(
         self,
-        args: list[str] | str,
+        command: str,
         timeout: int = 7,
         background: bool = False,
         tail: int = 100,
     ) -> str:
         """Run a shell command and return its output.
+
+        Pass ONE shell command string — exactly as you would type it at
+        a terminal. The string is executed via ``/bin/sh -c``, so full
+        shell syntax works: pipes ``|``, redirection ``>`` / ``2>&1``,
+        chaining ``&&`` / ``||`` / ``;``, variable expansion ``$VAR``,
+        env-var prefixes (``PATH=X cmd``), command substitution
+        ``$(...)``, globs, and builtins like ``cd`` / ``export``.
+
+        DO NOT pass an argv list — pass a single string.
+            Good: ``"ls -la | wc -l"``
+            Good: ``"cd portal && npm run build"``
+            Bad:  ``["ls", "-la"]``
 
         For short-lived commands (ls, git, grep, cat, curl), waits up to
         `timeout` seconds and returns the output.
@@ -413,11 +381,7 @@ class EmberShellTools(Toolkit):
         backgrounded and its PID is returned.
 
         Args:
-            args: Either a proper argv list (``["ls", "-la"]``) OR a single
-                shell-style string (``"ls -la"``) OR a list whose elements
-                are themselves shell-style strings (``["ls -la", "cat foo"]``,
-                run sequentially via ``sh -c``). The runtime normalizes
-                whichever shape the model emits.
+            command: A single shell command string.
             timeout: Max seconds to wait for the command to finish. Default 7.
             background: If True, start in background and return PID immediately.
             tail: Number of output lines to return. Default 100.
@@ -425,12 +389,13 @@ class EmberShellTools(Toolkit):
         Returns:
             Command output, or a message with the PID for background processes.
         """
-        argv, cmd_str = _normalize_shell_args(args)
-        logger.info("Shell: running %s (timeout=%d, bg=%s)", cmd_str, timeout, background)
+        if isinstance(command, list):
+            command = " ".join(command)
+        logger.info("Shell: running %s (timeout=%d, bg=%s)", command, timeout, background)
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
+            proc = await asyncio.create_subprocess_shell(
+                command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(self.base_dir) if self.base_dir else None,
@@ -439,7 +404,7 @@ class EmberShellTools(Toolkit):
         except Exception as e:
             return f"Error starting command: {e}"
 
-        mp = _ManagedProcess(proc, cmd_str)
+        mp = _ManagedProcess(proc, command)
         mp._reader_task = asyncio.create_task(mp._reader())
         pid = _registry.add(mp)
 
@@ -454,8 +419,15 @@ class EmberShellTools(Toolkit):
             if not mp.is_running():
                 rc = mp.returncode()
                 _registry.remove(pid)
-                return f"Background process exited immediately (code {rc}):\n{output}"
-            status = f"Background process running (PID {pid}): {cmd_str}\n"
+                # Distinguish a clean fast completion (the command ran
+                # to completion inside the 3 s grace window) from a
+                # startup crash. The LLM consumes this string — calling
+                # a successful run "exited immediately" tends to nudge
+                # the model into a needless retry.
+                if rc != 0:
+                    return f"Background process exited with code {rc}:\n{output}"
+                return f"Background process finished during startup window (code 0):\n{output}"
+            status = f"Background process running (PID {pid}): {command}\n"
             if output:
                 status += f"\nStartup output:\n{output}\n"
             else:

@@ -64,6 +64,10 @@ window.__EMBER_PICK_DIR__ = (start) =>
     }
   });
 
+function openExternalUrl(url) {
+  return window.__TAURI__.core.invoke('plugin:opener|open_url', { url });
+}
+
 window.__EMBER_HOST__ = Object.assign(window.__EMBER_HOST__ || {}, {
   openFile: (path) => window.__TAURI__.core.invoke(
     'plugin:opener|open_path', { path }
@@ -78,7 +82,80 @@ window.__EMBER_HOST__ = Object.assign(window.__EMBER_HOST__ || {}, {
   setAppTitle: (folder, org) => window.__TAURI__.core.invoke(
     'set_app_title', { folder, org }
   ),
+  openUrl: openExternalUrl,
 });
+
+// Route http(s) and mailto links to the OS browser/mail client.
+// Without this, anchor clicks navigate the whole WKWebView to the
+// target URL (no top-level browser context exists), and
+// ``window.open`` returns null — so links end up "opening inside
+// the app". Intercept at the capture phase so we win against any
+// React handlers, then hand off to the Tauri opener plugin.
+(function () {
+  function isExternal(href) {
+    if (!href) return false;
+    const lower = href.toLowerCase();
+    return (
+      lower.startsWith('http://') ||
+      lower.startsWith('https://') ||
+      lower.startsWith('mailto:') ||
+      lower.startsWith('tel:')
+    );
+  }
+
+  document.addEventListener(
+    'click',
+    (e) => {
+      // Respect modifier-clicks the user may use to copy the link
+      // address — let the default contextmenu / nothing-happens
+      // behavior stand rather than firing the opener.
+      if (e.defaultPrevented) return;
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+        // Cmd/Ctrl-click still means "open in browser" for us;
+        // there's no second window to route into. Fall through.
+      }
+      const path = e.composedPath ? e.composedPath() : [];
+      let anchor = null;
+      for (const node of path) {
+        if (node && node.tagName === 'A' && node.href) {
+          anchor = node;
+          break;
+        }
+      }
+      if (!anchor) {
+        // Fallback for events whose composedPath is empty (rare).
+        let n = e.target;
+        while (n && n.tagName !== 'A') n = n.parentElement;
+        if (n) anchor = n;
+      }
+      if (!anchor) return;
+      const href = anchor.getAttribute('href') || anchor.href;
+      if (!isExternal(href)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openExternalUrl(href).catch((err) =>
+        console.warn('[ember] open_url failed:', err)
+      );
+    },
+    true
+  );
+
+  // ``window.open(url, …)`` is used by a few FE call sites
+  // (update banner, install-CLI hint). In a Tauri webview the
+  // default returns null and does nothing visible; route it to
+  // the OS instead.
+  const nativeOpen = window.open?.bind(window);
+  window.open = function (url) {
+    if (isExternal(url)) {
+      openExternalUrl(url).catch((err) =>
+        console.warn('[ember] window.open failed:', err)
+      );
+      return null;
+    }
+    return nativeOpen ? nativeOpen.apply(window, arguments) : null;
+  };
+})();
 
 if (window.__TAURI__ && window.__TAURI__.event) {
   window.__TAURI__.event.listen('ember-menu', (e) => {
@@ -1032,6 +1109,172 @@ mod tests {
         assert_eq!(
             parse_ready_line(r#"{"status":"ready","ws_port":true}"#),
             None,
+        );
+    }
+
+    // ── INIT_SCRIPT: external-link interceptor (parity row 59) ──
+    //
+    // The interceptor itself executes inside WKWebView — we can't run
+    // it from cargo test. What we CAN lock down is the contract the
+    // INIT_SCRIPT string has to honor for the feature to work at all:
+    // the right Tauri command name, capture-phase listener, scheme
+    // allowlist, window.open shim, and __EMBER_HOST__.openUrl bridge.
+    // Any future edit that flips one of these silently (e.g. dropping
+    // ``true`` from addEventListener and losing capture-phase
+    // interception, or typoing ``plugin:opener|open_url``) trips a
+    // test.
+    //
+    // For end-to-end exercise of the actual click handler, see the
+    // Playwright e2e suite under ``clients/tauri/e2e/`` — a real
+    // browser is the only environment where this code runs.
+
+    #[test]
+    fn init_script_invokes_opener_open_url_command() {
+        // The Rust-side capability (``opener:allow-open-url``) is
+        // useless if the JS calls the wrong command name; pin the
+        // exact string the plugin matches against.
+        assert!(
+            INIT_SCRIPT.contains("plugin:opener|open_url"),
+            "INIT_SCRIPT must invoke plugin:opener|open_url"
+        );
+    }
+
+    #[test]
+    fn init_script_intercepts_clicks_at_capture_phase() {
+        // The capture-phase ``true`` is load-bearing: React handlers
+        // would otherwise consume the click first and call
+        // ``preventDefault``, leaving the URL un-routed AND the
+        // webview navigating to it. Without capture phase, we can
+        // still race React's handlers and lose.
+        assert!(
+            INIT_SCRIPT.contains("'click'"),
+            "INIT_SCRIPT must register a click handler"
+        );
+        assert!(
+            INIT_SCRIPT.contains("addEventListener(\n    'click',"),
+            "click listener must use capture phase (third arg = true)"
+        );
+        assert!(
+            INIT_SCRIPT.contains("true\n  );"),
+            "click listener's third arg must be the literal ``true``"
+        );
+    }
+
+    #[test]
+    fn init_script_allowlist_covers_http_https_mailto_tel() {
+        // Schemes the matcher must catch — these are the only ones
+        // we route to the OS. ``file://`` and ``data:`` are
+        // intentionally NOT routed (would leak local paths /
+        // sandbox contents to a browser).
+        for scheme in ["http://", "https://", "mailto:", "tel:"] {
+            assert!(
+                INIT_SCRIPT.contains(&format!("'{scheme}'")),
+                "isExternal() must match ``{scheme}``"
+            );
+        }
+        // Negative-space check: we don't accidentally route ftp / file /
+        // data, which would leak local paths into the user's browser.
+        // The matcher's allowlist is closed — if these slip in, the
+        // sandbox boundary widens silently.
+        for forbidden in ["ftp://", "file://", "data:"] {
+            assert!(
+                !INIT_SCRIPT.contains(&format!("'{forbidden}'")),
+                "isExternal() must NOT route ``{forbidden}`` — \
+                 would leak local content to the OS browser"
+            );
+        }
+    }
+
+    #[test]
+    fn init_script_shims_window_open() {
+        // A few FE call sites (update banner, install-CLI hint) use
+        // ``window.open``. Without the shim, they silently no-op in
+        // WKWebView. The shim must (a) replace ``window.open`` and
+        // (b) route through the SAME opener function used by the
+        // anchor handler — single source of truth.
+        assert!(
+            INIT_SCRIPT.contains("window.open = function"),
+            "window.open must be reassigned"
+        );
+        // The shim calls openExternalUrl (the shared helper), not
+        // ``window.__TAURI__.core.invoke`` directly — keeps the
+        // matcher and the path identical.
+        assert!(
+            INIT_SCRIPT.contains("openExternalUrl(url)"),
+            "window.open shim must delegate to openExternalUrl"
+        );
+    }
+
+    #[test]
+    fn init_script_exposes_openurl_on_ember_host() {
+        // ``host.openUrl(url)`` in the FE looks up
+        // ``window.__EMBER_HOST__.openUrl``. Anything that drops the
+        // ``openUrl: openExternalUrl`` line moves the welcome screen
+        // "Sign in" link silently back to navigating-the-webview.
+        assert!(
+            INIT_SCRIPT.contains("openUrl: openExternalUrl"),
+            "__EMBER_HOST__.openUrl must be wired to openExternalUrl"
+        );
+    }
+
+    #[test]
+    fn init_script_respects_default_prevented_and_left_button_only() {
+        // Modifier-aware behavior: if a React handler called
+        // ``preventDefault`` first (modals, etc.), we must NOT
+        // override and pop a browser tab on top. And only the
+        // primary button gets routed — middle-click is "open in
+        // tab", which is a no-op here (no second window) but
+        // shouldn't fire the opener either.
+        assert!(
+            INIT_SCRIPT.contains("e.defaultPrevented"),
+            "click handler must early-return when defaultPrevented"
+        );
+        assert!(
+            INIT_SCRIPT.contains("e.button !== 0"),
+            "click handler must skip non-left-button clicks"
+        );
+    }
+
+    #[test]
+    fn init_script_walks_event_path_for_nested_anchor() {
+        // Anchors are commonly wrapped (icon inside <a>, span inside
+        // <a>) so ``e.target`` is the inner node, not the <a>. We
+        // have to walk ``composedPath()`` (or parentElement) to find
+        // the anchor itself; otherwise the matcher gets the wrong
+        // tagName and lets the click through.
+        assert!(
+            INIT_SCRIPT.contains("composedPath"),
+            "click handler must inspect the composed event path"
+        );
+        assert!(
+            INIT_SCRIPT.contains("tagName === 'A'"),
+            "click handler must look for the ancestor <a>"
+        );
+    }
+
+    #[test]
+    fn capability_default_grants_opener_open_url() {
+        // The JS contract above is moot if the capability doesn't
+        // grant ``opener:allow-open-url`` — Tauri rejects the
+        // invoke at the IPC layer. Pin both that the file parses
+        // and that the permission is in the list.
+        let cap = include_str!("../capabilities/default.json");
+        let v: serde_json::Value =
+            serde_json::from_str(cap).expect("capabilities/default.json must be valid JSON");
+        let perms = v["permissions"].as_array().expect("permissions[] missing");
+        let has_open_url = perms
+            .iter()
+            .any(|p| p.as_str() == Some("opener:allow-open-url"));
+        assert!(
+            has_open_url,
+            "capabilities/default.json must grant opener:allow-open-url"
+        );
+        // Window scope must include ``main`` — the only window we
+        // ship — or the capability is dead text.
+        let windows = v["windows"].as_array().expect("windows[] missing");
+        assert!(
+            windows.iter().any(|w| w.as_str() == Some("main")),
+            "capability must apply to the ``main`` window"
         );
     }
 

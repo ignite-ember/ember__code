@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, isValidElement, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, isValidElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -118,7 +118,7 @@ const BOX_STRUCTURAL_RE = /[┌┐└┘─│├┤┬┴┼╔╗╚╝═║]
  *  1. Unicode box-drawing corners/edges on 2+ lines.
  *  2. ``+--+``-style ASCII corners on 2+ lines.
  */
-function looksLikeAsciiArt(source: string): boolean {
+export function looksLikeAsciiArt(source: string): boolean {
   let structuralLines = 0;
   let plusCornerLines = 0;
   for (const line of source.split("\n")) {
@@ -381,7 +381,7 @@ const ASSISTANT_MD_COMPONENTS: Components = {
  *  button. Copies the raw markdown source (``item.text``) — that's
  *  what the user is actually looking at conceptually; copying the
  *  rendered HTML would lose code fences and structure. */
-function AssistantMessage({ text }: { text: string }) {
+const AssistantMessage = memo(function AssistantMessage({ text }: { text: string }) {
   return (
     <div className="msg-assistant">
       <div className="msg-assistant-body">
@@ -395,7 +395,7 @@ function AssistantMessage({ text }: { text: string }) {
       </div>
     </div>
   );
-}
+});
 
 /** Inline copy-response button rendered to the right of the stats
  *  line. The stats item carries no assistant text itself, so the
@@ -522,7 +522,7 @@ const CODE_PASTE_RE =
  *  the original block in ``store`` so we can swap it back on save.
  *  Visible to the user in the textarea so they can reorder snippets
  *  by cut-and-paste, but they can't accidentally edit snippet content. */
-function swapCodeBlocks(text: string, store: Map<string, string>): string {
+export function swapCodeBlocks(text: string, store: Map<string, string>): string {
   store.clear();
   let n = 0;
   return text.replace(CODE_PASTE_RE, (match, p1, _l, lineSpec) => {
@@ -538,7 +538,7 @@ function swapCodeBlocks(text: string, store: Map<string, string>): string {
  *  each surviving placeholder for its original block. Placeholders the
  *  user deleted simply stay gone — i.e. removing the placeholder from
  *  the textarea removes the snippet from the message. */
-function restoreCodeBlocks(text: string, store: Map<string, string>): string {
+export function restoreCodeBlocks(text: string, store: Map<string, string>): string {
   return text.replace(/«code:[^«»]*?#\d+»/g, (placeholder) => {
     return store.get(placeholder) ?? "";
   });
@@ -660,7 +660,7 @@ function UserCodePill({
  *  from the languages bundled into highlight.js's "common" set —
  *  anything not on this list falls back to plain text, which is
  *  still readable, just not coloured. */
-function guessLang(p: string): string {
+export function guessLang(p: string): string {
   const ext = p.split(".").pop()?.toLowerCase() || "";
   const map: Record<string, string> = {
     py: "python",
@@ -699,7 +699,7 @@ function guessLang(p: string): string {
  *  structured agent tree (one entry per spawned specialist) with
  *  per-agent status pills, tool-call rows, and a live content
  *  preview — no ASCII art. */
-function OrchestrateLog({
+const OrchestrateLog = memo(function OrchestrateLog({
   item,
   onStopTeam,
   onStopAgent,
@@ -813,7 +813,7 @@ function OrchestrateLog({
       )}
     </div>
   );
-}
+});
 
 /** Compact 1000s formatter — 1234 → "1.2k", 230 → "230". Used in the
  *  agent header tokens chips so a run of 30k input tokens doesn't
@@ -1082,7 +1082,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   );
 }
 
-function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
+const ToolCard = memo(function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
   return (
     <ToolCardView
       name={item.name}
@@ -1093,7 +1093,7 @@ function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
       agentName={item.agentName}
     />
   );
-}
+});
 
 /** Shared visual for a tool execution. Used by ``ToolCard`` (top-level
  *  tools from the FE's chat stream) and by ``OrchestrateAgentRow``
@@ -1146,7 +1146,7 @@ export function ToolCardView({
   );
 }
 
-function UserMessage({
+const UserMessage = memo(function UserMessage({
   item,
   onEdit,
   onDelete,
@@ -1299,7 +1299,7 @@ function UserMessage({
       )}
     </div>
   );
-}
+});
 
 function EditIcon() {
   return (
@@ -1319,7 +1319,102 @@ function TrashIcon() {
   );
 }
 
-function CompactCard({
+export const PlanCard = memo(function PlanCard({
+  item,
+  onApprove,
+  onReject,
+}: {
+  item: Extract<ChatItem, { kind: "plan" }>;
+  onApprove: (id: number) => void;
+  onReject: (id: number) => void;
+}) {
+  // ``approved`` / ``dismissed`` both hide the buttons but keep the
+  // plan body visible — the plan IS the conversation artifact, so
+  // we don't want it to vanish on click. The state is mostly for
+  // styling (a green / dimmed footer line) so the user can see at
+  // a glance what they decided.
+  const isFinal = item.state !== "pending";
+  return (
+    <div className={`plan-card plan-card--${item.state}`}>
+      <div className="plan-card-head">
+        <span className="plan-card-badge" aria-hidden="true">▤</span>
+        <span className="plan-card-title">Plan ready for review</span>
+      </div>
+      <div className="plan-card-body">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+          {item.plan}
+        </ReactMarkdown>
+      </div>
+      {item.tasks.length > 0 ? (
+        <ul className="plan-card-tasks">
+          {item.tasks.map((task, idx) => {
+            // Show the activeForm while in-progress (verb-noun
+            // gerund: "Running tests") and the imperative
+            // content otherwise ("Run tests"). Falls back to
+            // content if activeForm wasn't provided.
+            const label =
+              task.status === "in_progress" && task.activeForm
+                ? task.activeForm
+                : task.content;
+            const marker =
+              task.status === "completed"
+                ? "✓"
+                : task.status === "in_progress"
+                  ? "●"
+                  : "○";
+            return (
+              <li
+                key={`${task.content}-${idx}`}
+                className={`plan-card-task plan-card-task--${task.status}`}
+              >
+                <span className="plan-card-task-marker" aria-hidden="true">
+                  {marker}
+                </span>
+                <span className="plan-card-task-text">{label}</span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      <div className="plan-card-actions">
+        {item.state === "pending" ? (
+          <>
+            <button
+              type="button"
+              className="plan-card-btn plan-card-btn--approve"
+              onClick={() => onApprove(item.id)}
+              title="Exit plan mode and let the agent execute this plan."
+            >
+              Approve &amp; exit plan mode
+            </button>
+            <button
+              type="button"
+              className="plan-card-btn plan-card-btn--reject"
+              onClick={() => onReject(item.id)}
+              title="Dismiss this plan. Stay in plan mode — type your feedback to ask for revisions."
+            >
+              Refine
+            </button>
+          </>
+        ) : (
+          <span
+            className={`plan-card-footer plan-card-footer--${item.state}`}
+            aria-live="polite"
+          >
+            {item.state === "approved" ? "Plan approved — plan mode exited." : "Plan dismissed."}
+          </span>
+        )}
+      </div>
+      {isFinal ? null : (
+        <div className="plan-card-hint">
+          The agent is paused. Approve to exit plan mode and execute, or refine to keep iterating.
+        </div>
+      )}
+    </div>
+  );
+});
+
+const CompactCard = memo(function CompactCard({
   item,
 }: {
   item: Extract<ChatItem, { kind: "compact" }>;
@@ -1341,9 +1436,9 @@ function CompactCard({
       )}
     </div>
   );
-}
+});
 
-function LoopIterationCard({
+const LoopIterationCard = memo(function LoopIterationCard({
   item,
 }: {
   item: Extract<ChatItem, { kind: "loop" }>;
@@ -1379,9 +1474,9 @@ function LoopIterationCard({
       {expanded && <pre className="loop-iteration-raw">{item.raw}</pre>}
     </div>
   );
-}
+});
 
-function ThinkingBlock({ text }: { text: string }) {
+const ThinkingBlock = memo(function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
@@ -1395,9 +1490,9 @@ function ThinkingBlock({ text }: { text: string }) {
       {open && <div className="msg-thinking">{text}</div>}
     </div>
   );
-}
+});
 
-function ShellBlock({ item }: { item: Extract<ChatItem, { kind: "shell" }> }) {
+const ShellBlock = memo(function ShellBlock({ item }: { item: Extract<ChatItem, { kind: "shell" }> }) {
   return (
     <div className="shell-output">
       <div className="prompt-line">$ {item.command}</div>
@@ -1407,9 +1502,13 @@ function ShellBlock({ item }: { item: Extract<ChatItem, { kind: "shell" }> }) {
       )}
     </div>
   );
-}
+});
 
-export function ChatItemView({
+/** Memoized so streaming a token (which produces a new array with
+ *  N stable refs + 1 changed ref) only re-renders the one item that
+ *  actually changed. All callback props must be stable (useCallback
+ *  in App.tsx) for the shallow compare to hit. */
+export const ChatItemView = memo(function ChatItemView({
   item,
   copyResponseText,
   onEditUser,
@@ -1417,6 +1516,8 @@ export function ChatItemView({
   onStopTeam,
   onStopAgent,
   onRetryAgent,
+  onApprovePlan,
+  onRejectPlan,
 }: {
   item: ChatItem;
   /** Raw markdown text of the assistant turn this stats item closes.
@@ -1439,6 +1540,13 @@ export function ChatItemView({
    *  Implementation: usually sends a follow-up user message asking
    *  the main agent to respawn the specialist with the new task. */
   onRetryAgent?: (agentName: string, newTask: string) => void;
+  /** Plan-card Approve button — exits plan mode (``/plan off``) and
+   *  flips the card's ``state`` to ``approved``. */
+  onApprovePlan?: (id: number) => void;
+  /** Plan-card Refine button — flips state to ``dismissed`` so the
+   *  buttons hide; the user types their feedback as a normal
+   *  message and the agent iterates. */
+  onRejectPlan?: (id: number) => void;
 }) {
   switch (item.kind) {
     case "attachments":
@@ -1474,6 +1582,17 @@ export function ChatItemView({
       return <LoopIterationCard item={item} />;
     case "compact":
       return <CompactCard item={item} />;
+    case "plan":
+      return (
+        <PlanCard
+          item={item}
+          // Defaults stop the buttons from being interactive if a
+          // caller forgets to wire them — clicking does nothing
+          // rather than throwing.
+          onApprove={onApprovePlan ?? (() => {})}
+          onReject={onRejectPlan ?? (() => {})}
+        />
+      );
     case "stats": {
       const billed =
         `Billed by the model: ${item.outputTokens} output total, ` +
@@ -1499,4 +1618,4 @@ export function ChatItemView({
     case "shell":
       return <ShellBlock item={item} />;
   }
-}
+});

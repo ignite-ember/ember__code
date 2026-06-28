@@ -17,6 +17,7 @@ export const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "/compact", description: "Summarize old context to free tokens" },
   { name: "/ctx", description: "Show context breakdown — floor vs conversation" },
   { name: "/sessions", description: "List and switch sessions" },
+  { name: "/fork", description: "Fork this session — continue in a new id" },
   { name: "/model", description: "Pick a model" },
   { name: "/login", description: "Log in to Ember Cloud" },
   { name: "/logout", description: "Log out" },
@@ -30,6 +31,24 @@ export const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "/loop", description: "Repeat a prompt until done" },
   { name: "/schedule", description: "Background scheduled tasks" },
 ];
+
+/** Prefix-filter the slash-command pool for the autocomplete menu.
+ *  Mirrors what the composer's ``refreshMenu`` does for the slash
+ *  branch — extracted as a pure helper so the filter contract
+ *  (case-insensitive, prefix-only on the name after the leading
+ *  '/', capped at 12 results) is testable without driving the
+ *  contenteditable surface. Call with the full command pool
+ *  (built-ins + skills) and the query text AFTER the ``/``. */
+export function filterSlashCommands(
+  pool: SlashCommand[],
+  query: string,
+  limit: number = 12,
+): SlashCommand[] {
+  const q = query.toLowerCase();
+  return pool
+    .filter((c) => c.name.slice(1).toLowerCase().startsWith(q))
+    .slice(0, limit);
+}
 
 interface MenuState {
   kind: "slash" | "mention";
@@ -302,12 +321,10 @@ export function Composer({
     // Slash menu: only when the input starts with '/' and the caret
     // is in the first token (mirrors TUI autocomplete behaviour).
     if (value.startsWith("/") && !value.slice(0, caret).includes(" ")) {
-      const q = value.slice(1, caret).toLowerCase();
-      const all = [...BUILTIN_COMMANDS, ...skills];
-      const entries = all
-        .filter((c) => c.name.slice(1).toLowerCase().startsWith(q))
-        .slice(0, 12)
-        .map((c) => ({ key: c.name, label: c.name, desc: c.description }));
+      const q = value.slice(1, caret);
+      const entries = filterSlashCommands([...BUILTIN_COMMANDS, ...skills], q).map(
+        (c) => ({ key: c.name, label: c.name, desc: c.description }),
+      );
       setMenu(
         entries.length ? { kind: "slash", entries, active: 0, tokenStart: 0 } : null,
       );
@@ -517,10 +534,6 @@ export function Composer({
     }
   };
 
-  useEffect(() => {
-    autoGrow();
-  }, [text]);
-
   const openModelMenu = async () => {
     try {
       const reg = await client.rpc<{ registry: Record<string, unknown>; default: string }>(
@@ -723,6 +736,12 @@ export function Composer({
               const body = value.slice(1).replace(/^ /, "");
               setMode(m);
               setText(body);
+              // React would see no `text` change here (often "" → ""
+              // when the user just typed the trigger char), so the
+              // editor's value-prop reconcile won't fire. Force the
+              // DOM to match imperatively so the literal "/" or "$"
+              // doesn't linger in the editor.
+              ref.current?.setValue(body);
               onTyping?.(withPrefix(body, m));
               void refreshMenu(withPrefix(body, m), Math.max(caret, 1));
               return;
