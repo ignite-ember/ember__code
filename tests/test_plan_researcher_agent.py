@@ -44,11 +44,7 @@ def _parse_frontmatter(path: Path) -> dict:
 def _declared_tools(path: Path) -> set[str]:
     fm = _parse_frontmatter(path)
     raw = fm.get("tools", "")
-    items = (
-        raw
-        if isinstance(raw, list)
-        else [t.strip() for t in str(raw).split(",") if t.strip()]
-    )
+    items = raw if isinstance(raw, list) else [t.strip() for t in str(raw).split(",") if t.strip()]
     return {str(t).strip() for t in items}
 
 
