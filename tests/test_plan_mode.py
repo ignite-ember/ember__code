@@ -852,14 +852,13 @@ class TestBypassSlashCommand:
 
 class TestGetLatestPlanRpc:
     def test_returns_empty_when_no_plan(self):
-        # The RPC now also carries ``tasks`` (from the todo store)
-        # and ``state`` (inferred from current permission mode) so
-        # the FE can rebuild the PlanCard on session restore — see
-        # ``BackendServer._infer_plan_state``.
-        session = MagicMock(spec=["plan_store", "todo_store", "permission_evaluator"])
+        # The RPC carries ``tasks`` (from the todo store) and
+        # ``state`` for restore. State no longer infers from
+        # permission mode — see ``test_get_latest_plan_pending_when_plan_present``
+        # in test_plan_rehydrate.py for the new semantics.
+        session = MagicMock(spec=["plan_store", "todo_store"])
         session.plan_store = PlanStore()
         session.todo_store = None
-        session.permission_evaluator = None
         backend = BackendServer.__new__(BackendServer)
         backend._session = session
         snap = backend.get_latest_plan()

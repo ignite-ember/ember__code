@@ -73,6 +73,7 @@ class CommandAction(StrEnum):
     HOOKS = "hooks"
     LOOP = "loop"
     SCHEDULE = "schedule"
+    WATCHER = "watcher"  # opens the background-process panel
     COMPACT = "compact"
     RUN_PROMPT = "run_prompt"
 

@@ -11,12 +11,6 @@
  *     invariant: ``restore(swap(x))`` is identity when nothing
  *     changed in the middle.
  *
- *   • looksLikeAsciiArt
- *     Routes plain (no-language) code fences to the SVG ASCII-art
- *     renderer when the content looks like a diagram. Two false-
- *     positive shapes used to slip through (single corner glyph,
- *     and arrows in prose) — locking that down.
- *
  *   • guessLang
  *     Maps a file extension to a syntax-highlight language. Wrong
  *     mapping = wrong colouring in tool-output code blocks.
@@ -25,7 +19,6 @@
 import { describe, expect, it } from "vitest";
 import {
   guessLang,
-  looksLikeAsciiArt,
   restoreCodeBlocks,
   swapCodeBlocks,
 } from "./ChatItems";
@@ -126,49 +119,6 @@ after`;
     // saved turn).
     const store = new Map<string, string>();
     expect(restoreCodeBlocks("a «code:ghost.py 1-2#7» b", store)).toBe("a  b");
-  });
-});
-
-// ── looksLikeAsciiArt ──────────────────────────────────────
-
-describe("looksLikeAsciiArt", () => {
-  it("detects 2+ lines with Unicode box-drawing characters", () => {
-    const diagram = "┌──────┐\n│ Hello│\n└──────┘";
-    expect(looksLikeAsciiArt(diagram)).toBe(true);
-  });
-
-  it("detects 2+ lines with ASCII '+--+' corners", () => {
-    const diagram = "+--------+\n|  Hi    |\n+--------+";
-    expect(looksLikeAsciiArt(diagram)).toBe(true);
-  });
-
-  it("rejects a single line with one corner glyph (prose with a stray symbol)", () => {
-    // Prevents false-positives on chat lines like "she said
-    // ┌ haha ┐" or unfinished diagrams.
-    expect(looksLikeAsciiArt("just one ┌ corner here")).toBe(false);
-  });
-
-  it("rejects regular prose with arrows", () => {
-    // ``alice → bob`` is one of the documented false-positive
-    // shapes that the rewrite of the heuristic was meant to
-    // exclude. Make sure we stay excluded.
-    expect(looksLikeAsciiArt("flow goes alice → bob → carol")).toBe(false);
-  });
-
-  it("rejects plain code-looking input", () => {
-    expect(looksLikeAsciiArt("def foo():\n    return 1")).toBe(false);
-  });
-
-  it("accepts mixed Unicode + ASCII as long as 2+ structural lines exist", () => {
-    // ``looksLikeAsciiArt`` counts EITHER style; only one of
-    // the two counters needs to hit 2. A diagram drawn with
-    // Unicode + a separator row of ASCII still counts.
-    const diagram = "┌────┐\n│ ok │\n+----+";
-    expect(looksLikeAsciiArt(diagram)).toBe(true);
-  });
-
-  it("empty input is not art", () => {
-    expect(looksLikeAsciiArt("")).toBe(false);
   });
 });
 

@@ -172,35 +172,30 @@ class TestPlanRehydrate:
 
         assert server._session.plan_store.latest == ""
 
-    def test_infer_plan_state_empty_plan(self) -> None:
+    def test_get_latest_plan_pending_when_plan_present(self) -> None:
+        # Replaces the deleted ``_infer_plan_state`` tests. The
+        # RPC no longer guesses from permission mode — every
+        # restored plan starts ``"pending"`` until the FE proves
+        # otherwise via ``approve_plan`` / ``dismiss_plan``.
+        # Empty plan → empty state (no card to render).
         server = BackendServer.__new__(BackendServer)
-        server._session = MagicMock()
-        server._session.permission_evaluator = SimpleNamespace(
-            mode=SimpleNamespace(value="default")
+        server._session = SimpleNamespace(
+            plan_store=PlanStore(latest="some plan text"),
+            todo_store=SimpleNamespace(snapshot=lambda: []),
         )
-        assert server._infer_plan_state("") == ""
+        result = server.get_latest_plan()
+        assert result["state"] == "pending"
+        assert result["latest"] == "some plan text"
 
-    def test_infer_plan_state_pending_when_still_in_plan_mode(self) -> None:
+    def test_get_latest_plan_empty_state_when_no_plan(self) -> None:
         server = BackendServer.__new__(BackendServer)
-        server._session = MagicMock()
-        server._session.permission_evaluator = SimpleNamespace(mode=SimpleNamespace(value="plan"))
-        assert server._infer_plan_state("some plan text") == "pending"
-
-    def test_infer_plan_state_approved_when_mode_default(self) -> None:
-        # User clicked Approve → /plan off fired → mode flipped to
-        # default. On restore we treat that as approved.
-        server = BackendServer.__new__(BackendServer)
-        server._session = MagicMock()
-        server._session.permission_evaluator = SimpleNamespace(
-            mode=SimpleNamespace(value="default")
+        server._session = SimpleNamespace(
+            plan_store=PlanStore(),
+            todo_store=SimpleNamespace(snapshot=lambda: []),
         )
-        assert server._infer_plan_state("some plan text") == "approved"
-
-    def test_infer_plan_state_no_evaluator_defaults_to_approved(self) -> None:
-        server = BackendServer.__new__(BackendServer)
-        server._session = MagicMock()
-        server._session.permission_evaluator = None
-        assert server._infer_plan_state("some plan text") == "approved"
+        result = server.get_latest_plan()
+        assert result["state"] == ""
+        assert result["latest"] == ""
 
     async def test_get_chat_history_emits_plan_turn_inline(self) -> None:
         # The agent submits a plan → assistant message has tool_calls,
@@ -273,7 +268,12 @@ class TestPlanRehydrate:
         assert len(plan_turns) == 1
         assert plan_turns[0]["plan"] == "Step 1.\nStep 2."
         assert plan_turns[0]["tasks"] == [{"content": "do thing", "status": "pending"}]
-        assert plan_turns[0]["state"] == "approved"
+        # No persisted decision for this run_id → pending. The
+        # previous test asserted "approved" because the inference
+        # logic returned approved whenever mode was default; that
+        # silently swallowed never-approved plans on reload, which
+        # is the bug this refactor fixes.
+        assert plan_turns[0]["state"] == "pending"
         # And NO regular tool turn for the same exit_plan_mode call.
         tool_turns = [t for t in history if t.get("role") == "tool"]
         assert not any(t.get("tool_name") == "exit_plan_mode" for t in tool_turns), (

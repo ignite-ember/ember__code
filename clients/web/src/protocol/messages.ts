@@ -134,6 +134,7 @@ export type CommandAction =
   | "hooks"
   | "loop"
   | "schedule"
+  | "watcher"
   | "compact"
   | "run_prompt";
 

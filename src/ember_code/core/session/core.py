@@ -1671,6 +1671,71 @@ class Session:
         )
         return f"Permission mode: {prev.value} → {new_mode.value}."
 
+    async def approve_plan(self, run_id: str) -> dict:
+        """Record the user's approval of a specific plan and flip
+        out of plan mode in one atomic-ish step.
+
+        ``run_id`` is the run in which the agent called
+        ``exit_plan_mode`` — used as the persisted key so the
+        decision survives reloads. Without persistence, a
+        restart would fall back to inferring "approved" from
+        the current mode, which silently marked never-approved
+        plans as approved when the mode happened to be default.
+
+        Side effects in order:
+          1. ``plan_store.set_decision(run_id, "approved")``
+          2. Persist the new decisions map (``session_data``
+             write via :class:`SessionPersistence`).
+          3. ``set_permission_mode("default")`` — also
+             broadcasts ``permission_mode_changed``.
+          4. ``broadcast("plan_decided", ...)`` so the FE can
+             flip the matching PlanCard's state without waiting
+             for the mode broadcast.
+
+        Returns ``{run_id, decision, mode_status}`` for the RPC
+        caller. Raises ``ValueError`` on empty ``run_id``.
+        """
+        return await self._record_plan_decision(run_id, "approved", flip_mode=True)
+
+    async def dismiss_plan(self, run_id: str) -> dict:
+        """Record the user's dismissal of a specific plan.
+
+        Same persistence semantics as :meth:`approve_plan` but
+        does NOT flip the permission mode — the user staying in
+        plan mode is the whole point of Refine (they want to
+        iterate on the plan, not execute it).
+        """
+        return await self._record_plan_decision(run_id, "dismissed", flip_mode=False)
+
+    async def _record_plan_decision(self, run_id: str, decision: str, *, flip_mode: bool) -> dict:
+        if not run_id:
+            raise ValueError("run_id must be non-empty")
+        store = getattr(self, "plan_store", None)
+        if store is None:
+            raise RuntimeError("plan_store not initialised on this session")
+        store.set_decision(run_id, decision)
+        # Persist BEFORE flipping mode so a crash mid-flip
+        # doesn't leave the user with mode=default but no
+        # recorded approval (which would reproduce the original
+        # bug on the next restart).
+        if hasattr(self, "persistence"):
+            try:
+                await self.persistence.save_plan_decisions(store.decisions_snapshot())
+            except Exception as exc:
+                logger.debug("plan decision persist failed: %s", exc)
+        mode_status = ""
+        if flip_mode:
+            mode_status = self.set_permission_mode("default")
+        self.broadcast(
+            "plan_decided",
+            {"run_id": run_id, "decision": decision},
+        )
+        return {
+            "run_id": run_id,
+            "decision": decision,
+            "mode_status": mode_status,
+        }
+
     def register_broadcast_callback(self, callback) -> None:
         """Append a ``callback(channel: str, payload: dict)`` to
         the session's broadcast list. Used by the backend's
@@ -1724,12 +1789,20 @@ class Session:
             return
         queue.append((channel, payload))
 
-    def drain_post_run_broadcasts(self) -> None:
+    def drain_post_run_broadcasts(self, run_id: str | None = None) -> None:
         """Fire every queued post-run broadcast through
         :meth:`broadcast`, then clear the queue.
 
         Called by the BE stream consumer right after ``RunCompleted``
         flushes. Safe to call on a clean session (no-op).
+
+        ``run_id`` (when supplied) is stamped onto every payload
+        that doesn't already carry one. This is how
+        ``plan_submitted`` payloads acquire the run_id the FE
+        needs to call ``approve_plan`` / ``dismiss_plan`` — the
+        plan tool can't see the current run_id from inside its
+        toolkit context, so the run-loop injects it at drain
+        time instead.
         """
         queue = getattr(self, "_pending_post_run_broadcasts", None)
         if not queue:
@@ -1739,6 +1812,8 @@ class Session:
         pending = list(queue)
         queue.clear()
         for channel, payload in pending:
+            if run_id and isinstance(payload, dict) and "run_id" not in payload:
+                payload = {**payload, "run_id": run_id}
             self.broadcast(channel, payload)
 
     # ── Knowledge warmup ────────────────────────────────────────────

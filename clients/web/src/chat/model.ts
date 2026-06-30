@@ -453,6 +453,14 @@ export type ChatItem =
       plan: string;
       state: "pending" | "approved" | "dismissed";
       tasks: PlanTask[];
+      /** Run that submitted the plan. Used as the key when the
+       *  FE calls ``approve_plan`` / ``dismiss_plan`` so the BE
+       *  can persist the per-plan decision instead of inferring
+       *  from permission mode. Empty when the BE didn't supply
+       *  one (legacy push without ``run_id``); approve/dismiss
+       *  silently no-ops to keep the FE from spamming an empty
+       *  key the BE would reject. */
+      runId: string;
     }
   | {
       /** Structured marker for one ``/loop`` iteration. The wrapped
@@ -512,8 +520,8 @@ export function shellItem(command: string): ChatItem {
   return { kind: "shell", id: nid(), command, output: "", exitCode: null };
 }
 
-export function planItem(plan: string, tasks: PlanTask[] = []): ChatItem {
-  return { kind: "plan", id: nid(), plan, state: "pending", tasks };
+export function planItem(plan: string, tasks: PlanTask[] = [], runId = ""): ChatItem {
+  return { kind: "plan", id: nid(), plan, state: "pending", tasks, runId };
 }
 
 export function attachmentsItem(files: { name: string; path: string }[]): ChatItem {
@@ -903,7 +911,8 @@ export function restoredItem(turn: Record<string, unknown>): ChatItem | null {
     // not bolted onto the end.
     const planText = String(turn.plan ?? "").trim();
     if (!planText) return null;
-    const item = planItem(planText, normalizePlanTasks(turn.tasks));
+    const runId = String(turn.run_id ?? "");
+    const item = planItem(planText, normalizePlanTasks(turn.tasks), runId);
     if (item.kind === "plan") {
       const state = String(turn.state ?? "");
       if (state === "pending" || state === "approved" || state === "dismissed") {

@@ -111,6 +111,8 @@ export function Composer({
   onTyping,
   onSubmit,
   onStop,
+  permissionMode,
+  onPickMode,
 }: {
   client: EmberClient;
   connected: boolean;
@@ -139,6 +141,17 @@ export function Composer({
   onTyping?: (text: string) => void;
   onSubmit: (text: string) => void;
   onStop: () => void;
+  /** Current ``PermissionEvaluator.mode`` value from the BE
+   *  (``default`` / ``plan`` / ``acceptEdits`` / ``bypassPermissions``).
+   *  Used to pre-select the active mode in the send-button
+   *  dropdown. */
+  permissionMode?: string;
+  /** Called when the user picks a different mode from the
+   *  send-button dropdown. The host (App.tsx) is responsible
+   *  for firing the matching slash command so the BE flips
+   *  ``permission_mode`` accordingly; the dropdown is purely a
+   *  trigger surface. */
+  onPickMode?: (mode: string) => void;
 }) {
   const draftKey = sessionId ? `draft:${sessionId}` : "";
   const [text, setText] = useState("");
@@ -257,6 +270,10 @@ export function Composer({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [modelMenu, setModelMenu] = useState<{ name: string; current: boolean }[] | null>(null);
+  // Mode-picker dropdown for the split send button. ``true`` =
+  // open. Mode selection itself happens via ``onPickMode``;
+  // the popup just surfaces the options.
+  const [modeMenu, setModeMenu] = useState(false);
   const [history, setHistory] = useState<string[]>([]);
   const [histIdx, setHistIdx] = useState(-1);
   const [draft, setDraft] = useState("");
@@ -965,17 +982,121 @@ export function Composer({
               <StopIcon />
             </button>
           ) : (
-            <button
-              className="send-btn"
-              title="Send"
-              disabled={!connected || (!text.trim() && attachments.length === 0)}
-              onClick={submit}
-            >
-              <ArrowUpIcon />
-            </button>
+            <SendButton
+              connected={connected}
+              canSend={!!text.trim() || attachments.length > 0}
+              onSubmit={submit}
+              permissionMode={permissionMode ?? "default"}
+              onPickMode={onPickMode}
+              modeMenuOpen={modeMenu}
+              setModeMenuOpen={setModeMenu}
+            />
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Split send button — left half is a dropdown trigger that
+ *  reveals the four permission modes; right half is the actual
+ *  send action. The user can change the agent's permission
+ *  surface at the moment of sending instead of digging into
+ *  ``/plan`` / ``/accept`` / ``/bypass`` slash commands. The
+ *  left half is intentionally narrower than the right (~3:5
+ *  ratio) so the primary action — Send — stays the visually
+ *  dominant target.
+ */
+const MODE_OPTIONS: { value: string; label: string; desc: string }[] = [
+  {
+    value: "default",
+    label: "Execute",
+    desc: "Ask before each mutating tool. The safe default.",
+  },
+  {
+    value: "plan",
+    label: "Plan",
+    desc: "Read-only sandbox. Agent drafts a plan card; you approve before any edits run.",
+  },
+  {
+    value: "acceptEdits",
+    label: "Auto-edit",
+    desc: "Auto-approve file edits (Edit / Write / NotebookEdit). Shell + web tools still ask.",
+  },
+  {
+    value: "bypassPermissions",
+    label: "Bypass",
+    desc: "Auto-approve every tool, including shell. Explicit deny rules in settings still block.",
+  },
+];
+
+function SendButton({
+  connected,
+  canSend,
+  onSubmit,
+  permissionMode,
+  onPickMode,
+  modeMenuOpen,
+  setModeMenuOpen,
+}: {
+  connected: boolean;
+  canSend: boolean;
+  onSubmit: () => void;
+  permissionMode: string;
+  onPickMode?: (mode: string) => void;
+  modeMenuOpen: boolean;
+  setModeMenuOpen: (next: boolean) => void;
+}) {
+  const current =
+    MODE_OPTIONS.find((m) => m.value === permissionMode) ?? MODE_OPTIONS[0];
+  return (
+    <div className="send-split" data-mode={current.value}>
+      <button
+        type="button"
+        className="send-split-mode"
+        title={`Mode: ${current.desc}`}
+        onClick={() => setModeMenuOpen(!modeMenuOpen)}
+        aria-haspopup="menu"
+        aria-expanded={modeMenuOpen}
+      >
+        <span className="send-split-mode-label">{current.label}</span>
+        <ChevronIcon size={9} down={!modeMenuOpen} />
+      </button>
+      <button
+        type="button"
+        className="send-split-go"
+        title="Send"
+        disabled={!connected || !canSend}
+        onClick={onSubmit}
+      >
+        <ArrowUpIcon />
+      </button>
+      {modeMenuOpen && (
+        <>
+          {/* Backdrop closes the menu on outside click — same
+              pattern the model picker uses. */}
+          <div
+            className="popup-backdrop"
+            onClick={() => setModeMenuOpen(false)}
+          />
+          <div className="popup-menu send-mode-menu" role="menu">
+            {MODE_OPTIONS.map((m) => (
+              <div
+                key={m.value}
+                role="menuitem"
+                className={`popup-item ${m.value === current.value ? "active" : ""}`}
+                onClick={() => {
+                  setModeMenuOpen(false);
+                  if (m.value !== current.value) onPickMode?.(m.value);
+                }}
+              >
+                <span className="cmd">{m.label}</span>
+                <span className="desc">{m.desc}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

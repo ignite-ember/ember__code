@@ -436,6 +436,105 @@ class BackendServer:
         await self._session.load_persisted_loop_state()
         await self._detect_interrupted_run()
         await self._rehydrate_plan_store()
+        await self._rehydrate_plan_decisions()
+        await self._rehydrate_todos()
+        await self._rehydrate_orphan_processes()
+
+    async def _rehydrate_orphan_processes(self) -> None:
+        """Surface every backgrounded shell process that survived
+        the previous BE lifetime so the watcher panel can see +
+        kill them. Without this, ``run_shell_command(background=True)``
+        spawns that outlive a BE restart become invisible orphans
+        (the OS keeps them alive via ``start_new_session=True`` but
+        the registry resets to empty).
+
+        Also wires the per-pid log file directory — the orphan's
+        ``read()`` and the live reader's tee both resolve paths
+        through ``process_log.get_default_project_dir()``, which
+        we set here so the project_dir doesn't have to plumb
+        through every spawn call site.
+
+        Best-effort: probe failures, DB unavailable, etc. all
+        leave the registry as-is rather than crashing startup.
+        """
+        from ember_code.core.tools import process_log
+        from ember_code.core.tools.shell import rehydrate_orphan_processes
+
+        # ``project_dir`` is optional on the session stub used by
+        # unit tests — fall back to ``None`` so the log path
+        # resolver uses TMPDIR and the rehydrate is a no-op,
+        # rather than crashing startup.
+        project_dir = getattr(self._session, "project_dir", None)
+        process_log.set_default_project_dir(project_dir)
+        if project_dir is None:
+            return
+        try:
+            await rehydrate_orphan_processes(project_dir)
+        except Exception as exc:
+            logger.debug("orphan process rehydrate failed: %s", exc)
+
+    async def _rehydrate_plan_decisions(self) -> None:
+        """Load the ``{run_id: decision}`` map persisted on
+        ``session_data`` back into the in-memory ``PlanStore``.
+
+        Without this, after BE restart every plan's state would
+        fall back to the default "pending" / "approved" logic
+        in ``get_chat_history`` and the user's previous approval
+        clicks would silently vanish from the FE. Best-effort:
+        load failures leave the decisions map empty (which means
+        pending for the latest, approved for historical — the
+        new default, see ``get_chat_history``).
+        """
+        store = getattr(self._session, "plan_store", None)
+        if store is None:
+            return
+        persistence = getattr(self._session, "persistence", None)
+        if persistence is None:
+            return
+        try:
+            data = await persistence.load_plan_decisions()
+        except Exception as exc:
+            logger.debug("plan decision rehydrate failed: %s", exc)
+            return
+        store.load_decisions(data)
+
+    async def _rehydrate_todos(self) -> None:
+        """Load the persisted todo snapshot back into
+        ``session.todo_store``.
+
+        ``_rehydrate_plan_store`` seeds the store from the
+        original ``exit_plan_mode(tasks=...)`` args (everything
+        pending). That's the right starting state ONLY if no
+        execution has happened yet. Once ``todo_write`` runs,
+        ``session_data["todos"]`` carries the live state
+        (in_progress / completed flips) and is the authoritative
+        source. Order matters: this runs AFTER
+        ``_rehydrate_plan_store`` so it overwrites the
+        plan-args seeding only when a real snapshot exists.
+
+        Best-effort: missing persistence layer, empty snapshot,
+        or DB failure leaves the plan-args seeding in place
+        (which is at least consistent with a fresh execution).
+        """
+        todo = getattr(self._session, "todo_store", None)
+        persistence = getattr(self._session, "persistence", None)
+        if todo is None or persistence is None:
+            return
+        try:
+            snapshot = await persistence.load_todos()
+        except Exception as exc:
+            logger.debug("todo rehydrate failed: %s", exc)
+            return
+        if not snapshot:
+            return  # no live execution state yet; keep the plan-args seed
+        try:
+            from ember_code.core.tools.todo import _coerce_items
+
+            items, _errs = _coerce_items(snapshot)
+            if items:
+                todo.set(items)
+        except Exception as exc:
+            logger.debug("todo rehydrate: coerce failed: %s", exc)
 
     async def _rehydrate_plan_store(self) -> None:
         """Repopulate ``session.plan_store`` from the persisted history.
@@ -972,10 +1071,12 @@ class BackendServer:
                     # queued by ``exit_plan_mode``). The push fires AFTER
                     # the run's content has flushed so the PlanCard lands
                     # at the bottom of the agent's reply, not mid-stream.
+                    # ``finished_run_id`` is stamped onto each payload so
+                    # the FE can key approve/dismiss RPCs by run_id.
                     drain = getattr(self._session, "drain_post_run_broadcasts", None)
                     if drain is not None:
                         try:
-                            drain()
+                            drain(run_id=finished_run_id)
                         except Exception as exc:
                             logger.debug("post-run broadcast drain raised: %s", exc)
         except asyncio.TimeoutError:
@@ -2201,11 +2302,13 @@ class BackendServer:
                                     "role": "plan",
                                     "plan": plan_text,
                                     "tasks": plan_args.get("tasks") or [],
-                                    # State filled in post-walk: only
-                                    # the LATEST plan turn gets the
-                                    # inferred state; older plans are
-                                    # always "approved" (historical).
-                                    "state": "approved",
+                                    # State is filled in post-walk from
+                                    # the persisted ``plan_decisions``
+                                    # map keyed by ``run_id``. Leave
+                                    # empty here so the post-walk pass
+                                    # can distinguish "we set it" from
+                                    # "it was never touched".
+                                    "state": "",
                                     "run_id": run_id,
                                     "created_at": created_at,
                                 }
@@ -2344,15 +2447,37 @@ class BackendServer:
                         "duration": float(getattr(metrics, "duration", 0) or 0) if metrics else 0.0,
                     }
                 )
-        # The LATEST plan turn gets its state inferred from the
-        # current permission mode. Older plan turns stay "approved"
-        # (historical — the user is past them). Without this, every
-        # restored plan card would show as approved including the
-        # one the user is still deciding on.
-        for turn in reversed(out):
-            if turn.get("role") == "plan":
-                turn["state"] = self._infer_plan_state(turn.get("plan", ""))
-                break
+        # Plan-turn state comes from the persisted
+        # ``plan_decisions`` map (run_id → "approved" |
+        # "dismissed") that the FE writes via the
+        # ``approve_plan`` / ``dismiss_plan`` RPCs. Never
+        # inferred from the current permission mode — a mode
+        # flip without an explicit user click leaves the plan
+        # pending (which is the truth: the user never decided).
+        #
+        # Two-pass: find every plan turn, then assign:
+        #   - explicit decision in the map  → use it
+        #   - no decision AND latest plan   → "pending"
+        #     (user still has the chance to act)
+        #   - no decision AND historical    → "dismissed"
+        #     (the user moved on without clicking — Refine in
+        #     spirit; the card renders as dismissed so we don't
+        #     show stale Approve buttons on prior plans)
+        store = getattr(self._session, "plan_store", None)
+        decisions = getattr(store, "decisions", {}) if store else {}
+        plan_indices = [i for i, t in enumerate(out) if t.get("role") == "plan"]
+        if plan_indices:
+            latest_idx = plan_indices[-1]
+            for i in plan_indices:
+                turn = out[i]
+                run_id = str(turn.get("run_id") or "")
+                recorded = decisions.get(run_id) if run_id else None
+                if recorded in ("approved", "dismissed"):
+                    turn["state"] = recorded
+                elif i == latest_idx:
+                    turn["state"] = "pending"
+                else:
+                    turn["state"] = "dismissed"
         return out
 
     async def search_chat(self, session_id: str, query: str, limit: int = 50) -> list[dict]:
@@ -3378,17 +3503,19 @@ class BackendServer:
         ``exit_plan_mode`` submissions (row 50).
 
         Returns ``{latest: str, history: list[str], tasks: list[dict],
-        state: "pending"|"approved"|""}``. ``tasks`` is the current
-        todo-store snapshot, included so a restored session can
-        rebuild the PlanCard's task checklist (the live path seeds
-        it from the ``plan_submitted`` push; on restart there's no
-        push to listen to, so we read state). ``state`` is inferred
-        from the current permission mode: if a plan exists AND the
-        session is still in plan mode, the user hasn't acted yet
-        (pending); otherwise the user exited plan mode (treat as
-        approved). ``dismissed`` (Refine) isn't restorable — we'd
-        need to persist the user's reject click, and that decision
-        is currently FE-only state.
+        state: "pending"|"approved"|"dismissed"|""}``. ``tasks`` is
+        the current todo-store snapshot, included so a restored
+        session can rebuild the PlanCard's task checklist (the
+        live path seeds it from the ``plan_submitted`` push; on
+        restart there's no push to listen to, so we read state).
+
+        ``state`` is sourced from the persisted ``plan_decisions``
+        map. Without a recorded decision we default to
+        ``"pending"`` because the latest plan is the one the user
+        is still deciding on. Older history doesn't surface
+        through this RPC — ``get_chat_history`` is what restores
+        the in-line PlanCards with their per-run decisions.
+
         Empty strings / list when no plan has been submitted yet.
         """
         store = getattr(self._session, "plan_store", None)
@@ -3397,26 +3524,13 @@ class BackendServer:
             snap = store.snapshot()
         todo = getattr(self._session, "todo_store", None)
         snap["tasks"] = todo.snapshot() if todo is not None else []
-        snap["state"] = self._infer_plan_state(snap.get("latest", ""))
+        # ``latest`` has no associated run_id at this layer
+        # (PlanStore only retains the text), so we can't look up
+        # a per-run decision. ``get_chat_history`` is the
+        # authoritative state source for restored sessions; this
+        # RPC just answers "is there a plan, and what is it?"
+        snap["state"] = "pending" if snap.get("latest") else ""
         return snap
-
-    def _infer_plan_state(self, latest_plan: str) -> str:
-        """Best-effort state for a restored PlanCard.
-
-        ``""`` when no plan exists. ``"pending"`` when a plan exists
-        and the session is currently in plan mode (the user hasn't
-        approved or rejected yet). ``"approved"`` otherwise — the
-        only way to leave plan mode after a submission is for the
-        user to act on the card (or type ``/plan off``, which has
-        the same effect from the user's POV).
-        """
-        if not latest_plan:
-            return ""
-        evaluator = getattr(self._session, "permission_evaluator", None)
-        if evaluator is None:
-            return "approved"
-        mode_value = getattr(getattr(evaluator, "mode", None), "value", "") or ""
-        return "pending" if mode_value == "plan" else "approved"
 
     def get_todos(self) -> list[dict]:
         """Snapshot of the session's todo list as written by the
@@ -3431,6 +3545,113 @@ class BackendServer:
         if store is None:
             return []
         return store.snapshot()
+
+    # ── Background-process watcher RPCs (row N/A — internal) ─
+    # The agent's ``run_shell_command(background=True)`` registers
+    # processes in the shell-tool registry; the FE watcher panel
+    # surfaces them. Read-only over the registry except for the
+    # explicit stop endpoint.
+
+    def list_background_processes(self) -> list[dict]:
+        """Every running backgrounded process the registry knows
+        about. Each entry: ``{pid, cmd, started_at, elapsed_seconds}``.
+        Finished-but-not-evicted processes are intentionally
+        omitted — the watcher only shows live work; the per-process
+        ``process_exited`` push has already flipped any row to
+        "stopped" before TTL eviction removes it.
+        """
+        from ember_code.core.tools.shell import _registry
+
+        return [
+            {
+                "pid": pid,
+                "cmd": cmd,
+                "elapsed_seconds": elapsed,
+            }
+            for pid, cmd, elapsed in _registry.all_running()
+        ]
+
+    def read_process_tail(self, pid: int, tail: int = 200) -> dict:
+        """Return the last ``tail`` lines of a backgrounded
+        process's output PLUS its live status — used by the FE
+        watcher to seed the log pane on first open (live updates
+        thereafter come via the ``process_line`` push channel).
+
+        Shape: ``{pid, output, is_running, exit_code}``. ``output``
+        is a single string with ``\\n`` between lines (mirrors
+        what ``_ManagedProcess.read`` returns to the agent). When
+        the pid isn't known (already evicted, never existed)
+        returns ``{pid, output: "", is_running: false, exit_code: null}``
+        rather than raising — keeps the FE refresh path simple.
+        """
+        from ember_code.core.tools.shell import _registry
+
+        mp = _registry.get(int(pid))
+        if mp is None:
+            return {
+                "pid": int(pid),
+                "output": "",
+                "is_running": False,
+                "exit_code": None,
+            }
+        return {
+            "pid": int(pid),
+            "output": mp.read(tail=int(tail)),
+            "is_running": mp.is_running(),
+            "exit_code": mp.returncode(),
+        }
+
+    async def stop_background_process(self, pid: int) -> dict:
+        """Kill a backgrounded process by pid. Returns ``{pid,
+        killed: bool, message}``. ``killed`` is ``True`` if the
+        registry actually had a running process for this pid and
+        we sent SIGTERM; ``False`` means the pid was unknown or
+        already exited.
+
+        Async because the kill path awaits the reader task so any
+        trailing buffered output is captured before the row goes
+        away — the FE sees the final lines in its tail pane.
+        Orphan processes (rehydrated from a previous BE) don't
+        have a reader to wait on, so the await is skipped and we
+        also explicitly drop the row from the registry + DB
+        (the normal ``_emit_completion`` path is reader-driven
+        and never fires for orphans).
+        """
+        from ember_code.core.tools.shell import (
+            _OrphanProcess,
+            _persist_remove,
+            _registry,
+        )
+
+        mp = _registry.get(int(pid))
+        if mp is None:
+            return {"pid": int(pid), "killed": False, "message": "pid not in registry"}
+        if not mp.is_running():
+            return {
+                "pid": int(pid),
+                "killed": False,
+                "message": f"already exited (code={mp.returncode()})",
+            }
+        mp.kill()
+        if isinstance(mp, _OrphanProcess):
+            # Orphan path: no reader to flush, no
+            # ``_emit_completion`` to drive cleanup. Do it
+            # explicitly so the watcher row vanishes and the DB
+            # row goes too.
+            _registry.remove(int(pid))
+            _persist_remove(int(pid))
+        else:
+            # Best-effort wait for the reader to flush. Bounded
+            # so a stuck child can't deadlock the RPC.
+            reader = mp._reader_task
+            if reader is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(reader, timeout=2.0)
+        return {
+            "pid": int(pid),
+            "killed": True,
+            "message": f"sent SIGTERM (final code={mp.returncode()})",
+        }
 
     def get_slash_commands(self) -> list[dict]:
         """Snapshot of every available slash command for SDK

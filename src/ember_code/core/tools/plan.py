@@ -131,15 +131,32 @@ def _validate_plan_confidence(
     return _ConfidenceVerdict(reject=True, feedback=feedback, attempts_remaining=remaining)
 
 
+_VALID_DECISIONS = ("approved", "dismissed")
+
+
 @dataclass
 class PlanStore:
     """Holds the most recent plan the agent submitted plus a
     short history (last few plans). Replaced atomically on each
     ``exit_plan_mode`` call — the agent sees the plan it just
-    presented as the "latest", earlier ones move into history."""
+    presented as the "latest", earlier ones move into history.
+
+    Also tracks the user's per-plan decision (Approve / Refine
+    button clicks) keyed by ``run_id`` — the run in which the
+    agent called ``exit_plan_mode``. Persisted via
+    :class:`SessionPersistence.save_plan_decisions` so reloads
+    don't fall back to inferring approval from permission mode
+    (the bug: a mode flip with no user click would silently mark
+    a pending plan as approved).
+    """
 
     latest: str = ""
     history: list[str] = field(default_factory=list)
+    # ``run_id`` -> ``"approved"`` | ``"dismissed"``. Absent
+    # key means the user hasn't acted yet (pending). The
+    # mapping is the SOLE source of truth for plan state —
+    # never inferred from mode, never from message content.
+    decisions: dict[str, str] = field(default_factory=dict)
     # Max number of past plans we keep in history. Keeps memory
     # bounded — most sessions only ever have a handful, but a
     # /plan-toggle-heavy workflow could otherwise accumulate
@@ -152,6 +169,48 @@ class PlanStore:
             if len(self.history) > self._max_history:
                 self.history = self.history[-self._max_history :]
         self.latest = plan
+
+    def set_decision(self, run_id: str, decision: str) -> None:
+        """Record the user's decision for a specific plan
+        (identified by the ``run_id`` of the run in which
+        ``exit_plan_mode`` was called).
+
+        ``decision`` must be ``"approved"`` or ``"dismissed"`` —
+        anything else raises so a typo in calling code surfaces
+        immediately instead of silently corrupting the store.
+        ``run_id`` must be a non-empty string for the same
+        reason (an empty key would collide across plans).
+        """
+        if decision not in _VALID_DECISIONS:
+            raise ValueError(f"decision must be one of {_VALID_DECISIONS}, got {decision!r}")
+        if not run_id:
+            raise ValueError("run_id must be non-empty")
+        self.decisions[run_id] = decision
+
+    def get_decision(self, run_id: str) -> str | None:
+        """Return the recorded decision or ``None`` if the user
+        hasn't acted on this plan yet."""
+        if not run_id:
+            return None
+        return self.decisions.get(run_id)
+
+    def load_decisions(self, data: dict | None) -> None:
+        """Bulk-load decisions from the persisted blob. Tolerates
+        ``None`` / wrong-shaped values — anything that doesn't
+        look like a ``str -> valid-decision`` mapping is
+        dropped silently. Called on session rehydrate."""
+        if not isinstance(data, dict):
+            return
+        for run_id, decision in data.items():
+            if isinstance(run_id, str) and decision in _VALID_DECISIONS:
+                self.decisions[run_id] = decision
+
+    def decisions_snapshot(self) -> dict[str, str]:
+        """Copy of the decisions map for persistence. Returning
+        a copy (not the live dict) keeps the persistence layer
+        from accidentally mutating store state when it
+        serializes."""
+        return dict(self.decisions)
 
     def snapshot(self) -> dict:
         """Wire shape for the panel / `get_latest_plan` RPC."""

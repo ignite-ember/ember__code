@@ -370,6 +370,32 @@ export class EmberClient {
     return this.rpc("login", {});
   }
 
+  /**
+   * Record the user's approval of the plan submitted in ``runId``.
+   * BE persists the decision (survives reload), flips
+   * ``permission_mode`` → default, then broadcasts ``plan_decided``
+   * so the PlanCard's footer text catches up. The wake-up
+   * message that tells the agent to execute the plan is sent
+   * separately by the caller — keeping it FE-driven so it lands
+   * in the chat transcript like a user-typed continuation.
+   */
+  approvePlan(
+    runId: string,
+  ): Promise<{ run_id: string; decision: string; mode_status: string }> {
+    return this.rpc("approve_plan", { run_id: runId });
+  }
+
+  /**
+   * Record the user's dismissal (Refine click). BE persists the
+   * decision and emits ``plan_decided``; permission mode stays
+   * in ``plan`` so the user can iterate.
+   */
+  dismissPlan(
+    runId: string,
+  ): Promise<{ run_id: string; decision: string; mode_status: string }> {
+    return this.rpc("dismiss_plan", { run_id: runId });
+  }
+
   cancelLogin(): void {
     this.send({ type: "cancel_login" });
   }

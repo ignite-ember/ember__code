@@ -26,12 +26,8 @@ import { ChatItemView } from "./components/ChatItems";
 import { ChatSearchBar } from "./components/ChatSearchBar";
 import { Composer, BUILTIN_COMMANDS, type SlashCommand } from "./components/Composer";
 import { CodeIndexIndicator } from "./components/CodeIndexIndicator";
-import {
-  AutoApproveSwitch,
-  CtxMeter,
-  ModeBadge,
-  SessionChip,
-} from "./components/StatusBits";
+import { WatcherIndicator } from "./components/WatcherIndicator";
+import { CtxMeter, SessionChip } from "./components/StatusBits";
 import { HitlDialog, type HitlDecision } from "./components/HitlDialog";
 import {
   ChevronIcon,
@@ -58,6 +54,7 @@ import { InfoPanel } from "./components/panels/InfoPanel";
 import { LoginPanel } from "./components/panels/LoginPanel";
 import { LoopPanel } from "./components/panels/LoopPanel";
 import { McpPanel } from "./components/panels/McpPanel";
+import { WatcherPanel } from "./components/panels/WatcherPanel";
 import { SchedulePanel } from "./components/panels/SchedulePanel";
 import { EmberClient, pickNativeDirectory, type ConnectionState } from "./protocol/client";
 import type { HITLRequest, ServerMessage, StatusUpdate } from "./protocol/messages";
@@ -76,6 +73,7 @@ type PanelState =
   | { kind: "plugins" }
   | { kind: "knowledge" }
   | { kind: "hooks" }
+  | { kind: "watcher" }
   | { kind: "dir-picker" };
 
 interface UpdateInfo {
@@ -97,6 +95,7 @@ const TOOLS_MENU: { label: string; command: string; desc: string }[] = [
   { label: "Hooks", command: "/hooks", desc: "pre/post tool hooks" },
   { label: "Loop", command: "/loop", desc: "recurring prompt status" },
   { label: "Scheduled tasks", command: "/schedule", desc: "background routines" },
+  { label: "Watcher", command: "/watcher", desc: "background processes & live logs" },
   { label: "Compact context", command: "/compact", desc: "summarize old turns" },
   { label: "Context breakdown", command: "/ctx", desc: "system vs runs token split" },
   { label: "Help", command: "/help", desc: "all commands" },
@@ -148,12 +147,6 @@ export default function App() {
   // "done" while the tokens line is still settling.
   const [finalizing, setFinalizing] = useState(false);
   const [status, setStatus] = useState<StatusUpdate | null>(null);
-  // Optimistic override for the auto-approve switch. The backend
-  // is the source of truth (``status.permission_mode``) but the
-  // ``permission_mode_changed`` broadcast can take a beat to land
-  // — without an optimistic flip the switch feels frozen for a
-  // second or two. ``null`` = use the backend value as-is.
-  const [bypassOptimistic, setBypassOptimistic] = useState<boolean | null>(null);
   const [hitl, setHitl] = useState<HITLRequest[] | null>(null);
   const [panel, setPanel] = useState<PanelState>({ kind: "none" });
   const [composerSeed, setComposerSeed] = useState<{ text: string; n: number } | null>(null);
@@ -1058,9 +1051,6 @@ export default function App() {
           setStatus((prev) =>
             prev ? { ...prev, permission_mode: mode } : prev,
           );
-          // Backend caught up to the user's click — drop the
-          // optimistic override so the switch tracks truth again.
-          setBypassOptimistic(null);
           // When the AGENT entered plan mode (via the
           // ``enter_plan_mode`` tool, not the user's /plan
           // command) inject an inline info banner so the user
@@ -1083,11 +1073,39 @@ export default function App() {
           // plan card + Approve / Refine buttons inline in the
           // conversation. ``tasks`` (optional) seeds the live
           // checklist; ``todos_updated`` pushes refresh the
-          // statuses during execution.
-          const payload = m.payload as { plan?: unknown; tasks?: unknown };
+          // statuses during execution. ``run_id`` is the BE-side
+          // key for approve/dismiss RPCs — stamped onto the
+          // payload at drain time by the run loop.
+          const payload = m.payload as {
+            plan?: unknown;
+            tasks?: unknown;
+            run_id?: unknown;
+          };
           const planText = String(payload.plan ?? "").trim();
+          const runId = String(payload.run_id ?? "");
           if (planText) {
-            append(planItem(planText, normalizePlanTasks(payload.tasks)));
+            append(planItem(planText, normalizePlanTasks(payload.tasks), runId));
+          }
+        } else if (m.channel === "plan_decided") {
+          // Server-of-truth state change. Fired by
+          // ``Session.approve_plan`` / ``dismiss_plan`` after
+          // the decision is persisted. We update the matching
+          // PlanCard by ``runId`` so multiple stacked plans in
+          // the chat each flip independently.
+          const payload = m.payload as { run_id?: unknown; decision?: unknown };
+          const runId = String(payload.run_id ?? "");
+          const decision = String(payload.decision ?? "");
+          if (
+            runId &&
+            (decision === "approved" || decision === "dismissed")
+          ) {
+            setItems((prev) =>
+              prev.map((it) =>
+                it.kind === "plan" && it.runId === runId
+                  ? { ...it, state: decision }
+                  : it,
+              ),
+            );
           }
         } else if (m.channel === "todos_updated") {
           // ``todo_write`` mutated the TodoStore. Patch every open
@@ -1388,45 +1406,54 @@ export default function App() {
   );
 
   // ── Plan-card actions (row 50) ──────────────────────────────────
-  // Approve = send ``/plan off`` so the live PermissionEvaluator
-  // flips back to default, then mark the card as approved. The
-  // command goes through the existing user-message pipeline so it
-  // shows up in the transcript like any other slash command. We
-  // Approve = flip mode AND wake the agent. ``/plan off`` runs
-  // first through the command channel (must be a Command, NOT a
-  // user message — that would just show the string to the LLM and
-  // never flip the BE mode, sticking the PLAN badge). Then a brief
-  // user message kicks the agent into executing the plan it just
-  // submitted — otherwise the run is over after exit_plan_mode and
-  // the user would have to type "go" to get anything to happen.
-  // Refine = dismiss buttons; user types feedback in the composer.
+  // Approve = call ``approve_plan(run_id)`` on the BE so the
+  // decision is persisted (survives reload), then send a brief
+  // user message to wake the agent into executing. The BE RPC
+  // is what flips ``PermissionEvaluator.mode`` back to default
+  // AND emits a ``plan_decided`` push that updates the card's
+  // visual state — we don't pre-flip in the FE so the BE stays
+  // the single source of truth. The wake-up message is still
+  // FE-driven because it's logically a user-typed continuation
+  // (it lands in the chat transcript as such).
+  // Refine = persist the dismissal via ``dismiss_plan(run_id)``
+  // and stay in plan mode so the user can iterate.
   const onApprovePlan = useCallback(
     (id: number) => {
-      setItems((prev) =>
-        prev.map((it) =>
-          it.kind === "plan" && it.id === id
-            ? { ...it, state: "approved" as const }
-            : it,
-        ),
+      const card = items.find(
+        (it): it is Extract<ChatItem, { kind: "plan" }> =>
+          it.kind === "plan" && it.id === id,
       );
+      const runId = card?.runId ?? "";
       void (async () => {
-        await runCommand("/plan off", false);
+        if (runId) {
+          try {
+            await client.approvePlan(runId);
+          } catch (e) {
+            console.warn("approve_plan RPC failed", e);
+          }
+        }
         await runUserMessage("Plan approved — execute it now.");
       })();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [items],
   );
-  const onRejectPlan = useCallback((id: number) => {
-    setItems((prev) =>
-      prev.map((it) =>
-        it.kind === "plan" && it.id === id
-          ? { ...it, state: "dismissed" as const }
-          : it,
-      ),
-    );
-  }, []);
-
+  const onRejectPlan = useCallback(
+    (id: number) => {
+      const card = items.find(
+        (it): it is Extract<ChatItem, { kind: "plan" }> =>
+          it.kind === "plan" && it.id === id,
+      );
+      const runId = card?.runId ?? "";
+      if (runId) {
+        void client.dismissPlan(runId).catch((e) => {
+          console.warn("dismiss_plan RPC failed", e);
+        });
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items],
+  );
   // ── Slash command routing ─────────────────────────────────────────
   // `echo=false` is the UI-affordance path (menu/button clicks): the
   // command runs silently instead of appearing as a fake typed
@@ -1534,6 +1561,9 @@ export default function App() {
             return;
           case "hooks":
             setPanel({ kind: "hooks" });
+            return;
+          case "watcher":
+            setPanel({ kind: "watcher" });
             return;
           case "help": {
             const lines = [...BUILTIN_COMMANDS, ...skills].map(
@@ -2122,69 +2152,79 @@ export default function App() {
           onTool={(cmd) => void runCommand(cmd, false)}
           onSubmit={(t) => void submit(t)}
           onStop={() => client.cancel()}
+          permissionMode={status?.permission_mode}
+          onPickMode={(mode) => {
+            // The split send button hands us one of the four
+            // ``PermissionEvaluator.mode`` values. Each maps to
+            // an existing slash command that flips the BE side.
+            // ``default`` is "leave the current non-default
+            // mode" — figure out which one is on and toggle it
+            // off; if we were already in default the picker
+            // wouldn't have fired (the menu hides the active
+            // option as a no-op).
+            //
+            // We call ``client.handleCommand`` directly instead
+            // of ``runCommand`` so the BE's confirmation chatter
+            // ("Permission mode: plan → acceptEdits...") doesn't
+            // land in the conversation. The user picked a mode
+            // from the UI — they don't need a system message
+            // narrating it. The ``permission_mode_changed`` push
+            // broadcast still updates the badge / button tint
+            // via the existing handler.
+            const current = status?.permission_mode ?? "default";
+            if (mode === current) return;
+            const cmd =
+              mode === "plan"
+                ? "/plan on"
+                : mode === "acceptEdits"
+                  ? "/accept on"
+                  : mode === "bypassPermissions"
+                    ? "/bypass on"
+                    : // mode === "default" — turn off whichever
+                      // non-default mode is currently active.
+                      current === "plan"
+                      ? "/plan off"
+                      : current === "acceptEdits"
+                        ? "/accept off"
+                        : current === "bypassPermissions"
+                          ? "/bypass off"
+                          : "";
+            if (!cmd) return;
+            void client.handleCommand(cmd).catch((e) => {
+              // Surface real errors (network, BE shutdown) but
+              // not the normal success-with-confirmation case.
+              append(
+                errorItem(
+                  `Mode switch failed: ${e instanceof Error ? e.message : String(e)}`,
+                ),
+              );
+            });
+          }}
         />
         <div className="statusline" style={{ marginTop: 0, paddingBottom: 8 }}>
           {status && (
             <>
               <SessionChip sessionId={sessionId} />
-              {/* Auto-approve switch owns the bypassPermissions
-                  state so the badge skips that mode to avoid a
-                  duplicate chip; the badge still renders for plan
-                  / acceptEdits / dontAsk. */}
-              <ModeBadge
-                mode={
-                  status.permission_mode === "bypassPermissions"
-                    ? ""
-                    : status.permission_mode
-                }
-              />
-              <AutoApproveSwitch
-                mode={
-                  bypassOptimistic === null
-                    ? status.permission_mode
-                    : bypassOptimistic
-                      ? "bypassPermissions"
-                      : "default"
-                }
-                onToggle={(next) => {
-                  // Optimistic flip: paint the new state immediately
-                  // so the click feels instant. The
-                  // ``permission_mode_changed`` broadcast clears the
-                  // override once the backend confirms; on error we
-                  // revert here. Backend errors (e.g. an old backend
-                  // without ``/bypass``) come back as a
-                  // ``command_result`` with ``kind: "error"``.
-                  setBypassOptimistic(next);
-                  void (async () => {
-                    try {
-                      const r = await client.handleCommand(
-                        next ? "/bypass on" : "/bypass off",
-                      );
-                      if (r.type === "command_result" && r.kind === "error") {
-                        setBypassOptimistic(null);
-                        append(
-                          errorItem(`Auto-approve toggle failed: ${r.content}`),
-                        );
-                      }
-                    } catch (e) {
-                      setBypassOptimistic(null);
-                      append(
-                        errorItem(
-                          `Auto-approve toggle failed: ${e instanceof Error ? e.message : String(e)}`,
-                        ),
-                      );
-                    }
-                  })();
-                }}
-              />
+              {/* Context meter sits next to the session chip —
+                  both are "this session's identity / footprint"
+                  signals and read more naturally side by side
+                  than separated by the mode controls. */}
               <CtxMeter
                 tokens={status.context_tokens}
                 max={status.max_context}
                 pct={ctxPct}
               />
+              {/* Mode visibility moved to the send-button
+                  picker itself — the left half tints per mode
+                  so the user gets the at-a-glance signal
+                  without a separate footer chip. */}
               <CodeIndexIndicator
                 client={client}
                 onOpen={() => setPanel({ kind: "codeindex" })}
+              />
+              <WatcherIndicator
+                client={client}
+                onOpen={() => setPanel({ kind: "watcher" })}
               />
             </>
           )}
@@ -2230,6 +2270,9 @@ export default function App() {
       )}
       {panel.kind === "schedule" && (
         <SchedulePanel client={client} onClose={() => setPanel({ kind: "none" })} />
+      )}
+      {panel.kind === "watcher" && (
+        <WatcherPanel client={client} onClose={() => setPanel({ kind: "none" })} />
       )}
       {panel.kind === "info" && (
         <InfoPanel

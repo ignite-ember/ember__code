@@ -24,15 +24,21 @@ For each row: **automated coverage** + **manual verification steps** to confirm 
 
 ---
 
-## Permission system (rows 7–9, 51)
+## Permission system (rows 7–9, 51) ✅ VERIFIED
 
-**7. Permission modes (5)** — `tests/test_permission_eval.py`, `test_permission_flows.py`. **Manual:** invoke each via slash command — `/plan`, `/accept`, `/bypass` — and verify the ModeBadge updates and the next tool call routes accordingly.
+**Status:** Full pipeline pinned end-to-end. The headline safety primitive (bypass-resistant scoped deny) is now exercised at every enforcement layer — evaluator unit, ToolEventHook safety lists, `_handle_pause` HITL gate, and the `/bypass` slash command → tool dispatch round-trip — by 9 new tests in `test_bypass_resistant_e2e.py`. No manual verification step left for row 9.
 
-**8. Permission evaluation pipeline (6 steps)** — `tests/test_permission_eval.py`. **Manual:** configure `deny: ["Bash(rm *)"]` and `acceptEdits` mode; verify rm is still blocked (deny beats mode).
+**7. Permission modes (5)** — `tests/test_permission_eval.py` (mode-by-mode eval contract: default, plan, acceptEdits, bypassPermissions), `test_permission_flows.py` (mode persistence across `set_permission_mode` + broadcast), `test_plan_mode.py::TestBypassSlashCommand` (10 tests on the `/bypass` toggle: bare/on/off/status/from-plan-mode/broadcast/dispatch wiring).
 
-**9. Bypass-resistant scoped deny** — same. **Manual:** `/bypass` then try a denied command; verify it still blocks.
+**8. Permission evaluation pipeline (6 steps)** — `tests/test_permission_eval.py` (`test_deny_wins_over_allow`, `test_scoped_deny_survives_accept_edits`, `test_explain_deny_scoped_deny_rule`, +order-of-evaluation tests). Deny beats mode beats allow beats defer — pinned across every combination that matters.
 
-**51. acceptEdits mode** — `test_permission_flows.py`, FE `StatusBits.test.tsx`. **Manual:** `/accept` → green ACCEPT EDITS chip → edits skip HITL → `/accept off` → chip disappears.
+**9. Bypass-resistant scoped deny** — `tests/test_bypass_resistant_e2e.py` (9 tests, this session). Three test classes:
+* `TestSlashBypassThenDenyRule` — full pipeline: `/bypass` slash → mode flip → deny rule blocks; round-trip with `/bypass off` preserves the deny; non-deny calls still get the bypass allow.
+* `TestSafetyListsBeatBypassMode` — `ToolEventHook` with mode=bypassPermissions: `protected_paths` (`.env` writes) and `blocked_commands` (`rm -rf /`) still fire because the safety list runs at evaluator steps 2/3 before the mode step 4.
+* `TestSettingsTierDenySurvivesBypass` — `deny:` entries loaded via `PermissionEvaluator.from_strings` (the settings-load path) still block under bypass, including multiple-entry lists and friendly-name expansion (`Bash(rm *)` → `run_shell_command`).
+Plus `test_permission_eval.py::test_scoped_deny_survives_bypass_permissions` + `test_scoped_deny_with_friendly_bash_survives_bypass` and `test_handle_pause_evaluator.py::TestBypassMode::test_deny_rule_beats_bypass` at the HITL-gate layer.
+
+**51. acceptEdits mode** — `tests/test_permission_eval.py::{test_accept_edits_mode_allows_edit_tools, test_accept_edits_mode_defers_non_edit_tools, test_scoped_deny_survives_accept_edits}` + `tests/test_handle_pause_evaluator.py::TestAcceptEditsMode` (HITL auto-confirm for edits, defer for non-edits) + `test_permission_flows.py` (mode persistence). FE: `clients/web/src/components/StatusBits.test.tsx` for the chip rendering.
 
 ---
 
@@ -134,7 +140,11 @@ For each row: **automated coverage** + **manual verification steps** to confirm 
 
 ## Session & search (rows 40–44, 61) ✅ VERIFIED
 
-**40. Session storage** — `tests/test_db_engine.py` (20 tests, AsyncSqliteDb + table layout + multi-session isolation).
+**40. Session storage** — `tests/test_db_engine.py` (20 tests, AsyncSqliteDb + table layout + multi-session isolation). **`session_data` blob persistence** added this session:
+* `tests/test_session_data_real_db.py` (10 tests) — real Agno SQLite round-trip for `SessionPersistence.save_plan_decisions` / `load_plan_decisions` / `save_todos` / `load_todos`. Pins create-row-if-missing (so writes don't silently no-op on never-persisted sessions), atomic-replace semantics, co-existence (plan_decisions and todos in the same `session_data` don't clobber each other), and merge-preserve (writes don't overwrite unrelated keys like `session_name`).
+* `tests/test_session_restart_round_trip.py` (6 tests) — full restart cycle: write plan_decisions + todos through session A's persistence, build a fresh `BackendServer`-shaped harness against the same DB, assert every piece restores coherently. Covers asymmetric corners (only decisions / only todos), independent-session isolation, latest-write-wins, and hand-corrupted-`session_data` graceful degradation.
+* `tests/test_todo_persistence.py` (9 tests) — `todo_write` persists snapshot on every call; `_rehydrate_todos` overrides plan-args seeding; end-to-end "agent flips A → in_progress, BE restart, restored state is in_progress not pending."
+* `tests/test_crash_survival.py` — pre-existing crash-survival tests (interrupted-run detection, pending message persistence).
 
 **41. Session forking** — `tests/test_session_fork.py` (13 tests, fork-creates-new-id + history-clone + memory inheritance).
 
@@ -164,7 +174,21 @@ For each row: **automated coverage** + **manual verification steps** to confirm 
 
 ## Plan mode + output styles (rows 50, 52) ✅ VERIFIED
 
-**50. Plan mode** — `tests/test_plan_mode.py` (65, +5 new this session on `/plan` slash command researcher-arming) + `tests/test_handle_pause_evaluator.py` (16, the pre-HITL evaluator dispatch added this session) + `tests/test_plan_rehydrate.py` (15, session-restore of plan_store from message history). FE: `PlanCard.test.tsx` + `model.test.ts` plan helpers. Plan mode UX was extensively iterated live in this session — researcher auto-fires from `/plan`, PlanCard renders inline at the chronological position of `exit_plan_mode`, Approve auto-executes and reverts mode on `streaming_done`.
+**50. Plan mode** — `tests/test_plan_mode.py` (65, +5 on `/plan` slash command researcher-arming) + `tests/test_handle_pause_evaluator.py` (16, pre-HITL evaluator dispatch) + `tests/test_plan_rehydrate.py` (15, session-restore of plan_store from message history). FE: `PlanCard.test.tsx` + `model.test.ts`.
+
+**Architectural overhaul this session.** The original "I've never approved it" bug exposed that plan state was inferred from permission mode (`_infer_plan_state`), so any mode flip silently marked a pending plan as approved. Replaced inference with persisted decisions keyed by run_id:
+* `tests/test_plan_decisions.py` (28 tests) — `PlanStore.decisions` data layer, `Session.approve_plan` / `dismiss_plan` (recording + persistence + mode flip on approve only + broadcast), the "I've never approved it" regression (`test_mode_flip_without_decision_keeps_pending`), drain-time run_id stamping.
+* `tests/test_plan_rpc_wiring.py` (10 tests) — `APPROVE_PLAN` / `DISMISS_PLAN` dispatch lambdas extract `run_id` correctly, pool-runtime tables route to the right session, `BackendServer.startup` actually calls the rehydrate methods.
+* `tests/test_plan_researcher_agent.py` (13 tests) — `plan_researcher` agent definition contract: required tools declared, read-only constraint, name+role agreement across CodeIndex / fallback variants. Pins the regression where the agent's prompt told it to grep / cat / `codeindex_query` but the frontmatter only declared `WebFetch, WebSearch`.
+
+**FE wiring pinned by Playwright.** `clients/web/e2e/plan-card.spec.ts` (5 fixture-BE specs):
+* `plan_submitted` push renders a pending card with both buttons; no footer text.
+* Clicking Approve fires `approve_plan(run_id)` over the wire.
+* The card does NOT flip on click alone — only on the BE's `plan_decided` push. Pre-fix the FE pre-flipped `state: "approved"` locally, which is how the headline bug slipped in.
+* Refine has the same shape with `dismiss_plan`.
+* `plan_decided` routes to the right card by run_id when multiple plans are stacked.
+
+**Live-BE Playwright** — `clients/web/e2e/live-be-plan-decision.spec.ts` (2 specs, gated on `EMBER_LIVE_WS`). Drives a real browser against a running BE: the dispatch lambdas, `Session.approve_plan` / `dismiss_plan`, real Agno SQLite persistence, broadcasts. Surfaced (and fixed in the same session) the silent-no-op bug where `save_plan_decisions` returned without writing when the session row didn't yet exist in Agno's DB.
 
 **52. Output styles** — `tests/test_output_styles.py` (24 tests, style discovery + selection + system-prompt injection).
 

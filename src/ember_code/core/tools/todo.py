@@ -135,6 +135,27 @@ class TodoTools(Toolkit):
             return
         broadcast("todos_updated", {"todos": store.snapshot()})
 
+    async def _persist_state(self) -> None:
+        """Write the current ``TodoStore`` snapshot to
+        ``session_data["todos"]`` so the live execution state
+        (in_progress / completed flips) survives BE restart.
+
+        Without this, ``_rehydrate_plan_store`` falls back to
+        the plan's original ``exit_plan_mode(tasks=...)`` list —
+        everything pending, all progress erased. Best-effort:
+        no persistence layer / DB error → silent skip (the
+        in-memory state and ``todos_updated`` broadcast still
+        reach attached clients).
+        """
+        persistence = getattr(self._session, "persistence", None)
+        store = getattr(self._session, "todo_store", None)
+        if persistence is None or store is None:
+            return
+        try:
+            await persistence.save_todos(store.snapshot())
+        except Exception as exc:
+            logger.debug("todo persist failed: %s", exc)
+
     async def todo_write(self, todos: list) -> str:
         """Replace the session's todo list with ``todos``.
 
@@ -165,10 +186,12 @@ class TodoTools(Toolkit):
             # took effect.
             self._session.todo_store.set([])
             self._broadcast_state()
+            await self._persist_state()
             return "Cleared todo list."
         if items:
             self._session.todo_store.set(items)
             self._broadcast_state()
+            await self._persist_state()
         counts = {s: 0 for s in _VALID_STATUSES}
         for item in items:
             counts[item.status] += 1

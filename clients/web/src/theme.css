@@ -1661,94 +1661,8 @@ button {
   height: auto;
 }
 
-/* svgbob renders monochrome SVG with embedded `stroke:black` /
-   `fill:black`. We frame it the same way as mermaid and use
-   ``color-scheme: light`` so the strokes always read against the
-   inset surface — even under data-theme="dark" where black-on-
-   dark-grey would be near-invisible, an explicit white background
-   keeps the diagram readable. */
-.svgbob-diagram {
-  position: relative;
-  margin: 12px 0;
-  padding: 16px;
-  background: #fcfbf7;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  display: flex;
-  justify-content: center;
-  overflow-x: auto;
-  color-scheme: light;
-}
-
-.svgbob-diagram svg {
-  max-width: 100%;
-  height: auto;
-}
-
-/* svgbob's emitted SVG carries an inline ``<style>`` that — when
-   injected via innerHTML — bleeds onto every <path>/<line>/<rect>
-   in the document and ruins our toolbar icons. We strip the inline
-   sheet in JS and re-apply equivalent rules here, scoped to the
-   diagram container. Matches svgbob's defaults: black stroke,
-   width 2px, rounded line caps, miter joins; ``<text>`` falls back
-   to the UI's monospace font. */
-.svgbob-diagram svg line,
-.svgbob-diagram svg path,
-.svgbob-diagram svg circle,
-.svgbob-diagram svg rect,
-.svgbob-diagram svg polygon {
-  stroke: #1f1e1c;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: miter;
-  fill-opacity: 1;
-}
-
-.svgbob-diagram svg text {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  fill: #1f1e1c;
-}
-
-.svgbob-diagram svg rect.backdrop {
-  stroke: none;
-  fill: transparent;
-}
-
-.svgbob-diagram svg .broken {
-  stroke-dasharray: 8;
-}
-
-.svgbob-diagram svg .filled {
-  fill: #1f1e1c;
-}
-
-.svgbob-diagram svg .bg_filled {
-  fill: transparent;
-}
-
-/* svgbob tags every plain box-outline ``<rect>`` with ``solid
-   nofill`` — without this rule the rects fall through to SVG's
-   default fill (black) and the whole diagram becomes a row of
-   solid black silhouettes with no visible interior. */
-.svgbob-diagram svg .nofill {
-  fill: transparent;
-}
-
-.svgbob-error {
-  margin: 12px 0;
-  padding: 14px;
-  background: var(--bg-inset);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius);
-  overflow-x: auto;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--fg);
-}
-
-/* Copy-source chip on diagram frames (mermaid + svgbob). Same look
-   as ``.code-block-copy`` so the affordance is consistent across
+/* Copy-source chip on diagram frames. Same look as
+   ``.code-block-copy`` so the affordance is consistent across
    every rendered block type. */
 .diagram-copy {
   position: absolute;
@@ -1767,24 +1681,10 @@ button {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.svgbob-diagram .diagram-copy {
-  /* The svgbob container always has a near-white bg (#fcfbf7) for
-     legibility against the dark stroke; match the chip to that
-     instead of ``--bg-inset`` so it doesn't pop against the panel. */
-  background: #fcfbf7;
-  color: #6b6a64;
-}
-
 .diagram-copy:hover,
 .diagram-copy:focus-visible {
   color: var(--fg);
   border-color: var(--border);
-}
-
-.svgbob-diagram .diagram-copy:hover,
-.svgbob-diagram .diagram-copy:focus-visible {
-  color: #1f1e1c;
-  border-color: #cfcdc3;
 }
 
 /* Fallback rendering when mermaid fails to parse the source — shows
@@ -3831,6 +3731,185 @@ button {
   border: 1px solid var(--border);
 }
 
+/* Split send button — left half opens the permission-mode
+   picker, right half sends. Same ember gradient as ``.send-btn``
+   so the affordance reads as "the send button, but with
+   options now."
+
+   ``overflow: visible`` is REQUIRED so the dropdown menu
+   anchored to ``bottom: 100%`` on ``.send-mode-menu`` can
+   escape the wrapper's box. The rounded pill shape is
+   produced by per-button ``border-radius`` instead of a
+   wrapper clip. */
+.send-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  height: 34px;
+  background: var(--ember-gradient);
+  border-radius: 9999px;
+  flex-shrink: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.send-split:hover:not(:has(:disabled)) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(249, 115, 22, 0.35);
+}
+
+.send-split-mode {
+  appearance: none;
+  border: none;
+  /* Per-mode background tint set on ``.send-split[data-mode]``
+     below. ``transparent`` here is the fallback for the
+     default mode — it lets the parent's ember gradient bleed
+     through so Execute reads as the standard send affordance. */
+  background: transparent;
+  color: #fff;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0 10px 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-right: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 9999px 0 0 9999px;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.send-split-mode:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ── Per-mode tinting via the WHOLE wrapper ─────────────────
+   The wrapper itself paints a single 135° gradient from the
+   mode color (top-left) into the ember red (bottom-right).
+   That way the left half and the right half are colored by
+   the same continuous gradient — no seam at the divider,
+   the transition is smooth, and the right half still reads
+   as "orange send" because the gradient's end stop is the
+   ember red.
+
+   The button children stay ``background: transparent`` (set
+   above) so the wrapper's gradient shows through both halves.
+   Default mode keeps the original ``--ember-gradient`` (no
+   per-mode rule needed). */
+
+.send-split[data-mode="plan"] {
+  background: linear-gradient(135deg, #2563eb 0%, #dc2626 100%);
+}
+
+.send-split[data-mode="acceptEdits"] {
+  /* Yellow → red gradient. Pure amber/orange (``#d97706``)
+     was visually indistinguishable from the ember-orange
+     default because the ember gradient is itself orange-to-red
+     — auto-edit looked like a slightly darker Execute. Yellow
+     is the natural "permissive but watch the shell" signal and
+     clearly distinct from both Execute (orange) and Bypass (red). */
+  background: linear-gradient(135deg, #eab308 0%, #dc2626 100%);
+}
+
+.send-split[data-mode="bypassPermissions"] {
+  /* Bypass goes red-to-red — keep it ALL red so the
+     "danger" signal isn't softened by the orange end stop. */
+  background: linear-gradient(135deg, #ef4444 0%, #991b1b 100%);
+}
+
+/* The divider between the two halves needs to be invisible
+   over the seamless gradient. Drop the hard border line and
+   use a faint inset shadow instead — the eye reads it as a
+   subtle pill seam without breaking the gradient continuity. */
+.send-split[data-mode]:not([data-mode="default"]) .send-split-mode,
+.send-split[data-mode="default"] .send-split-mode {
+  border-right: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.send-split-mode-label {
+  line-height: 1;
+}
+
+.send-split-go {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  width: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  border-radius: 0 9999px 9999px 0;
+  transition: opacity 0.12s;
+}
+
+.send-split-go:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.send-split-go:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Compound selector (``.popup-menu.send-mode-menu``) beats
+   the base ``.popup-menu`` rule by specificity instead of by
+   source order — without this the base ``left: 0; right: 0``
+   pair forces the menu to stretch the wrapper's width, and
+   when combined with our ``width: 420px`` the browser drops
+   ``right`` and the menu grows RIGHTWARD off-screen. */
+.popup-menu.send-mode-menu {
+  position: absolute;
+  left: auto;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: 420px;
+  max-width: min(420px, calc(100vw - 32px));
+  z-index: 60;
+}
+
+/* Stack each mode item as label-on-top + description-below
+   (VSCode command-palette pattern). The base popup-item is
+   ``display: flex; align-items: baseline`` which puts label
+   and description on the same row — that caused the
+   right-edge clipping the user reported because long
+   descriptions had to fit alongside the label in a narrow
+   pill. Going vertical lets the description use the full
+   menu width and wrap naturally. */
+.send-mode-menu .popup-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 9px 12px;
+}
+
+.send-mode-menu .popup-item .cmd {
+  font-family: var(--font-ui);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* Highest specificity wins over the base ``.popup-item .desc``
+   nowrap+ellipsis rules — the four-class selector breaks the
+   source-order tie and lets the description wrap freely. */
+.send-mode-menu .popup-item .desc {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.4;
+  font-size: 12px;
+}
+
+.popup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+}
+
 .statusline {
   max-width: var(--col);
   margin: 8px auto 0;
@@ -4491,6 +4570,45 @@ button {
 .tone-muted .codeindex-dot,
 .codeindex-dot.tone-muted {
   background: var(--fg-faint);
+}
+
+/* ── Watcher pill in the footer ───────────────────────────────── */
+
+/* Same geometry as ``.codeindex-pill`` so the two pills look like
+   siblings. The dot pulses while at least one process is running
+   — it's a "you have invisible work" signal; static would let
+   the user miss it. */
+.watcher-pill {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-surface);
+  color: var(--fg);
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.watcher-pill:hover {
+  border-color: var(--ember-orange);
+  background: color-mix(in srgb, var(--ember-orange) 6%, var(--bg-surface));
+}
+
+.watcher-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34c759;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #34c759 25%, transparent);
+  flex-shrink: 0;
+  animation: pulse-dot 1.8s ease infinite;
 }
 
 /* ── CodeIndex panel ──────────────────────────────────────────── */
@@ -7945,4 +8063,196 @@ button {
   color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Watcher panel (background processes) ────────────────────────────
+   Two-pane: list on top, tail pane below. The list is bounded so the
+   tail always has at least ~50% of the drawer; with many processes
+   the list scrolls internally before the tail surrenders space. */
+.watcher-count {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.watcher-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.watcher-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+/* When a process is selected, the list is bounded so the tail
+   pane gets at least 60% of the drawer. Without a selection
+   the list takes the full height. */
+.watcher-layout--split .watcher-list {
+  max-height: 40%;
+}
+
+.watcher-layout--list-only .watcher-list {
+  flex: 1;
+  max-height: none;
+}
+
+.watcher-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.watcher-row:hover {
+  border-color: var(--border);
+}
+
+.watcher-row--selected {
+  border-color: var(--ember-orange);
+  background: color-mix(in srgb, var(--ember-orange) 6%, var(--bg-surface));
+}
+
+.watcher-row--stopped {
+  opacity: 0.65;
+}
+
+.watcher-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watcher-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.watcher-status--running {
+  background: #34c759;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #34c759 25%, transparent);
+}
+
+.watcher-status--stopped {
+  background: var(--fg-muted);
+}
+
+.watcher-pid {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.watcher-elapsed {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-left: auto;
+}
+
+.watcher-row .btn-danger {
+  padding: 2px 8px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.watcher-row .btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.watcher-cmd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watcher-lastline {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watcher-tail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+
+.watcher-tail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watcher-filter {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--fg);
+}
+
+.watcher-filter:focus {
+  outline: none;
+  border-color: var(--ember-orange);
+}
+
+.watcher-log {
+  flex: 1;
+  margin: 0;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.watcher-log-empty {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.watcher-tail-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 6px;
 }

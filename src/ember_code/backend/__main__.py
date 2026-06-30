@@ -456,8 +456,28 @@ def _build_rpc_table(backend: Any, transport: Any, login_state: dict[str, Any]) 
         RpcMethod.GET_SLASH_COMMANDS: lambda args: backend.get_slash_commands(),
         # ── Todo list (CC TodoWrite parity) ──────────────────────
         RpcMethod.GET_TODOS: lambda args: backend.get_todos(),
+        # ── Watcher panel (background process tail + kill) ───────
+        RpcMethod.LIST_BACKGROUND_PROCESSES: lambda args: backend.list_background_processes(),
+        RpcMethod.READ_PROCESS_TAIL: lambda args: backend.read_process_tail(
+            pid=int(args.get("pid", 0)),
+            tail=int(args.get("tail", 200)),
+        ),
+        RpcMethod.STOP_BACKGROUND_PROCESS: lambda args: backend.stop_background_process(
+            pid=int(args.get("pid", 0)),
+        ),
         # ── Latest plan (CC plan mode, row 50) ───────────────────
         RpcMethod.GET_LATEST_PLAN: lambda args: backend.get_latest_plan(),
+        # Plan-card actions. ``Session.approve_plan`` /
+        # ``Session.dismiss_plan`` are async because they
+        # persist to ``session_data`` — the dispatcher awaits
+        # whatever the lambda returns, so handing back the
+        # coroutine is fine.
+        RpcMethod.APPROVE_PLAN: lambda args: backend._session.approve_plan(
+            run_id=str(args.get("run_id", "")),
+        ),
+        RpcMethod.DISMISS_PLAN: lambda args: backend._session.dismiss_plan(
+            run_id=str(args.get("run_id", "")),
+        ),
         # ── Output styles (CC row 52) ────────────────────────────
         RpcMethod.GET_OUTPUT_STYLES: lambda args: backend.get_output_styles(),
         # ── Knowledge ─────────────────────────────────────────────
@@ -799,6 +819,61 @@ async def _run(
         _loop.call_soon_threadsafe(_schedule)
 
     set_file_edit_listener(_on_file_edit)
+
+    # ── Background-process watcher push channels ────────────────
+    # The shell tool's per-line / start / exit subscribers fire
+    # from the reader task on the event loop. We forward each as
+    # an unstamped PushNotification on the boot transport — every
+    # connected client sees the same registry (one BE = one
+    # registry; watcher state is process-global, not per-session).
+    # Without these forwards the FE's watcher panel would either
+    # have to poll ``list_background_processes`` (lag + load) or
+    # miss the exit signal entirely.
+    from ember_code.core.tools.shell import (
+        subscribe_to_process_completion,
+        subscribe_to_process_line,
+        subscribe_to_process_start,
+    )
+
+    def _push_process_event(channel: str, payload: dict) -> None:
+        """Schedule a PushNotification on the running loop. Mirrors
+        the file-edit forwarder shape — the subscriber callback
+        fires sync on the loop, but ``transport.send`` is async."""
+
+        def _schedule() -> None:
+            asyncio.ensure_future(
+                transport.send(msg.PushNotification(channel=channel, payload=payload))
+            )
+
+        with contextlib.suppress(RuntimeError):
+            _loop.call_soon_threadsafe(_schedule)
+
+    def _on_process_start(info: dict) -> None:
+        _push_process_event(
+            "process_started",
+            {"pid": info.get("pid"), "cmd": info.get("cmd"), "started_at": info.get("started_at")},
+        )
+
+    def _on_process_line(info: dict) -> None:
+        _push_process_event(
+            "process_line",
+            {"pid": info.get("pid"), "line": info.get("line")},
+        )
+
+    def _on_process_completion(info: dict) -> None:
+        _push_process_event(
+            "process_exited",
+            {
+                "pid": info.get("pid"),
+                "cmd": info.get("cmd"),
+                "exit_code": info.get("exit_code"),
+                "duration_seconds": info.get("duration_seconds"),
+            },
+        )
+
+    subscribe_to_process_start(_on_process_start)
+    subscribe_to_process_line(_on_process_line)
+    subscribe_to_process_completion(_on_process_completion)
 
     login_state: dict[str, Any] = {"task": None}
     rpc_table = _build_rpc_table(backend, transport, login_state)

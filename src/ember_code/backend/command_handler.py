@@ -138,6 +138,10 @@ class CommandResult:
     def loop(cls) -> "CommandResult":
         return cls(kind=CommandResultKind.ACTION, action=CommandAction.LOOP)
 
+    @classmethod
+    def watcher(cls) -> "CommandResult":
+        return cls(kind=CommandResultKind.ACTION, action=CommandAction.WATCHER)
+
 
 class CommandHandler:
     """Handles slash commands, decoupled from the TUI rendering.
@@ -776,6 +780,15 @@ class CommandHandler:
 
         # Default — open the panel.
         return CommandResult.hooks()
+
+    async def _cmd_watcher(self, _args: str) -> "CommandResult":
+        """Open the background-process watcher panel (right side
+        of the chat). View-only tail with a kill button per
+        process. The panel subscribes to the
+        ``process_started`` / ``process_line`` / ``process_exited``
+        push channels for real-time updates — no polling.
+        """
+        return CommandResult.watcher()
 
     async def _cmd_clear(self, _args: str) -> "CommandResult":
         # Generate new session_id so Agno starts fresh history.
@@ -1993,6 +2006,7 @@ class CommandHandler:
         "/quit": _cmd_quit,
         "/exit": _cmd_quit,
         "/help": _cmd_help,
+        "/watcher": _cmd_watcher,
         "/agents": _cmd_agents,
         "/skills": _cmd_skills,
         "/hooks": _cmd_hooks,
