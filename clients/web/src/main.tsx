@@ -1,14 +1,18 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { ChatScrollDemo } from "./dev/ChatScrollDemo";
+import { HitlDemo } from "./dev/HitlDemo";
 import { OrchestrateDemo } from "./dev/OrchestrateDemo";
 import { PlanModeDemo } from "./dev/PlanModeDemo";
 import "./theme.css";
 
 // Demo URLs:
-//   ?demo=team   — orchestrate / team-progress UI sandbox
-//   ?demo=plan   — plan-mode (row 50) UI sandbox: badge, info
-//                  banner, PlanCard pending / approved / dismissed
+//   ?demo=team           — orchestrate / team-progress UI sandbox
+//   ?demo=plan           — plan-mode (row 50) UI sandbox
+//   ?demo=hitl           — HITL permission dialog variants
+//   ?demo=chat-scroll    — headless Virtuoso scroll sandbox the
+//                          chat-scroll e2e tests drive
 // Anything else loads the real app.
 const params = new URLSearchParams(window.location.search);
 const demo = params.get("demo");
@@ -16,6 +20,8 @@ const demo = params.get("demo");
 function pickRoot() {
   if (demo === "team") return <OrchestrateDemo />;
   if (demo === "plan") return <PlanModeDemo />;
+  if (demo === "hitl") return <HitlDemo />;
+  if (demo === "chat-scroll") return <ChatScrollDemo />;
   return <App />;
 }
 

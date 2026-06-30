@@ -1508,6 +1508,17 @@ class CommandHandler:
 
         status_line = self._session.set_permission_mode(target.value)
         if target is PermissionMode.PLAN:
+            # Arm a one-shot researcher nudge for the NEXT user
+            # message, but ONLY on the transition INTO plan mode.
+            # If the user types ``/plan`` while already in plan
+            # mode (e.g. to re-confirm), don't re-arm — the
+            # researcher already ran on this session's first
+            # post-``/plan`` turn and re-running it just spends
+            # tokens. Same reason we don't arm when the agent
+            # itself called ``enter_plan_mode`` (then the
+            # researcher fired through the tool path already).
+            if current is not PermissionMode.PLAN:
+                self._session._plan_research_armed = True
             tail = (
                 "\n\nYou are now in **plan mode**. The agent can read, "
                 "search, and think but file edits and mutating shell "
@@ -1516,6 +1527,12 @@ class CommandHandler:
                 "to exit plan mode and let it execute."
             )
         else:
+            # Leaving plan mode also disarms the pending researcher
+            # nudge — if the user changed their mind between
+            # ``/plan`` and a follow-up message, we don't want a
+            # stale hint to fire on their next turn.
+            if hasattr(self._session, "_plan_research_armed"):
+                self._session._plan_research_armed = False
             tail = "\n\nPlan mode exited. The agent can now execute as normal."
         return CommandResult(
             kind=CommandResultKind.MARKDOWN,

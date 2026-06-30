@@ -98,6 +98,74 @@ def test_wildcard_matches_anything() -> None:
     assert r.matches("Read", {"file_path": "x"}) is True
 
 
+# ── Friendly ↔ internal name expansion ────────────────────────────
+# A rule the user wrote with a catalog name (``Bash``, ``Edit``,
+# ``Read``…) must fire on the internal Agno function name too
+# (``run_shell_command``, ``edit_file``, ``read_file``). Live tool
+# calls arrive with the internal name; without this expansion a
+# ``deny: ["Bash(rm *)"]`` rule silently fails and bypass mode lets
+# the command through — exactly the safety-invariant regression we
+# saw in row-9 walkthrough on 2026-06-29.
+
+
+def test_friendly_bash_rule_matches_internal_run_shell_command() -> None:
+    r = PermissionRule(tool="Bash", pattern="echo *PERM_TEST_BLOCKED*")
+    assert (
+        r.matches("run_shell_command", {"command": "echo testing PERM_TEST_BLOCKED here"}) is True
+    )
+
+
+def test_friendly_bash_bare_rule_matches_run_shell_command() -> None:
+    r = PermissionRule(tool="Bash", pattern=None)
+    assert r.matches("run_shell_command", {"command": "ls"}) is True
+
+
+def test_friendly_edit_rule_matches_internal_edit_file() -> None:
+    r = PermissionRule(tool="Edit", pattern="/etc/*")
+    assert r.matches("edit_file", {"file_path": "/etc/passwd"}) is True
+    assert r.matches("edit_file_replace_all", {"file_path": "/etc/passwd"}) is True
+
+
+def test_friendly_read_rule_matches_internal_read_file() -> None:
+    r = PermissionRule(tool="Read", pattern="./.env*")
+    assert r.matches("read_file", {"file_path": "./.env"}) is True
+
+
+def test_internal_name_in_rule_still_works() -> None:
+    # Power users who already learned the internal names from the
+    # hook-matcher docs should keep working unchanged.
+    r = PermissionRule(tool="run_shell_command", pattern="rm *")
+    assert r.matches("run_shell_command", {"command": "rm -rf x"}) is True
+    # And the internal-name rule does NOT silently match the
+    # friendly name (would be weird and unexpected).
+    assert r.matches("Bash", {"command": "rm -rf x"}) is False
+
+
+def test_friendly_rule_does_not_match_unrelated_internal_tool() -> None:
+    # ``Bash`` must not slip into matching ``edit_file`` just
+    # because both are tools. Expansion is strict to the catalog.
+    r = PermissionRule(tool="Bash", pattern=None)
+    assert r.matches("edit_file", {"file_path": "x"}) is False
+
+
+def test_scoped_deny_with_friendly_bash_survives_bypass() -> None:
+    # End-to-end of the row-9 invariant: a user-written rule
+    # using the catalog name MUST block under bypass mode.
+    ev = PermissionEvaluator.from_strings(
+        mode="bypassPermissions",
+        deny=["Bash(echo *PERM_TEST_BLOCKED*)"],
+    )
+    assert (
+        ev.evaluate("run_shell_command", {"command": "echo testing PERM_TEST_BLOCKED here"})
+        is PermissionDecision.DENY
+    )
+    # Non-matching command in the same mode still gets the
+    # bypass auto-allow.
+    assert (
+        ev.evaluate("run_shell_command", {"command": "echo plain-test"}) is PermissionDecision.ALLOW
+    )
+
+
 # ── Pipeline ordering ─────────────────────────────────────────────
 
 

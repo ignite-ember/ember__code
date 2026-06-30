@@ -147,6 +147,182 @@ describe("HitlDialog — single requirement", () => {
   });
 });
 
+describe("HitlDialog — acceptEdits shortcut", () => {
+  // When the agent asks for permission on a file-edit tool AND
+  // the session is in default mode, an extra button surfaces:
+  // *"Accept all edits during this session"*. Clicking it
+  // confirms every remaining req in the batch AND fires the
+  // ``onAcceptEditsThisRun`` callback so the parent can ``/accept on``.
+
+  const SHORTCUT_LABEL = "Accept all edits during this session";
+
+  it("shows the shortcut button for edit tools in default mode", () => {
+    render(
+      <HitlDialog
+        requirements={[req({ tool_name: "edit_file", friendly_name: "Edit" })]}
+        onResolve={() => undefined}
+        currentMode="default"
+        onAcceptEditsThisRun={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("button", { name: SHORTCUT_LABEL })).toBeTruthy();
+  });
+
+  it("shows the shortcut for catalog-name edit tools too (Edit/Write/NotebookEdit)", () => {
+    // Both the internal Agno function name (``edit_file``) and
+    // the friendly catalog name (``Edit``) appear in the wild —
+    // the BE may send either depending on tool source. Both
+    // must trigger the shortcut.
+    for (const toolName of ["Edit", "Write", "NotebookEdit", "save_file", "create_file"]) {
+      cleanup();
+      render(
+        <HitlDialog
+          requirements={[req({ tool_name: toolName, friendly_name: toolName })]}
+          onResolve={() => undefined}
+          currentMode="default"
+          onAcceptEditsThisRun={() => undefined}
+        />,
+      );
+      expect(
+        screen.getByRole("button", { name: SHORTCUT_LABEL }),
+        `expected shortcut for ${toolName}`,
+      ).toBeTruthy();
+    }
+  });
+
+  it("HIDES the shortcut for non-edit tools", () => {
+    // Bash is the most common non-edit tool that hits HITL.
+    // Showing the acceptEdits shortcut there would be misleading
+    // — acceptEdits doesn't auto-approve shell calls.
+    render(
+      <HitlDialog
+        requirements={[req({ tool_name: "run_shell_command", friendly_name: "Bash" })]}
+        onResolve={() => undefined}
+        currentMode="default"
+        onAcceptEditsThisRun={() => undefined}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: SHORTCUT_LABEL })).toBeNull();
+  });
+
+  it("HIDES the shortcut when the session is already in acceptEdits mode", () => {
+    // Redundant — that mode already auto-approves edits, so a
+    // HITL prompt for an edit shouldn't even appear. Defensive
+    // gate in case it does.
+    render(
+      <HitlDialog
+        requirements={[req({ tool_name: "edit_file", friendly_name: "Edit" })]}
+        onResolve={() => undefined}
+        currentMode="acceptEdits"
+        onAcceptEditsThisRun={() => undefined}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: SHORTCUT_LABEL })).toBeNull();
+  });
+
+  it("HIDES the shortcut when the session is in plan mode", () => {
+    // Plan mode is the opposite intent — going from plan into
+    // acceptEdits would override the user's plan-mode decision
+    // mid-dialog. Refuse to offer the shortcut here.
+    render(
+      <HitlDialog
+        requirements={[req({ tool_name: "edit_file", friendly_name: "Edit" })]}
+        onResolve={() => undefined}
+        currentMode="plan"
+        onAcceptEditsThisRun={() => undefined}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: SHORTCUT_LABEL })).toBeNull();
+  });
+
+  it("HIDES the shortcut when no onAcceptEditsThisRun callback is wired", () => {
+    // The callback is the only way to enable the mode — without
+    // it, the button would be inert.
+    render(
+      <HitlDialog
+        requirements={[req({ tool_name: "edit_file" })]}
+        onResolve={() => undefined}
+        currentMode="default"
+      />,
+    );
+    expect(screen.queryByRole("button", { name: SHORTCUT_LABEL })).toBeNull();
+  });
+
+  it("shows the shortcut when currentMode is empty (back-compat with older statuses)", () => {
+    // Older BEs may not stamp ``permission_mode`` on every
+    // StatusUpdate. Treat missing as default — better to
+    // optimistically show the shortcut than hide it on every
+    // session until status arrives.
+    render(
+      <HitlDialog
+        requirements={[req({ tool_name: "edit_file" })]}
+        onResolve={() => undefined}
+        currentMode=""
+        onAcceptEditsThisRun={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("button", { name: SHORTCUT_LABEL })).toBeTruthy();
+  });
+
+  it("clicking the shortcut fires the callback AND resolves with all reqs confirmed", () => {
+    const onResolve = vi.fn();
+    const onAcceptEditsThisRun = vi.fn();
+    const batch = [
+      req({ requirement_id: "r1", tool_name: "edit_file" }),
+      req({ requirement_id: "r2", tool_name: "edit_file" }),
+      req({ requirement_id: "r3", tool_name: "edit_file" }),
+    ];
+    render(
+      <HitlDialog
+        requirements={batch}
+        onResolve={onResolve}
+        currentMode="default"
+        onAcceptEditsThisRun={onAcceptEditsThisRun}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: SHORTCUT_LABEL }));
+
+    expect(onAcceptEditsThisRun).toHaveBeenCalledTimes(1);
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    // All three should be confirmed in one shot.
+    expect(onResolve).toHaveBeenCalledWith([
+      { requirement_id: "r1", action: "confirm", choice: "once" },
+      { requirement_id: "r2", action: "confirm", choice: "once" },
+      { requirement_id: "r3", action: "confirm", choice: "once" },
+    ]);
+  });
+
+  it("preserves prior decisions when the shortcut fires mid-batch", () => {
+    // User answers req 1 with Reject, then on req 2 clicks the
+    // shortcut. The first decision must survive, the rest auto-confirm.
+    const onResolve = vi.fn();
+    const batch = [
+      req({ requirement_id: "r1", tool_name: "run_shell_command", friendly_name: "Bash" }),
+      req({ requirement_id: "r2", tool_name: "edit_file" }),
+      req({ requirement_id: "r3", tool_name: "edit_file" }),
+    ];
+    render(
+      <HitlDialog
+        requirements={batch}
+        onResolve={onResolve}
+        currentMode="default"
+        onAcceptEditsThisRun={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    fireEvent.click(screen.getByRole("button", { name: SHORTCUT_LABEL }));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve).toHaveBeenCalledWith([
+      { requirement_id: "r1", action: "reject", choice: "" },
+      { requirement_id: "r2", action: "confirm", choice: "once" },
+      { requirement_id: "r3", action: "confirm", choice: "once" },
+    ]);
+  });
+});
+
 describe("HitlDialog — empty list", () => {
   it("renders nothing for an empty requirements list", () => {
     // The parent can pass `[]` momentarily while the BE clears

@@ -1150,10 +1150,44 @@ async def _handle_message(
     if isinstance(message, msg.UserMessage):
         # Mirroring: every attached view paints the user bubble; the
         # sender recognises its own client_id and skips the echo.
+        # Send the ORIGINAL (un-wrapped) text so chat bubbles stay
+        # clean — the system-context wrapper below is for the LLM
+        # only, not for display.
         await transport.send(
             msg.UserMessageReceived(text=message.text, client_id=message.client_id)
         )
-        async for proto in backend.run_message(message.text, media=message.file_contents):
+        # One-shot ``/plan`` → ``enter_plan_mode`` nudge. When the
+        # user just typed ``/plan`` (slash command armed
+        # ``_plan_research_armed`` on the session), prepend a
+        # ``<system-context>`` instruction so the agent spawns the
+        # ``plan_researcher`` sub-agent on this exact request.
+        # Cleared after one use — subsequent turns in the same plan
+        # mode session don't get the hint again. FE strips
+        # ``<system-context>`` blocks on display, so the chat
+        # bubble shows only what the user typed.
+        agent_text = message.text
+        sess = getattr(backend, "_session", None)
+        # ``is True`` (not just truthy) because mocked sessions in
+        # tests use ``MagicMock`` which auto-spawns missing attrs
+        # as MagicMock instances — those evaluate truthy and would
+        # wrap every test message. The slash command sets the
+        # attribute to the real ``True``.
+        if sess is not None and getattr(sess, "_plan_research_armed", False) is True:
+            sess._plan_research_armed = False
+            agent_text = (
+                "<system-context>\n"
+                "Plan mode was just entered via the user's /plan slash "
+                "command. BEFORE doing any other work, call "
+                "`enter_plan_mode(task=...)` with the user's request "
+                "below as the ``task`` argument so the plan_researcher "
+                "sub-agent runs first and produces a structured "
+                "Findings + Proposed Plan + Open Questions report. "
+                "Do not skip this step — the researcher's report is "
+                "what makes the eventual ``exit_plan_mode`` call "
+                "grounded enough to pass the confidence validator.\n"
+                "</system-context>\n\n" + message.text
+            )
+        async for proto in backend.run_message(agent_text, media=message.file_contents):
             if req_id:
                 proto = proto.model_copy(update={"id": req_id})
             await transport.send(proto)

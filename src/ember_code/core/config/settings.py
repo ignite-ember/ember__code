@@ -1,5 +1,6 @@
 """Settings management with hierarchical config loading."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,8 @@ import yaml
 from pydantic import BaseModel, Field
 
 from ember_code.core.config.defaults import DEFAULT_CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 class ModelsConfig(BaseModel):
@@ -400,6 +403,37 @@ def _load_managed_settings() -> dict:
     return _load_yaml(path)
 
 
+# Top-level keys we lift from ``settings.json`` into the unified
+# ``Settings`` config. Other keys (notably ``hooks``) are owned by
+# dedicated loaders that read ``settings.json`` themselves — we
+# don't double-import them here. ``permissions`` is the one block
+# the CC-style settings file shares with the YAML config and
+# without lifting it the PermissionEvaluator never sees user-tier
+# deny rules (only ``ToolPermissions`` did, and it gates
+# ``requires_confirmation`` rather than blocking the call).
+_JSON_KEYS_TO_LIFT = ("permissions",)
+
+
+def _load_settings_json_fragment(path: Path) -> dict:
+    """Read ``settings.json`` at ``path`` and return ONLY the keys
+    we want merged into the unified config. Silently empty on
+    missing file or parse error — best-effort, mirrors the YAML
+    loader's behavior.
+    """
+    if not path.exists():
+        return {}
+    try:
+        import json as _json
+
+        data = _json.loads(path.read_text())
+    except Exception as exc:
+        logger.debug("settings.json load failed at %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: data[k] for k in _JSON_KEYS_TO_LIFT if k in data}
+
+
 def load_settings(
     cli_overrides: dict[str, Any] | None = None,
     project_dir: Path | None = None,
@@ -424,6 +458,19 @@ def load_settings(
     # User global config
     user_config_path = Path.home() / ".ember" / "config.yaml"
     config = _deep_merge(config, _load_yaml(user_config_path))
+    # User global settings.json — CC-style file. We lift only the
+    # ``permissions`` block here; ``hooks`` is owned by its own
+    # loader. Without this, a ``permissions.deny`` rule the user
+    # wrote in ``~/.ember/settings.json`` never reached the
+    # ``PermissionEvaluator`` and bypass mode silently allowed
+    # commands the rule should have blocked.
+    config = _deep_merge(
+        config, _load_settings_json_fragment(Path.home() / ".ember" / "settings.json")
+    )
+    config = _deep_merge(
+        config,
+        _load_settings_json_fragment(Path.home() / ".ember" / "settings.local.json"),
+    )
 
     # Project config
     if project_dir is None:
@@ -431,10 +478,17 @@ def load_settings(
 
     project_config = project_dir / ".ember" / "config.yaml"
     config = _deep_merge(config, _load_yaml(project_config))
+    config = _deep_merge(
+        config, _load_settings_json_fragment(project_dir / ".ember" / "settings.json")
+    )
 
     # Project local config (gitignored)
     project_local = project_dir / ".ember" / "config.local.yaml"
     config = _deep_merge(config, _load_yaml(project_local))
+    config = _deep_merge(
+        config,
+        _load_settings_json_fragment(project_dir / ".ember" / "settings.local.json"),
+    )
 
     # CLI overrides
     if cli_overrides:

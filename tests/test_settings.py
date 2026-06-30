@@ -297,3 +297,85 @@ class TestManagedSettings:
             project_dir=tmp_path,
         )
         assert s.models.default == "cli-wins"
+
+
+class TestSettingsJsonLifted:
+    """``load_settings`` lifts ``permissions`` out of ``settings.json``
+    files so the ``PermissionEvaluator`` sees the same rules the
+    user wrote in their CC-style config — without this, a ``deny``
+    rule there silently never fired and bypass mode let through
+    commands it should have blocked.
+
+    Other keys (``hooks``) are owned by their dedicated loaders;
+    only ``permissions`` is lifted into the unified ``Settings``.
+    """
+
+    def test_user_settings_json_deny_reaches_evaluator(self, tmp_path, monkeypatch) -> None:
+        user_home = tmp_path / "home"
+        ember_dir = user_home / ".ember"
+        ember_dir.mkdir(parents=True)
+        (ember_dir / "settings.json").write_text('{"permissions": {"deny": ["Bash(rm -rf /)"]}}')
+        monkeypatch.setattr("pathlib.Path.home", lambda: user_home)
+
+        s = load_settings(project_dir=tmp_path)
+        assert "Bash(rm -rf /)" in s.permissions.deny
+
+    def test_project_settings_json_overrides_user(self, tmp_path, monkeypatch) -> None:
+        user_home = tmp_path / "home"
+        (user_home / ".ember").mkdir(parents=True)
+        (user_home / ".ember" / "settings.json").write_text(
+            '{"permissions": {"deny": ["Bash(user-rule)"]}}'
+        )
+        project_ember = tmp_path / "proj" / ".ember"
+        project_ember.mkdir(parents=True)
+        (project_ember / "settings.json").write_text(
+            '{"permissions": {"deny": ["Bash(project-rule)"]}}'
+        )
+        monkeypatch.setattr("pathlib.Path.home", lambda: user_home)
+
+        s = load_settings(project_dir=tmp_path / "proj")
+        # ``_deep_merge`` replaces lists — matches the YAML
+        # precedence. Project wins for the ``deny`` list.
+        assert s.permissions.deny == ["Bash(project-rule)"]
+
+    def test_missing_settings_json_is_silent(self, tmp_path, monkeypatch) -> None:
+        user_home = tmp_path / "home"
+        (user_home / ".ember").mkdir(parents=True)
+        monkeypatch.setattr("pathlib.Path.home", lambda: user_home)
+
+        s = load_settings(project_dir=tmp_path)
+        assert s.permissions.deny == []
+
+    def test_malformed_settings_json_does_not_crash(self, tmp_path, monkeypatch) -> None:
+        # Best-effort: a hand-edited file with a syntax error
+        # must NOT take down the BE on startup. Skip + defaults.
+        user_home = tmp_path / "home"
+        ember_dir = user_home / ".ember"
+        ember_dir.mkdir(parents=True)
+        (ember_dir / "settings.json").write_text("{not valid json")
+        monkeypatch.setattr("pathlib.Path.home", lambda: user_home)
+
+        s = load_settings(project_dir=tmp_path)
+        assert s.permissions.deny == []
+
+    def test_hooks_key_is_NOT_lifted(self, tmp_path, monkeypatch) -> None:
+        # ``hooks`` has its own dedicated loader (HookLoader). If
+        # ``load_settings`` also lifted it, the unified ``HooksConfig``
+        # dataclass would either drop the unfamiliar shape or
+        # there'd be two competing sources of truth. Confirm we
+        # skip it entirely.
+        user_home = tmp_path / "home"
+        ember_dir = user_home / ".ember"
+        ember_dir.mkdir(parents=True)
+        (ember_dir / "settings.json").write_text(
+            """{"hooks": {"PreToolUse": [{"type": "command", "command": "x"}]},
+                "permissions": {"deny": ["Bash(rm *)"]}}"""
+        )
+        monkeypatch.setattr("pathlib.Path.home", lambda: user_home)
+
+        s = load_settings(project_dir=tmp_path)
+        # Permissions lifted as expected …
+        assert "Bash(rm *)" in s.permissions.deny
+        # … but the hooks dict from settings.json didn't leak
+        # through ``HooksConfig`` (it has only ``cross_tool_support``).
+        assert not hasattr(s.hooks, "PreToolUse")

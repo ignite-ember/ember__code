@@ -617,6 +617,58 @@ class TestPlanSlashCommand:
         await handler.handle("/plan")
         assert session.permission_evaluator.mode is PermissionMode.PLAN
 
+    @pytest.mark.asyncio
+    async def test_entering_plan_arms_research_nudge(self):
+        # The slash command sets ``_plan_research_armed`` so the
+        # UserMessage handler can prepend a ``<system-context>``
+        # nudge on the next turn — telling the agent to call
+        # ``enter_plan_mode(task=...)`` first. Without this, the
+        # agent has no signal that the user (not the agent) just
+        # entered plan mode and skips the researcher.
+        session = self._make_session("default")
+        assert getattr(session, "_plan_research_armed", False) is False
+        handler = CommandHandler(session)
+        await handler.handle("/plan")
+        assert session._plan_research_armed is True
+
+    @pytest.mark.asyncio
+    async def test_re_entering_plan_does_not_re_arm(self):
+        # Already in plan mode → ``/plan`` is a no-op for the
+        # mode but must NOT re-arm the nudge. Re-arming would
+        # cause a wasted researcher run on the next user message
+        # (the researcher already ran the first time).
+        session = self._make_session("plan")
+        session._plan_research_armed = False  # explicitly disarmed
+        handler = CommandHandler(session)
+        await handler.handle("/plan on")
+        # Still in plan mode AND still not armed.
+        assert session.permission_evaluator.mode is PermissionMode.PLAN
+        assert session._plan_research_armed is False
+
+    @pytest.mark.asyncio
+    async def test_leaving_plan_disarms_pending_nudge(self):
+        # User types ``/plan`` then immediately ``/plan off``
+        # before sending a follow-up. The pending researcher
+        # nudge must clear so a later non-plan-mode message
+        # doesn't get a stale ``<system-context>`` injection.
+        session = self._make_session("default")
+        handler = CommandHandler(session)
+        await handler.handle("/plan")
+        assert session._plan_research_armed is True
+        await handler.handle("/plan off")
+        assert session._plan_research_armed is False
+
+    @pytest.mark.asyncio
+    async def test_status_command_does_not_change_armed_flag(self):
+        # ``/plan status`` is a read-only query — it returns the
+        # current mode without flipping anything and must not
+        # arm/disarm the researcher nudge either.
+        session = self._make_session("plan")
+        session._plan_research_armed = True
+        handler = CommandHandler(session)
+        await handler.handle("/plan status")
+        assert session._plan_research_armed is True
+
 
 class TestAcceptSlashCommand:
     """The ``/accept`` toggle for acceptEdits mode (row 51).

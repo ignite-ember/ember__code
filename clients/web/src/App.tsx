@@ -540,6 +540,14 @@ export default function App() {
     }
   }, [client]);
 
+  // Tracks an acceptEdits flip that was triggered by the HITL
+  // dialog's *"Accept all edits during this session"* shortcut. The
+  // mental model the user signed up for is "auto-approve edits FOR
+  // THIS TASK" — not "permanently lower the gate". When the run's
+  // content stream ends (``streaming_done``) we revert by firing
+  // ``/accept off`` so the next user turn starts in default mode.
+  const autoAcceptForRunRef = useRef(false);
+
   // ── Streamed event handler (run + HITL-resume streams) ───────────
   const onStreamEvent = useCallback(
     (m: ServerMessage) => {
@@ -550,6 +558,13 @@ export default function App() {
         // through the tail — see the state declaration above.
         setProc(false);
         setFinalizing(true);
+        // Revert the auto-accept-for-this-run flip the shortcut put
+        // in place. Runs ``/accept off`` silently so the chat list
+        // doesn't show a fake typed slash command.
+        if (autoAcceptForRunRef.current) {
+          autoAcceptForRunRef.current = false;
+          void runCommand("/accept off", false);
+        }
         return;
       }
       if (m.type === "run_paused") {
@@ -1988,6 +2003,16 @@ export default function App() {
             // there; ``smooth`` is intentionally not used so streaming
             // doesn't visibly chase tokens.
             followOutput="auto"
+            // Virtuoso's default ``atBottomThreshold`` is 4px which
+            // misses the "at bottom" transition by a sub-pixel after
+            // every layout change (composer height grows on Send,
+            // streamed assistant content rewrites the last row, etc).
+            // ``followOutput="auto"`` then bails on the follow because
+            // its sample reads false. 50px is generous enough to
+            // ride out the layout shifts without papering over a real
+            // "I scrolled up to read history" intent — pinned by
+            // ``e2e/chat-scroll.spec.ts``.
+            atBottomThreshold={50}
             atBottomStateChange={setStickToBottom}
             scrollerRef={(el) => setScrollEl(el as HTMLElement | null)}
             increaseViewportBy={{ top: 400, bottom: 800 }}
@@ -2050,7 +2075,16 @@ export default function App() {
         <Composer
           hitlSlot={
             hitl ? (
-              <HitlDialog requirements={hitl} onResolve={(d) => void resolveHitl(d)} />
+              <HitlDialog
+                requirements={hitl}
+                onResolve={(d) => void resolveHitl(d)}
+                currentMode={status?.permission_mode}
+                onAcceptEditsThisRun={() => {
+                  // Mark so ``streaming_done`` reverts the flip.
+                  autoAcceptForRunRef.current = true;
+                  void runCommand("/accept on", false);
+                }}
+              />
             ) : null
           }
           client={client}

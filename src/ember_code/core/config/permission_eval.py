@@ -159,6 +159,32 @@ def _bash_command_mutates(tool_args: dict[str, Any]) -> bool:
 _RULE_RE = re.compile(r"^(?P<tool>[A-Za-z_][A-Za-z0-9_]*)(?:\((?P<pattern>.*)\))?$")
 
 
+# Friendly catalog name → internal Agno function names. ``Bash`` in
+# a permission rule should match any shell tool call (which arrives
+# as ``run_shell_command``); ``Edit`` should match
+# ``edit_file`` / ``edit_file_replace_all``; etc.
+#
+# Built lazily from :data:`ember_code.protocol.agno_events.TOOL_NAMES`
+# (the canonical internal→friendly mapping) so we don't have to
+# maintain a parallel list here. Without this expansion, a deny
+# rule the user wrote as ``Bash(rm *)`` would never fire — the
+# evaluator sees ``run_shell_command`` and a literal string compare
+# fails, and bypass mode then auto-allows ``rm -rf``.
+_FRIENDLY_TO_INTERNAL: dict[str, frozenset[str]] | None = None
+
+
+def _internals_for_friendly(friendly: str) -> frozenset[str]:
+    global _FRIENDLY_TO_INTERNAL
+    if _FRIENDLY_TO_INTERNAL is None:
+        from ember_code.protocol.agno_events import TOOL_NAMES
+
+        rev: dict[str, set[str]] = {}
+        for internal, name in TOOL_NAMES.items():
+            rev.setdefault(name, set()).add(internal)
+        _FRIENDLY_TO_INTERNAL = {k: frozenset(v) for k, v in rev.items()}
+    return _FRIENDLY_TO_INTERNAL.get(friendly, frozenset())
+
+
 @dataclass(frozen=True)
 class PermissionRule:
     """A single ``Tool`` or ``Tool(pattern)`` rule.
@@ -194,8 +220,23 @@ class PermissionRule:
         ``tool_args``? Wildcard tool (``*``) matches anything. A
         rule with no pattern matches any invocation of the named
         tool. With a pattern, the tool's primary string argument is
-        fnmatched against the pattern."""
-        if self.tool != "*" and self.tool != tool_name:
+        fnmatched against the pattern.
+
+        Tool-name matching is friendly-aware: a rule written as
+        ``Bash(rm *)`` matches both the catalog name ``Bash`` AND
+        the internal Agno function name ``run_shell_command``.
+        Same for ``Edit`` ↔ ``edit_file`` / ``edit_file_replace_all``,
+        ``Read`` ↔ ``read_file``, etc. Without this expansion a
+        user-friendly rule using ``Bash`` silently fails to fire
+        because the evaluator sees the internal name — exactly the
+        bug that let ``rm -rf`` through under ``bypassPermissions``
+        despite a ``deny: ["Bash(rm *)"]`` rule.
+        """
+        if (
+            self.tool != "*"
+            and self.tool != tool_name
+            and tool_name not in _internals_for_friendly(self.tool)
+        ):
             return False
         if self.pattern is None:
             return True
