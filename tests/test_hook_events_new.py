@@ -48,8 +48,14 @@ async def test_permission_denied_event_fires_on_deny_rule(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_permission_request_event_fires_on_ask_rule(tmp_path: Path) -> None:
-    """Until the canUseTool bridge is wired, ``ask`` → block +
-    fire ``PermissionRequest`` for observers to react to."""
+    """``ask`` fires the ``PermissionRequest`` event for observers
+    (plugins, telemetry) but MUST fall through to run the tool —
+    ask is now handled by Agno's ``requires_confirmation`` +
+    HITL dialog, which resolves BEFORE the tool_hook runs. If
+    this hook re-blocks on ASK, we undo the user's just-clicked
+    approval — the exact "I pressed Allow similar, still says
+    'no canUseTool bridge is wired'" regression the v0.8.2
+    followup fixed."""
     executor = _RecordingExecutor()
     evaluator = PermissionEvaluator.from_strings(ask=["run_shell_command(npm *)"])
     hook = ToolEventHook(
@@ -67,10 +73,15 @@ async def test_permission_request_event_fires_on_ask_rule(tmp_path: Path) -> Non
         func=fake_tool,
         args={"command": "npm install"},
     )
-    assert "approval" in result.lower() or "Blocked" in result
+    # Fall-through: the tool actually ran.
+    assert result == "ran"
+    # And the event still fires for observability.
     requests = [c for c in executor.calls if c[0] == "PermissionRequest"]
     assert len(requests) == 1
     assert requests[0][1]["tool_name"] == "run_shell_command"
+    # No "canUseTool bridge" string sneaks back into user output.
+    assert "canUseTool" not in str(result)
+    assert "Blocked" not in str(result)
 
 
 @pytest.mark.asyncio

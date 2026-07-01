@@ -172,11 +172,22 @@ async def test_deny_decision_blocks_and_fires_permission_denied() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ask_decision_fires_permission_request_and_blocks() -> None:
+async def test_ask_decision_fires_permission_request_and_falls_through() -> None:
+    """PreToolUse hook returning ``ask`` fires ``PermissionRequest``
+    for observability but MUST let the tool run — Agno's
+    ``requires_confirmation`` + HITL dialog handles ASK, and this
+    hook only sees the call AFTER the user's approval. Blocking
+    here undoes that approval and produces the "no canUseTool
+    bridge is wired yet" regression."""
     result, calls = await _run_with_hook_decision("ask")
-    assert "approval" in result.lower() or "Blocked" in result
+    # Fall-through: the fake tool actually ran.
+    assert "ran x.py" in result
+    # Event still fires for plugins / telemetry.
     requests = [c for c in calls if c[0] == "PermissionRequest"]
     assert len(requests) == 1
+    # No block string sneaks back into the tool return.
+    assert "Blocked" not in result
+    assert "canUseTool" not in result
 
 
 @pytest.mark.asyncio

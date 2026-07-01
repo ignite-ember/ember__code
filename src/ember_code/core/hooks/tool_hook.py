@@ -129,6 +129,13 @@ class ToolEventHook:
                 )
                 return pre_result.message or f"Blocked: '{name}' denied by PreToolUse hook"
             if pre_decision == "ask":
+                # Same rationale as the evaluator's ASK branch
+                # below — Agno's PauseRequirement handles ASK via
+                # the HITL dialog; re-blocking here would undo a
+                # user's just-clicked approval. Fire the event
+                # for observability, then fall through. If the
+                # hook set an explicit ``message``, honour it as
+                # a block (custom hook semantics stay intact).
                 await self._fire(
                     HookEvent.PERMISSION_REQUEST.value,
                     name,
@@ -138,9 +145,11 @@ class ToolEventHook:
                         "tool_args": _safe_args(args),
                     },
                 )
-                return (
-                    pre_result.message
-                    or f"Blocked: '{name}' requires user approval, no canUseTool bridge is wired yet."
+                if pre_result.message:
+                    return pre_result.message
+                logger.info(
+                    "PreToolUse hook returned ASK for %s — falling through to HITL",
+                    name,
                 )
             # Legacy ``should_continue=False`` block (no
             # permission_decision) — keep the existing semantics.
@@ -203,6 +212,25 @@ class ToolEventHook:
                 logger.info("Permission DENY for %s", name)
                 return msg
             if decision is PermissionDecision.ASK:
+                # ASK is Agno's territory now. Tools at ask level
+                # carry ``requires_confirmation=True`` (wired in
+                # v0.8.1's toolkit init), so by the time the tool
+                # call reaches this hook, Agno's PauseRequirement
+                # has already fired the HITL dialog and the user
+                # has explicitly approved. Re-blocking here would
+                # undo that approval — the exact "I clicked Allow
+                # similar and it still says 'no canUseTool bridge'"
+                # regression.
+                #
+                # We keep the PERMISSION_REQUEST event fire so
+                # observability hooks / plugins can still see ASK
+                # traffic, but we FALL THROUGH to the actual tool
+                # call instead of returning a block string. The
+                # legacy "no canUseTool bridge" fallback would
+                # only be correct in a headless / non-interactive
+                # runtime where nothing else handles ASK — none
+                # of the four client surfaces (Tauri / TUI /
+                # VSCode / JetBrains) fits that shape.
                 await self._fire(
                     HookEvent.PERMISSION_REQUEST.value,
                     name,
@@ -212,11 +240,10 @@ class ToolEventHook:
                         "tool_args": _safe_args(args),
                     },
                 )
-                msg = (
-                    f"Blocked: '{name}' requires user approval, no canUseTool bridge is wired yet."
+                logger.info(
+                    "Permission ASK for %s — falling through to HITL (already resolved by Agno)",
+                    name,
                 )
-                logger.info("Permission ASK (treated as deny) for %s", name)
-                return msg
             # ALLOW and DEFER both fall through to execution.
 
         # Execute the tool
