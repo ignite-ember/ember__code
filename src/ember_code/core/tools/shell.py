@@ -319,10 +319,15 @@ def _persist_add(pid: int, cmd: str) -> None:
     if store is None:
         return
     try:
-        loop = asyncio.get_event_loop()
+        # ``get_running_loop`` raises RuntimeError if there's no
+        # running loop. ``get_event_loop`` is deprecated and,
+        # crucially on 3.11/3.12, silently CREATES a new loop
+        # when none is running — the ``ensure_future`` below
+        # schedules onto that phantom loop and the coroutine
+        # never runs, leaking DB locks and hanging pytest
+        # sessions for the full 6-hour job timeout.
+        asyncio.get_running_loop()
     except RuntimeError:
-        return
-    if not loop.is_running():
         return
     try:
         pgid = os.getpgid(pid)
@@ -345,10 +350,15 @@ def _persist_remove(pid: int) -> None:
     if store is None:
         return
     try:
-        loop = asyncio.get_event_loop()
+        # ``get_running_loop`` raises RuntimeError if there's no
+        # running loop. ``get_event_loop`` is deprecated and,
+        # crucially on 3.11/3.12, silently CREATES a new loop
+        # when none is running — the ``ensure_future`` below
+        # schedules onto that phantom loop and the coroutine
+        # never runs, leaking DB locks and hanging pytest
+        # sessions for the full 6-hour job timeout.
+        asyncio.get_running_loop()
     except RuntimeError:
-        return
-    if not loop.is_running():
         return
     asyncio.ensure_future(store.remove(pid))
 
