@@ -68,9 +68,15 @@ class EmberEditTools(Toolkit):
         self.register(self.create_file)
         if confirm_tools:
             self.requires_confirmation_tools = confirm_tools
-            for name, func in self.functions.items():
-                if name in confirm_tools:
-                    func.requires_confirmation = True
+            # Same async-vs-sync split as ``shell.py`` — iterate
+            # BOTH registries. Agno routes async callables into
+            # ``async_functions``; skipping that dict silently
+            # fails to gate them, which is the exact hole that
+            # let ``run_shell_command`` slip past HITL in v0.8.0.
+            for registry in (self.functions, self.async_functions):
+                for name, func in registry.items():
+                    if name in confirm_tools:
+                        func.requires_confirmation = True
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve a path relative to base_dir."""

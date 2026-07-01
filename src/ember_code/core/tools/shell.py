@@ -776,9 +776,21 @@ class EmberShellTools(Toolkit):
         self.register(self.list_processes)
         if confirm_tools:
             self.requires_confirmation_tools = confirm_tools
-            for name, func in self.functions.items():
-                if name in confirm_tools:
-                    func.requires_confirmation = True
+            # Iterate BOTH ``functions`` and ``async_functions``.
+            # Agno's ``Toolkit.register`` routes async callables
+            # (e.g. ``run_shell_command``) into ``async_functions``
+            # and sync ones into ``functions``. The previous code
+            # only touched ``functions``, so ``requires_confirmation``
+            # was never set on the shell tool — Agno never paused,
+            # no HITL dialog fired, and the model got the raw
+            # tool_hook "no canUseTool bridge" string back. Look
+            # in git blame for the incident where fresh installs
+            # couldn't run a background shell command after
+            # upgrading.
+            for registry in (self.functions, self.async_functions):
+                for name, func in registry.items():
+                    if name in confirm_tools:
+                        func.requires_confirmation = True
 
     async def run_shell_command(
         self,
